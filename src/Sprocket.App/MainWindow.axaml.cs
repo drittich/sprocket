@@ -9,6 +9,7 @@ using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Sprocket.App.Inspector;
 using Sprocket.App.MediaBrowser;
 using Sprocket.Core.Commands;
@@ -117,6 +118,31 @@ public partial class MainWindow : Window
 
     private void ToggleMaximize() =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+
+        // The GPU custom-draw PreviewSurface perturbs Avalonia's first composited frame: sibling controls
+        // (notably the transport bar) can stay unpainted until something invalidates them — e.g. a pointer-over.
+        // Force a full repaint of the visual tree across the first few frames after the window is shown so
+        // everything appears immediately. Spread over a few passes because a single kick can race the first
+        // GPU composition (the cause of the earlier, incomplete fix).
+        KickFirstFramePaint(3);
+    }
+
+    private void KickFirstFramePaint(int remainingPasses)
+    {
+        if (_root is null || remainingPasses <= 0)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (Visual visual in _root!.GetSelfAndVisualDescendants())
+                visual.InvalidateVisual();
+            KickFirstFramePaint(remainingPasses - 1);
+        }, DispatcherPriority.Background);
+    }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {

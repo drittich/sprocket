@@ -1,5 +1,8 @@
 # Sprocket — Cross-Platform Video Editor on .NET 10 — Feasibility & Vertical-Slice Plan
 
+> See [BRIEF.md](BRIEF.md) for the feature brief, [ARCHITECTURE.md](ARCHITECTURE.md) for the
+> technical design, and [UI.md](UI.md) for the target UI and the features its mockup implies.
+
 ## Context
 
 Greenfield project (empty repo). The goal is a cross-platform (Windows 11 + Linux)
@@ -163,8 +166,60 @@ End-to-end on **both** Windows 11 and Linux:
 8. Export pipeline (full-res encode).
 9. Project save/load (JSON).
 
-Defer to post-slice: multiple-of-everything beyond 1+1 tracks, plugin system
-(`AssemblyLoadContext`), OpenColorIO/OFX, color grading beyond basics, proxy-media workflow.
+## Post-slice build order (target UI & full feature set)
+
+Once the vertical slice's definition of done is met, the remaining features — those in
+[BRIEF.md](BRIEF.md) and implied by the [UI.md](UI.md) mockup — build out in roughly this
+dependency order. Each lands on an existing seam ([ARCHITECTURE §17](ARCHITECTURE.md)); none
+requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
+
+10. **Undo/redo command stack (foundational — do first).** Route *every* model mutation through
+    a command stack (snapshot or inverse-command), with command coalescing (e.g. slider drags)
+    and an edit-history surface. First-class requirement per [BRIEF.md](BRIEF.md) /
+    [ARCHITECTURE §4](ARCHITECTURE.md); doing it first means all later editing features are
+    undoable by construction.
+11. **App UI shell.** Frameless Avalonia window with custom chrome + inline menu bar
+    (`File · Edit · Clip · Sequence · Effects · View · Window · Help`); **splitter-resizable**
+    Project / Program / Inspector / Timeline panes ([UI.md §1](UI.md)); project title + autosave
+    / dirty-state indicator.
+12. **Timeline control v1.** Custom-drawn ruler + playhead, clip thumbnails (filmstrip) and audio
+    waveforms, drag-move + trim handles, timeline zoom (`⊟ 100% ⊞`), **Snapping**, and the
+    **Hand**/**Zoom** view tools. The most involved bespoke control.
+13. **Editing tools.** **Select / Blade (razor split) / Slip** tools and **Linked A/V** (move a
+    clip and its companion audio together) — a clip-link relation in the model.
+14. **Multiple tracks.** Lift the 1V+1A slice to N video + N audio tracks, **`+ Track`**, and
+    per-track **Mute/Solo** UI (model support already exists: `AudioTrack.Muted/Solo`, video
+    `Enabled`).
+15. **Media bin & browsers.** Poster-frame thumbnails, waveform rendering, search, and
+    format/alpha badges (`4K · 1080p · WAV · Alpha`) over the `MediaPool`; an **Effects** browser
+    over the `IVideoEffect` registry; the **Audio** tab.
+16. **Inspector & expanded effects.** Type-driven inspector with collapsible sections;
+    **Transform** effect (scale / position / rotation / anchor / opacity) as a new built-in
+    `IVideoEffect`; **Color** (exposure / contrast / color) on the same SkSL shape; numeric +
+    slider editing bound to `AnimatableValue`, with keyframe affordances.
+17. **Monitors.** Dual **Source / Program** monitors (same render graph, second surface),
+    safe-area / framing-grid overlay, **Fit** zoom, and full transport (jump-to-start/end,
+    frame-step, play/pause).
+18. **Proxy media (render performance).** Generate lower-resolution proxies and edit/preview
+    against them via an alternate `IFrameSource`, with a "use proxies" toggle; **export still
+    pulls full-resolution originals** ([ARCHITECTURE §17](ARCHITECTURE.md)). Committed feature
+    per [BRIEF.md](BRIEF.md).
+19. **Generators & adjustment layers.** Title/text **generator clips** (a generator
+    `IFrameSource` feeding the render graph) and **adjustment layers** (a clip/track kind whose
+    effect stack applies to all tracks beneath it — a render-graph stage, [ARCHITECTURE §5](ARCHITECTURE.md)).
+20. **Alpha-channel media compositing.** Premultiplied-alpha path through the render graph (e.g.
+    `Logo_Anim.mov` flagged `Alpha`).
+21. **Transitions.** Transition library (Project panel **Transitions** tab) + overlapping-clip
+    resolution in the render graph ([ARCHITECTURE §17](ARCHITECTURE.md)).
+22. **Export presets & status-bar telemetry.** Export dropdown with presets; status bar
+    surfacing engine state, GPU / hardware-accel status, live fps, resolution, and duration
+    ([ARCHITECTURE §15](ARCHITECTURE.md)) — **no framework/runtime text** in the UI ([UI.md §3.7](UI.md)).
+23. **Plugins & advanced color.** Plugin host (collectible `AssemblyLoadContext`,
+    [ARCHITECTURE §13](ARCHITECTURE.md)), then OpenColorIO/OFX and color grading beyond the
+    basics.
+
+Open product questions (e.g. the mockup's user-avatar / account affordance, full panel docking)
+are tracked in [UI.md §5](UI.md).
 
 ## Verification
 

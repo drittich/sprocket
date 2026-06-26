@@ -2,7 +2,8 @@
 
 > Companion to [PLAN.md](PLAN.md). PLAN.md is the *what* and the *build order*; this
 > document is the *how* and the *why* — the detailed technical design the implementation
-> must conform to. Library facts here were verified against current (mid-2026) releases;
+> must conform to. See [UI.md](UI.md) for the target UI and its implied features. Library
+> facts here were verified against current (mid-2026) releases;
 > see [§14 Verified facts](#14-verified-library-facts-mid-2026).
 
 ---
@@ -125,7 +126,14 @@ EffectInstance
 
 **Non-destructive editing falls out of this for free:** trimming edits `SourceIn/Out`;
 moving edits `TimelineStart`; effects are an additive list. The source bytes are never
-written. Undo/redo is a command stack over these mutations (snapshot or inverse-command).
+written.
+
+**Undo/redo is a first-class requirement** (see [BRIEF.md](BRIEF.md)), not an afterthought.
+Every model mutation goes through a **command stack** (snapshot or inverse-command) — there is
+no "direct" mutation path that bypasses it. Because the model is pure data with no native
+handles, commands are cheap to record and reverse, and the design must keep it that way:
+editing operations are expressed as commands from the start so undo/redo, command merging
+(e.g. coalescing a slider drag), and an edit-history surface come for free as the editor grows.
 
 ---
 
@@ -435,3 +443,13 @@ hardware accel is a new `IFrameSource`/`IHardwareContext` impl; color grading is
 effect-chain stage; plugins implement the existing `IVideoEffect`. The seams (`IFrameSource`,
 `IVideoEffect`, `IAudioOutput`, `IHardwareContext`, `IClock`) exist precisely so these land as
 additions, not rewrites.
+
+**Proxy media** is a committed feature (see [BRIEF.md](BRIEF.md)), deferred to post-slice but
+designed-for here. A proxy is a lower-resolution, edit-friendly re-encode of a source. It is
+**another `IFrameSource` implementation** selected per `MediaRef`: when proxies are enabled and
+present, preview/editing pull frames from the proxy (faster decode, lighter GPU load); **export
+always pulls from the full-resolution original**, so proxies never affect output quality. Because
+the render graph addresses sources through `IFrameSource` and clips reference a `MediaRefId`
+(not a decoder), proxy generation + a "use proxies" toggle land as a Media-layer addition with
+no change to `Sprocket.Core`. Determinism (§1.6) still holds — the *active* source for a given
+render mode is a pure input to `RenderFrame`.

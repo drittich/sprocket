@@ -102,7 +102,18 @@ End-to-end on **both** Windows 11 and Linux:
      versions locked by this spike: Avalonia 12.0.5, **SkiaSharp pinned to 3.119.4 to match
      Avalonia's transitive dependency** (the lease returns Avalonia's own Skia types), Sdcb.FFmpeg
      7.0.0 + runtime 7.1.0 (FFmpeg 7.1: avcodec-61/swscale-8).
-   - **TODO:** repeat on Linux to confirm the OpenGL/Vulkan backend + system-FFmpeg path.
+   - **✅ Linux verified (headless, Ubuntu 24.04 x64, .NET 10 Docker).** A `--headless-check`
+     mode runs decode → SkSL brightness shader → offscreen Skia render → PNG with no GUI/GPU
+     display. Result: builds clean on Linux, Sdcb.FFmpeg decodes the 1080p frame, SkiaSharp +
+     SkSL run, and the output PNG is **byte-identical (same SHA-256) to the Windows output** —
+     the render path is deterministic across OSes. **Key finding:** there is *no* Sdcb.FFmpeg
+     Linux runtime NuGet and distro FFmpeg versions vary (Ubuntu 24.04 ships FFmpeg 6.1, which
+     is ABI-incompatible with Sdcb.FFmpeg 7.0's `libav*.so.61`). So **Sprocket must bundle
+     FFmpeg 7 `.so` libs on Linux** (resolved via the loader path), exactly as it bundles the
+     runtime DLLs on Windows — do not depend on the distro package. See ARCHITECTURE.md §11.
+   - **Remaining (lower risk):** confirm the full Avalonia GPU compositor (shared `GRContext`)
+     on a real Linux desktop session with a GPU; the headless check validates the media+Skia
+     stack but uses an offscreen raster surface, not the windowed GL/Vulkan compositor.
 2. Timeline data model + RenderGraph in `Sprocket.Core` (unit-tested, headless).
 3. `MediaSource` decode + seek (keyframe seek then decode-to-target); ring-buffer feed.
 4. Skia preview surface + transport; software-clock playback (video only).

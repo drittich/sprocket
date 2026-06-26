@@ -347,10 +347,16 @@ wrapper, `MediaDictionary` for options.
   `av_hwframe_transfer_data` (simple, costs a copy) or map to a GPU texture for zero-copy
   (`FromTexture`). Runtime probe of available device types; **always** fall back to software.
 
-**Native binaries:** `Sdcb.FFmpeg.runtime.windows-x64` NuGet on Windows; on Linux, the system
-FFmpeg shared libs (resolved via `DllImport`) — document the `apt`/package requirement and
-verify the loader finds them. **Licensing:** an x264-enabled build is GPL; choose the build
-and the product's license deliberately before any distribution.
+**Native binaries (verified on both OSes):** `Sdcb.FFmpeg.runtime.windows-x64` NuGet supplies
+the FFmpeg 7.1 DLLs on Windows. **On Linux, Sprocket must ship its own FFmpeg 7 `.so` files** —
+there is no Sdcb.FFmpeg Linux runtime NuGet, and distro packages drift (Ubuntu 24.04 ships
+FFmpeg 6.1 = `libav*.so.60`, ABI-incompatible with Sdcb 7.0 which loads `…so.61`). Bundle a
+FFmpeg 7.x shared build next to the app (or on the loader path / `LD_LIBRARY_PATH`); Sdcb
+constructs the versioned soname (`libavcodec.so.61`, etc.) from its `LibraryVersionMap` and the
+OS loader resolves it. This was confirmed end-to-end in a .NET 10 container: decode + SkSL +
+Skia render produced a **byte-identical PNG to the Windows build**. **Licensing:** an x264-enabled
+build is GPL (the verified Linux build was BtbN `gpl-shared`); choose the build and the product's
+license deliberately before any distribution.
 
 ---
 
@@ -383,9 +389,9 @@ and the product's license deliberately before any distribution.
 | Component | Version | Notes |
 |---|---|---|
 | .NET | 10 (LTS) | Server/Background GC; `Span`, SIMD intrinsics, source-gen JSON. |
-| Avalonia | 12.x | `ISkiaSharpApiLeaseFeature.Lease()` → `GRContext`+`SkCanvas`; `CompositionCustomVisualHandler`. Vulkan supported. |
-| SkiaSharp | 4.x (Skia m147) | `SKRuntimeEffect` (SkSL), `SKImage.FromTexture`/`FromPixels`, GPU-backed surfaces. |
-| Sdcb.FFmpeg | 7.x (FFmpeg 7) | `FormatContext`/`CodecContext`/`Packet`/`Frame`; `Frame.Data` = `IntPtr[]`. Win binaries via runtime NuGet; Linux via system libs. |
+| Avalonia | 12.0.5 | `ISkiaSharpApiLeaseFeature.Lease()` → `GrContext`+`SkCanvas`; `CompositionCustomVisualHandler`. Vulkan supported. |
+| SkiaSharp | **3.119.4** | Pinned to Avalonia 12.0.5's transitive SkiaSharp so the lease's Skia types match (a newer feed loads a 2nd incompatible assembly). `SKRuntimeEffect.CreateShader` (SkSL), `SKImage.FromTexture`/`FromPixels`, GPU surfaces. |
+| Sdcb.FFmpeg | 7.0.0 (FFmpeg 7.1) | `FormatContext`/`CodecContext`/`Packet`/`Frame`; `Frame.Data` = `IntPtr[]`. Win binaries via `Sdcb.FFmpeg.runtime.windows-x64`; **Linux must bundle FFmpeg 7 `.so` (see §11)** — no Sdcb Linux runtime NuGet, distro versions vary. |
 | Silk.NET.OpenAL | 2.23 | Cross-platform audio out; behind `IAudioOutput`. (Silk.NET 2.x in limited maintenance — abstract it.) |
 
 ---

@@ -247,6 +247,52 @@ public class ModelCommandTests
     }
 
     [Fact]
+    public void SetClipPlacement_Applies_And_Reverts_All_Three_Fields()
+    {
+        Clip clip = MakeClip(); // in 0, out 5, start 2
+        var history = new EditHistory();
+
+        history.Execute(new SetClipPlacementCommand(
+            clip, Timecode.FromSeconds(1), Timecode.FromSeconds(4), Timecode.FromSeconds(7)));
+        Assert.Equal(Timecode.FromSeconds(1), clip.SourceIn);
+        Assert.Equal(Timecode.FromSeconds(4), clip.SourceOut);
+        Assert.Equal(Timecode.FromSeconds(7), clip.TimelineStart);
+
+        history.Undo();
+        Assert.Equal(Timecode.FromSeconds(0), clip.SourceIn);
+        Assert.Equal(Timecode.FromSeconds(5), clip.SourceOut);
+        Assert.Equal(Timecode.FromSeconds(2), clip.TimelineStart);
+    }
+
+    [Fact]
+    public void SetClipPlacement_Coalesces_Across_A_Drag_To_One_Entry()
+    {
+        Clip clip = MakeClip();
+        var history = new EditHistory();
+        Timecode origStart = clip.TimelineStart;
+
+        using (history.BeginCoalescing())
+        {
+            foreach (double s in new[] { 3.0, 5.0, 9.0 })
+                history.Execute(new SetClipPlacementCommand(
+                    clip, clip.SourceIn, clip.SourceOut, Timecode.FromSeconds(s)));
+        }
+
+        Assert.Equal(Timecode.FromSeconds(9), clip.TimelineStart);
+        history.Undo(); // single coalesced entry → straight back to the gesture's start
+        Assert.Equal(origStart, clip.TimelineStart);
+        Assert.False(history.CanUndo);
+    }
+
+    [Fact]
+    public void SetClipPlacement_Rejects_Inverted_Span()
+    {
+        Clip clip = MakeClip();
+        Assert.Throws<ArgumentException>(() => new SetClipPlacementCommand(
+            clip, Timecode.FromSeconds(4), Timecode.FromSeconds(1), Timecode.Zero));
+    }
+
+    [Fact]
     public void AddEffect_And_RemoveEffect_Round_Trip()
     {
         Clip clip = MakeClip();

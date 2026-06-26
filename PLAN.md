@@ -443,6 +443,33 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
 12. **Timeline control v1.** Custom-drawn ruler + playhead, clip thumbnails (filmstrip) and audio
     waveforms, drag-move + trim handles, timeline zoom (`⊟ 100% ⊞`), **Snapping**, and the
     **Hand**/**Zoom** view tools. The most involved bespoke control.
+    - **✅ DONE (`src/Sprocket.App/Timeline/{TimelineMath,TimelineControl}.cs`; 14 tests in
+      `tests/Sprocket.App.Tests`).** The shell's timeline placeholder is now a live custom-drawn control
+      ([UI.md §3.6](UI.md)) editing the real model through the step-10 command stack. Delivered:
+      - **`TimelineControl`** (Avalonia `Control` with a custom `Render`): a **ruler** with zoom-aware time
+        labels, a draggable **playhead** synced to the engine (`PositionChanged` → redraw; click/drag the ruler
+        or empty lanes scrubs via `PlaybackEngine.SeekTo`), one **lane per track** (video on top, audio below)
+        with **clips** drawn as rounded blocks bearing the media filename and a schematic **filmstrip** (video)
+        / **waveform** (audio) fill, the selected clip outlined in the accent. Per-track **mute / solo / enable**
+        toggle boxes live in the track header.
+      - **Editing through `EditHistory`:** **drag-to-move** and **edge-trim** (left edge ripples in-point +
+        start so the right edge stays put; right edge trims the out-point) run as `SetClipPlacementCommand`s
+        inside an `EditHistory.BeginCoalescing()` scope opened on pointer-down and sealed on pointer-up — so a
+        whole drag is **one undo entry** and the model updates live. **Snapping** (to other clip edges, the
+        playhead, and t=0, within 8 px) honours the action-bar toggle; the M/S/enable toggles issue
+        `SetPropertyCommand<bool>`s. Selection drives a status hint (and feeds the Inspector at step 16).
+      - **Zoom + scroll:** ⊟ / ⊞ buttons and **Ctrl+wheel** zoom (anchored so the tick under the cursor/playhead
+        stays put, 8–600 px/s); the wheel scrolls horizontally, clamped to content.
+      - **New Core primitive:** `SetClipPlacementCommand` sets a clip's source in/out **and** timeline start
+        atomically (the move/trim/slip primitive), coalescing per clip — joining the step-10 command set.
+      - **Tested geometry:** the tick↔pixel mapping, snapping, edge hit-testing, and ruler-interval selection
+        live in a pure `TimelineMath` (no Avalonia types) covered by **14 headless tests**; the rendering +
+        pointer interaction rest on those + manual verification (the App is a UI-bound `WinExe`). Clean build
+        (the XAML compiler resolves the control + `TimelineMath` namespace fix) and a smoke launch starts +
+        tears down cleanly. Schematic filmstrip/waveform fills stand in until **real decoded thumbnails /
+        waveforms (step 15)**; **Hand/Zoom** tool buttons + the Source monitor stay placeholders. Full suite:
+        **170 tests green** (Core 64, Media 24, Render 8, Audio 16, Playback 27, Export 6, Persistence 11,
+        App 14).
 13. **Editing tools.** **Select / Blade (razor split) / Slip** tools and **Linked A/V** (move a
     clip and its companion audio together) — a clip-link relation in the model.
 14. **Multiple tracks.** Lift the 1V+1A slice to N video + N audio tracks, **`+ Track`**, and

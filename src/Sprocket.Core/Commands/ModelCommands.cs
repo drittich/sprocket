@@ -94,6 +94,66 @@ public sealed class TrimClipCommand : EditCommand
     }
 }
 
+/// <summary>
+/// Sets a clip's placement — source in/out <em>and</em> timeline start — atomically. This is the primitive a
+/// timeline drag uses: a move changes only <see cref="Clip.TimelineStart"/>; a right-edge trim changes
+/// <see cref="Clip.SourceOut"/>; a left-edge trim changes <see cref="Clip.SourceIn"/> and the start together
+/// (the right edge stays put); a slip changes both source points but not the start. Coalesces with further
+/// placements of the same clip so a whole drag is one undo entry.
+/// </summary>
+public sealed class SetClipPlacementCommand : EditCommand
+{
+    private readonly Clip _clip;
+    private readonly Timecode _oldIn, _oldOut, _oldStart;
+    private Timecode _newIn, _newOut, _newStart;
+
+    /// <summary>Captures the clip's current placement and records the new one to apply.</summary>
+    public SetClipPlacementCommand(
+        Clip clip, Timecode newSourceIn, Timecode newSourceOut, Timecode newTimelineStart, string label = "Move clip")
+        : base(label)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        if (newSourceOut < newSourceIn)
+            throw new ArgumentException("SourceOut must not precede SourceIn.", nameof(newSourceOut));
+        _clip = clip;
+        _oldIn = clip.SourceIn;
+        _oldOut = clip.SourceOut;
+        _oldStart = clip.TimelineStart;
+        _newIn = newSourceIn;
+        _newOut = newSourceOut;
+        _newStart = newTimelineStart;
+    }
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        _clip.SourceIn = _newIn;
+        _clip.SourceOut = _newOut;
+        _clip.TimelineStart = _newStart;
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        _clip.SourceIn = _oldIn;
+        _clip.SourceOut = _oldOut;
+        _clip.TimelineStart = _oldStart;
+    }
+
+    /// <inheritdoc />
+    public override bool TryMergeWith(IEditCommand next)
+    {
+        if (next is SetClipPlacementCommand other && ReferenceEquals(other._clip, _clip))
+        {
+            _newIn = other._newIn;
+            _newOut = other._newOut;
+            _newStart = other._newStart;
+            return true;
+        }
+        return false;
+    }
+}
+
 /// <summary>Appends an effect to a clip's effect stack; undo removes it.</summary>
 public sealed class AddEffectCommand(Clip clip, EffectInstance effect) : EditCommand("Add effect")
 {

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
@@ -212,6 +213,7 @@ public partial class MainWindow : Window
         var preview = this.FindControl<PreviewSurface>("Preview")!;
 
         preview.Attach(_engine!);
+        WireTimeline();
 
         _exportButton!.Click += (_, _) => _ = ExportAsync();
         this.FindControl<Button>("AddTrackButton")!.Click += (_, _) => AddTrack();
@@ -249,6 +251,29 @@ public partial class MainWindow : Window
         // Optional timed auto-exit for unattended profiling runs: SPROCKET_APP_SECONDS=12
         if (int.TryParse(Environment.GetEnvironmentVariable("SPROCKET_APP_SECONDS"), out int seconds) && seconds > 0)
             DispatcherTimer.RunOnce(Close, TimeSpan.FromSeconds(seconds));
+    }
+
+    /// <summary>
+    /// Binds the custom timeline control to the project / edit history / engine and connects the timeline's
+    /// chrome (zoom buttons, the Snapping toggle) and its selection back to the shell.
+    /// </summary>
+    private void WireTimeline()
+    {
+        var timeline = this.FindControl<TimelineControl>("Timeline")!;
+        timeline.Attach(_project!, _history, _engine);
+
+        this.FindControl<Button>("ZoomInButton")!.Click += (_, _) => timeline.ZoomIn();
+        this.FindControl<Button>("ZoomOutButton")!.Click += (_, _) => timeline.ZoomOut();
+
+        var snapping = this.FindControl<ToggleButton>("SnappingToggle")!;
+        timeline.Snapping = snapping.IsChecked == true;
+        snapping.IsCheckedChanged += (_, _) => timeline.Snapping = snapping.IsChecked == true;
+
+        timeline.SelectedClipChanged += clip =>
+        {
+            string? name = clip is null ? null : Path.GetFileName(_project!.MediaPool.Get(clip.MediaRefId)?.AbsolutePath ?? "clip");
+            SetStatus(name is null ? "" : $"Selected: {name}");
+        };
     }
 
     /// <summary>

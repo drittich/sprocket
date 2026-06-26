@@ -18,5 +18,6 @@
     <Project Path="tests/Sprocket.Playback.Tests/Sprocket.Playback.Tests.csproj" />
     <Project Path="tests/Sprocket.Export.Tests/Sprocket.Export.Tests.csproj" />
     <Project Path="tests/Sprocket.Persistence.Tests/Sprocket.Persistence.Tests.csproj" />
+    <Project Path="tests/Sprocket.App.Tests/Sprocket.App.Tests.csproj" />
   </Folder>
 </Solution>

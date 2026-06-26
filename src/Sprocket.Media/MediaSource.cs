@@ -84,6 +84,10 @@ public sealed unsafe class MediaSource : IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
 
+        // Ensure any FFmpeg natives bundled beside the executable are loaded in dependency order before
+        // the first FFmpeg call (ARCHITECTURE.md §11); no-op on Windows / local dev.
+        FFmpegLoader.EnsureBundledNativesLoaded();
+
         FormatContext format = FormatContext.OpenInputUrl(path);
         try
         {

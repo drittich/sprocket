@@ -122,7 +122,8 @@ public static class ProjectSerializer
         var effects = new List<EffectDto>();
         foreach (EffectInstance e in c.Effects)
             effects.Add(ToDto(e));
-        return new ClipDto(c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects);
+        return new ClipDto(
+            c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects, c.LinkGroupId);
     }
 
     private static EffectDto ToDto(EffectInstance e)
@@ -204,7 +205,10 @@ public static class ProjectSerializer
     private static Clip FromDto(ClipDto c)
     {
         var clip = new Clip(
-            new MediaRefId(c.MediaRefId), new Timecode(c.SourceInTicks), new Timecode(c.SourceOutTicks), new Timecode(c.TimelineStartTicks));
+            new MediaRefId(c.MediaRefId), new Timecode(c.SourceInTicks), new Timecode(c.SourceOutTicks), new Timecode(c.TimelineStartTicks))
+        {
+            LinkGroupId = c.LinkGroupId,
+        };
         foreach (EffectDto e in c.Effects)
             clip.Effects.Add(FromDto(e));
         return clip;

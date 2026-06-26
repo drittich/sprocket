@@ -13,6 +13,7 @@ public class ProjectSerializerTests
 {
     private static readonly MediaRefId VideoId = MediaRefId.New();
     private static readonly MediaRefId AudioId = MediaRefId.New();
+    private static readonly Guid LinkGroup = Guid.NewGuid();
 
     /// <summary>A project exercising every field the format must preserve: two track kinds, trim, track
     /// gain/mute/solo and opacity/blend, a constant and a keyframed effect, and a non-default master gain.</summary>
@@ -28,7 +29,7 @@ public class ProjectSerializerTests
             new ProbedMediaInfo(Timecode.FromSeconds(60), false, Rational.Zero, 0, 0, true, 44100, 2)));
 
         var video = new VideoTrack { Name = "V1", Enabled = true, Opacity = 0.8, BlendMode = BlendMode.Multiply };
-        var clip = new Clip(VideoId, Timecode.FromSeconds(1), Timecode.FromSeconds(6), Timecode.FromSeconds(2));
+        var clip = new Clip(VideoId, Timecode.FromSeconds(1), Timecode.FromSeconds(6), Timecode.FromSeconds(2)) { LinkGroupId = LinkGroup };
         clip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.2));
         clip.Effects.Add(new EffectInstance(EffectTypeIds.Fade).Set(EffectParamNames.Opacity,
             AnimatableValue.Animated(
@@ -39,7 +40,7 @@ public class ProjectSerializerTests
         video.Clips.Add(clip);
 
         var audio = new AudioTrack { Name = "A1", Enabled = true, GainDb = -3.0, Muted = true, Solo = false };
-        audio.Clips.Add(new Clip(AudioId, Timecode.Zero, Timecode.FromSeconds(10), Timecode.Zero));
+        audio.Clips.Add(new Clip(AudioId, Timecode.Zero, Timecode.FromSeconds(10), Timecode.Zero) { LinkGroupId = LinkGroup });
 
         // Track order is z-order and must be preserved exactly.
         timeline.Tracks.Add(video);
@@ -111,6 +112,19 @@ public class ProjectSerializerTests
         Assert.Equal(Timecode.FromSeconds(1).Ticks, clip.SourceIn.Ticks);
         Assert.Equal(Timecode.FromSeconds(6).Ticks, clip.SourceOut.Ticks);
         Assert.Equal(Timecode.FromSeconds(2).Ticks, clip.TimelineStart.Ticks);
+    }
+
+    [Fact]
+    public void Round_Trips_The_Clip_Link_Relation()
+    {
+        Timeline loaded = RoundTrip(BuildRichProject()).Timeline;
+        Clip video = loaded.VideoTracks.First().Clips.Single();
+        Clip audio = loaded.AudioTracks.First().Clips.Single();
+
+        Assert.Equal(LinkGroup, video.LinkGroupId);
+        Assert.Equal(LinkGroup, audio.LinkGroupId);
+        // The relation survives: the loaded clips are each other's companion.
+        Assert.Same(audio, Assert.Single(loaded.ClipsLinkedTo(video)).Clip);
     }
 
     [Fact]

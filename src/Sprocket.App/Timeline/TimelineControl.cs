@@ -74,11 +74,43 @@ public sealed class TimelineControl : Control
     private IReadOnlyList<long> _snapPoints = [];
     private IDisposable? _coalesce;
 
+    // Linked companions captured at drag start (their track, clip, and original start) plus the group's
+    // minimum original start, so a linked move shifts every member by one locked delta and none goes negative.
+    private List<(Clip clip, Timecode origStart)> _dragLinked = [];
+    private long _dragGroupMinStart;
+
+    // Hand-tool panning state.
+    private bool _panning;
+    private double _panPressX, _panOrigScroll;
+
     /// <summary>Raised when the selected clip changes (for the Inspector / header). Null = nothing selected.</summary>
     public event Action<Clip?>? SelectedClipChanged;
 
     /// <summary>Whether edge/playhead snapping is active during drags.</summary>
     public bool Snapping { get; set; } = true;
+
+    /// <summary>Whether linked A/V move and blade together (UI.md §3.2, PLAN.md step 13).</summary>
+    public bool Linked { get; set; } = true;
+
+    /// <summary>The active timeline tool (Select / Blade / Slip / Hand / Zoom).</summary>
+    public EditTool ActiveTool
+    {
+        get => _activeTool;
+        set
+        {
+            _activeTool = value;
+            Cursor = value switch
+            {
+                EditTool.Blade => new Cursor(StandardCursorType.Cross),
+                EditTool.Hand => new Cursor(StandardCursorType.SizeAll),
+                EditTool.Zoom => new Cursor(StandardCursorType.Hand),
+                EditTool.Slip => new Cursor(StandardCursorType.SizeWestEast),
+                _ => Cursor.Default,
+            };
+        }
+    }
+
+    private EditTool _activeTool = EditTool.Select;
 
     /// <summary>The currently selected clip, or null.</summary>
     public Clip? SelectedClip => _selected;
@@ -343,6 +375,22 @@ public sealed class TimelineControl : Control
             return;
         }
 
+        // View tools act anywhere in the lane/ruler area.
+        if (_activeTool == EditTool.Zoom && p.X >= HeaderWidth)
+        {
+            bool zoomOut = e.KeyModifiers.HasFlag(KeyModifiers.Alt) || e.GetCurrentPoint(this).Properties.IsRightButtonPressed;
+            SetZoom(_pxPerSecond * (zoomOut ? 0.8 : 1.25), p.X);
+            return;
+        }
+        if (_activeTool == EditTool.Hand && p.X >= HeaderWidth)
+        {
+            _panning = true;
+            _panPressX = p.X;
+            _panOrigScroll = _scrollX;
+            e.Pointer.Capture(this);
+            return;
+        }
+
         // Ruler → scrub.
         if (p.Y < RulerHeight)
         {
@@ -352,9 +400,16 @@ public sealed class TimelineControl : Control
             return;
         }
 
-        // Clip body / edges → select + begin drag.
+        // Clip body / edges.
         if (TryHitClip(p, out Clip? clip, out ClipDragMode mode) && clip is not null)
         {
+            if (_activeTool == EditTool.Blade)
+            {
+                Select(clip);
+                BladeClip(clip, p);
+                return;
+            }
+
             Select(clip);
             BeginClipDrag(clip, mode, p);
             e.Pointer.Capture(this);
@@ -378,6 +433,13 @@ public sealed class TimelineControl : Control
             SeekToX(p.X);
             return;
         }
+        if (_panning)
+        {
+            _scrollX = Math.Max(0, _panOrigScroll - (p.X - _panPressX));
+            ClampScroll();
+            InvalidateVisual();
+            return;
+        }
         if (_dragClip is not null)
             UpdateClipDrag(p);
     }
@@ -386,12 +448,14 @@ public sealed class TimelineControl : Control
     {
         base.OnPointerReleased(e);
         _scrubbing = false;
+        _panning = false;
         if (_dragClip is not null)
         {
             _coalesce?.Dispose(); // seal the gesture as one undo entry
             _coalesce = null;
             _dragClip = null;
             _dragMode = ClipDragMode.None;
+            _dragLinked = [];
         }
         e.Pointer.Capture(null);
     }
@@ -474,6 +538,14 @@ public sealed class TimelineControl : Control
         _dragOrigOut = clip.SourceOut;
         _dragOrigStart = clip.TimelineStart;
         _snapPoints = BuildSnapPoints(clip);
+
+        // Capture linked companions for a linked move so the whole group shifts by one locked delta.
+        _dragLinked = (Linked ? _project!.Timeline.ClipsLinkedTo(clip) : [])
+            .Select(l => (l.Clip, l.Clip.TimelineStart)).ToList();
+        _dragGroupMinStart = _dragOrigStart.Ticks;
+        foreach ((Clip _, Timecode origStart) in _dragLinked)
+            _dragGroupMinStart = Math.Min(_dragGroupMinStart, origStart.Ticks);
+
         _coalesce = _history!.BeginCoalescing();
     }
 
@@ -482,14 +554,22 @@ public sealed class TimelineControl : Control
         long pointerTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
         long delta = pointerTicks - _dragPressTicks;
 
+        // Slip tool: shift the source window, keep the clip's timeline position and duration fixed.
+        if (_activeTool == EditTool.Slip)
+        {
+            UpdateSlip(delta);
+            return;
+        }
+
         long newIn = _dragOrigIn.Ticks, newOut = _dragOrigOut.Ticks, newStart = _dragOrigStart.Ticks;
         long dur = _dragOrigOut.Ticks - _dragOrigIn.Ticks;
 
         switch (_dragMode)
         {
             case ClipDragMode.Move:
-                newStart = TimelineMath.ClampNonNegative(_dragOrigStart.Ticks + delta);
-                newStart = SnapMove(newStart, dur);
+                // Clamp the delta so no group member would cross t=0, then snap the primary's start.
+                delta = Math.Max(delta, -_dragGroupMinStart);
+                newStart = SnapMove(_dragOrigStart.Ticks + delta, dur);
                 break;
 
             case ClipDragMode.TrimEnd:
@@ -520,9 +600,99 @@ public sealed class TimelineControl : Control
                 break;
         }
 
+        // A linked move shifts every companion by the same actual delta (their source spans unchanged), as one
+        // undo entry. Trims stay per-clip (NLE convention) — only Move propagates across the link group.
+        if (_dragMode == ClipDragMode.Move && _dragLinked.Count > 0)
+        {
+            long actualDelta = newStart - _dragOrigStart.Ticks;
+            var commands = new List<IEditCommand>
+            {
+                new SetClipPlacementCommand(_dragClip!, new Timecode(newIn), new Timecode(newOut), new Timecode(newStart), "Move clip"),
+            };
+            foreach ((Clip companion, Timecode origStart) in _dragLinked)
+                commands.Add(new SetClipPlacementCommand(
+                    companion, companion.SourceIn, companion.SourceOut, new Timecode(origStart.Ticks + actualDelta), "Move clip"));
+            Execute(new CompositeCommand("Move linked clips", commands));
+            return;
+        }
+
         string label = _dragMode == ClipDragMode.Move ? "Move clip" : "Trim clip";
         Execute(new SetClipPlacementCommand(
             _dragClip!, new Timecode(newIn), new Timecode(newOut), new Timecode(newStart), label));
+    }
+
+    /// <summary>
+    /// Slips the dragged clip's source window by <paramref name="rawDelta"/> ticks, clamped to the media so
+    /// the visible content shifts but the clip neither moves nor changes duration (PLAN.md step 13). Dragging
+    /// right reveals later source content. Coalesces into one undo entry like the other drag gestures.
+    /// </summary>
+    private void UpdateSlip(long rawDelta)
+    {
+        long mediaDuration = MediaDurationTicks(_dragClip!);
+        long slip = TimelineMath.ClampSlip(_dragOrigIn.Ticks, _dragOrigOut.Ticks, mediaDuration, rawDelta);
+        Execute(new SetClipPlacementCommand(
+            _dragClip!,
+            new Timecode(_dragOrigIn.Ticks + slip),
+            new Timecode(_dragOrigOut.Ticks + slip),
+            _dragOrigStart,
+            "Slip clip"));
+    }
+
+    /// <summary>
+    /// Blade (razor) split at the cursor: splits the clip under the pointer at <paramref name="p"/>'s timeline
+    /// time (snapped to the playhead when snapping is on). With Linked on, every companion clip that also spans
+    /// the cut is split too and the right-hand halves share a fresh link group — so each side stays an
+    /// independently linked A/V pair. The whole cut is one undo entry. A cut on a clip's very edge is ignored.
+    /// </summary>
+    private void BladeClip(Clip clip, Point p)
+    {
+        Track? track = TrackOf(clip);
+        if (track is null)
+            return;
+
+        long atTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
+        if (Snapping)
+            atTicks = TimelineMath.Snap(atTicks, [_playhead.Ticks], SnapTolerancePx, _pxPerSecond);
+        var at = new Timecode(atTicks);
+
+        // Must fall strictly inside the clicked clip.
+        if (at <= clip.TimelineStart || at >= clip.TimelineEnd)
+            return;
+
+        List<(Track Track, Clip Clip)> companions = Linked
+            ? _project!.Timeline.ClipsLinkedTo(clip).Where(l => l.Clip.Contains(at)).ToList()
+            : [];
+        Guid? rightGroup = (Linked && clip.LinkGroupId is not null && companions.Count > 0) ? Guid.NewGuid() : null;
+
+        var primary = new SplitClipCommand(track, clip, at, rightGroup);
+        if (companions.Count == 0)
+        {
+            Execute(primary);
+            Select(primary.RightClip);
+            return;
+        }
+
+        var commands = new List<IEditCommand> { primary };
+        foreach ((Track ctrack, Clip cclip) in companions)
+            commands.Add(new SplitClipCommand(ctrack, cclip, at, rightGroup));
+        Execute(new CompositeCommand("Blade linked clips", commands));
+        Select(primary.RightClip);
+    }
+
+    private Track? TrackOf(Clip clip)
+    {
+        foreach (Track t in _project!.Timeline.Tracks)
+            if (t.Clips.Contains(clip))
+                return t;
+        return null;
+    }
+
+    private long MediaDurationTicks(Clip clip)
+    {
+        MediaRef? media = _project?.MediaPool.Get(clip.MediaRefId);
+        // When the source duration is unknown (offline media), fall back to the current out-point so slip is
+        // a no-op rather than running off an unknown end.
+        return media is { Info.Duration.Ticks: > 0 } ? media.Info.Duration.Ticks : clip.SourceOut.Ticks;
     }
 
     private long SnapMove(long newStart, long dur)

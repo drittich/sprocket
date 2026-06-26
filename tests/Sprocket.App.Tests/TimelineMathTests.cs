@@ -91,6 +91,33 @@ public class TimelineMathTests
     }
 
     [Fact]
+    public void ClampSlip_Allows_A_Slip_Within_The_Media()
+    {
+        long oneSec = Timecode.TicksPerSecond;
+        // Source window [2s, 6s) inside a 10s media: a +1s slip is fully within bounds.
+        long slip = TimelineMath.ClampSlip(origIn: 2 * oneSec, origOut: 6 * oneSec, mediaDuration: 10 * oneSec, delta: oneSec);
+        Assert.Equal(oneSec, slip);
+    }
+
+    [Fact]
+    public void ClampSlip_Stops_At_The_Media_Edges()
+    {
+        long oneSec = Timecode.TicksPerSecond;
+        // Window [2s, 6s) in a 10s media: can pull SourceIn back at most 2s, push SourceOut at most 4s.
+        Assert.Equal(-2 * oneSec, TimelineMath.ClampSlip(2 * oneSec, 6 * oneSec, 10 * oneSec, -100 * oneSec));
+        Assert.Equal(4 * oneSec, TimelineMath.ClampSlip(2 * oneSec, 6 * oneSec, 10 * oneSec, 100 * oneSec));
+    }
+
+    [Fact]
+    public void ClampSlip_Is_A_No_Op_When_The_Clip_Spans_The_Whole_Source()
+    {
+        long oneSec = Timecode.TicksPerSecond;
+        // Window [0, 10s) in a 10s media: no headroom either direction.
+        Assert.Equal(0, TimelineMath.ClampSlip(0, 10 * oneSec, 10 * oneSec, 5 * oneSec));
+        Assert.Equal(0, TimelineMath.ClampSlip(0, 10 * oneSec, 10 * oneSec, -5 * oneSec));
+    }
+
+    [Fact]
     public void RulerInterval_Grows_As_You_Zoom_Out()
     {
         long tight = TimelineMath.RulerIntervalTicks(pxPerSecond: 300, targetPx: 90); // zoomed in → small interval

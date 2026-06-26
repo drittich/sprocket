@@ -41,6 +41,22 @@ public sealed class Timeline
     public IEnumerable<AudioTrack> AudioTracks => Tracks.OfType<AudioTrack>();
 
     /// <summary>
+    /// The clips linked to <paramref name="clip"/> (sharing its non-null <see cref="Clip.LinkGroupId"/>),
+    /// excluding the clip itself — its companion A/V (PLAN.md step 13). Empty when the clip is unlinked.
+    /// Pairs the found clip with the track it lives on so the editor can mutate it in place.
+    /// </summary>
+    public IEnumerable<(Track Track, Clip Clip)> ClipsLinkedTo(Clip clip)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        if (clip.LinkGroupId is not { } group)
+            yield break;
+        foreach (Track track in Tracks)
+            foreach (Clip c in track.Clips)
+                if (!ReferenceEquals(c, clip) && c.LinkGroupId == group)
+                    yield return (track, c);
+    }
+
+    /// <summary>
     /// The exclusive end of the timeline — the latest clip end across all tracks (<see cref="Timecode.Zero"/>
     /// when empty).
     /// </summary>

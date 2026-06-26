@@ -39,8 +39,12 @@ internal static class MediaBootstrap
             var mediaId = MediaRefId.New();
             project.MediaPool.Add(new MediaRef(mediaId, path, info));
 
+            // A shared link group ties the video clip to its companion audio so "Linked" moves/blades both
+            // together (PLAN.md step 13). The audio clip below joins the same group.
+            var linkGroup = Guid.NewGuid();
+
             var track = new VideoTrack { Name = "V1" };
-            var videoClip = new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero);
+            var videoClip = new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero) { LinkGroupId = linkGroup };
             // Slice DoD #4/#5: a GPU brightness effect plus a fade in/out, both as SkSL shaders (step 7).
             videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.15));
             videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
@@ -50,7 +54,7 @@ internal static class MediaBootstrap
 
             // Master clock: the audio device clock when the source has audio and a device is available
             // (audio is the master, ARCHITECTURE.md §8); otherwise the software wall-clock (video-only).
-            (IMasterClock? clock, bool audioWired) = TryCreateAudioClock(project, mediaId, path, sampleRate);
+            (IMasterClock? clock, bool audioWired) = TryCreateAudioClock(project, mediaId, path, sampleRate, linkGroup);
 
             var feed = new RingVideoFrameFeed(new VideoDecodeRing(source));
             var engine = new PlaybackEngine(project, feed, clock); // engine owns + disposes the clock
@@ -74,7 +78,7 @@ internal static class MediaBootstrap
     /// is available. Failures degrade gracefully (ARCHITECTURE.md §15): a missing device must not stop playback.
     /// </summary>
     private static (IMasterClock? clock, bool audioWired) TryCreateAudioClock(
-        Project project, MediaRefId mediaId, string path, int sampleRate)
+        Project project, MediaRefId mediaId, string path, int sampleRate, Guid linkGroup)
     {
         if (project.MediaPool.Get(mediaId) is not { Info.HasAudio: true })
             return (null, false);
@@ -87,7 +91,7 @@ internal static class MediaBootstrap
             audio = AudioSource.Open(path, sampleRate, channels);
 
             var audioTrack = new AudioTrack { Name = "A1" };
-            var audioClip = new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero);
+            var audioClip = new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero) { LinkGroupId = linkGroup };
             // The same fade envelope drives audio gain in the mixer (§6) as drives video alpha (§7).
             audioClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
                 .Set(EffectParamNames.Opacity, FadeInOut(project.Timeline.Duration)));

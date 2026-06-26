@@ -78,15 +78,15 @@
             BorderBrush="{DynamicResource Edge}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto">
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="2">
-          <!-- Tool palette (radio group). Select is the slice tool; the others are placeholders for steps 12–13. -->
-          <RadioButton Classes="tool" GroupName="Tools" Content="Select" IsChecked="True" />
-          <RadioButton Classes="tool" GroupName="Tools" Content="Blade" IsEnabled="False" />
-          <RadioButton Classes="tool" GroupName="Tools" Content="Slip" IsEnabled="False" />
-          <RadioButton Classes="tool" GroupName="Tools" Content="Hand" IsEnabled="False" />
-          <RadioButton Classes="tool" GroupName="Tools" Content="Zoom" IsEnabled="False" />
+          <!-- Tool palette (radio group): Select/Blade/Slip edit, Hand/Zoom view (PLAN.md step 13, UI.md §3.2). -->
+          <RadioButton x:Name="SelectTool" Classes="tool" GroupName="Tools" Content="Select" IsChecked="True" />
+          <RadioButton x:Name="BladeTool" Classes="tool" GroupName="Tools" Content="Blade" />
+          <RadioButton x:Name="SlipTool" Classes="tool" GroupName="Tools" Content="Slip" />
+          <RadioButton x:Name="HandTool" Classes="tool" GroupName="Tools" Content="Hand" />
+          <RadioButton x:Name="ZoomTool" Classes="tool" GroupName="Tools" Content="Zoom" />
           <Border Width="1" Height="18" Background="{DynamicResource Edge}" Margin="8,0" />
           <ToggleButton x:Name="SnappingToggle" Content="Snapping" IsChecked="True" FontSize="12" Padding="8,3" />
-          <ToggleButton Content="Linked" IsEnabled="False" FontSize="12" Padding="8,3" Margin="2,0,0,0" />
+          <ToggleButton x:Name="LinkedToggle" Content="Linked" IsChecked="True" FontSize="12" Padding="8,3" Margin="2,0,0,0" />
         </StackPanel>
 
         <TextBlock x:Name="SequenceBadge" Grid.Column="2" Margin="0,0,12,0" VerticalAlignment="Center"

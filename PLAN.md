@@ -472,6 +472,40 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
         App 14).
 13. **Editing tools.** **Select / Blade (razor split) / Slip** tools and **Linked A/V** (move a
     clip and its companion audio together) — a clip-link relation in the model.
+    - **✅ DONE (`Sprocket.Core/Model` + `Sprocket.Core/Commands` + `Sprocket.App/Timeline` + persistence; 16 new
+      tests — Core +10, App +3, Persistence +1, all green).** The timeline's tool palette is now live and the
+      clip-link relation lands in the pure model, so every new op stays undoable by construction (step 10).
+      Delivered:
+      - **Clip-link relation (model, §4):** a nullable `Clip.LinkGroupId` (Guid) — clips sharing a non-null group
+        are companion A/V. `Timeline.ClipsLinkedTo(clip)` returns the companions (with their track) for the editor
+        to mutate; unlinked clips have none. The bootstrap now links the slice's video + audio clips so "Linked"
+        is demonstrable, and the App's import builds them in one shared group.
+      - **Two Core command primitives:** `SplitClipCommand` (the Blade op — pulls the original clip's `SourceOut`
+        back to the cut and inserts a new right-half clip with the remaining source span + a **copy** of the effect
+        stack; rejects a cut on/outside the clip; takes an optional right-half link group) and `CompositeCommand`
+        (groups N commands as one undo entry, applied in order / reverted in reverse, and **coalesces with a
+        same-shape composite** so a continuous linked drag stays one entry). Effect copy uses a new
+        `EffectInstance.Clone()` (params shared by reference — `AnimatableValue` is immutable).
+      - **Tool palette (UI.md §3.2) wired through `TimelineControl.ActiveTool`:** **Select** (move/trim, step 12),
+        **Blade** (click a clip → split at the cursor, snapped to the playhead; selects the new right half),
+        **Slip** (drag a clip to shift its source window with timeline position + duration fixed, clamped to the
+        media via a pure `TimelineMath.ClampSlip`), and the view-only **Hand** (drag-pan) / **Zoom** (click to
+        zoom in, Alt/right-click to zoom out) — completing the five-button radio group left as placeholders at
+        step 12. Each tool sets a matching cursor.
+      - **Linked A/V behaviour:** with the **Linked** toggle on, a **move** shifts every group member by one locked
+        delta (clamped so none crosses t=0) as a single `CompositeCommand` undo entry, and a **blade** also cuts
+        every companion that spans the cut — the right halves getting a fresh shared link group so each side stays
+        an independently linked pair. Trim/slip stay per-clip (NLE convention). The Linked toggle + tool radio
+        group are bound in `MainWindow`.
+      - **Persistence:** `ClipDto` gains an additive, nullable `linkGroupId` (no schema bump — v1 files load as
+        unlinked and a project with no links serializes byte-identically via `WhenWritingNull`); the link relation
+        round-trips and the loaded companions resolve each other.
+      - **Tests (16):** `SplitClipCommand` (divide/undo/effect-copy/edge-reject/link-group), `CompositeCommand`
+        (apply-order, single-entry, same-shape coalescing), `Timeline.ClipsLinkedTo`, `TimelineMath.ClampSlip`
+        (within bounds / edge clamps / no-headroom no-op), and a persistence link round-trip. The control's pointer
+        interaction rests on these + manual verification (the App is a UI-bound `WinExe`); clean build (0 warnings)
+        and a smoke launch starts + tears down cleanly. Full suite: **184 tests green** (Core 74, Media 24, Render 8,
+        Audio 16, Playback 27, Export 6, Persistence 12, App 17).
 14. **Multiple tracks.** Lift the 1V+1A slice to N video + N audio tracks, **`+ Track`**, and
     per-track **Mute/Solo** UI (model support already exists: `AudioTrack.Muted/Solo`, video
     `Enabled`).

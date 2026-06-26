@@ -269,10 +269,37 @@ public partial class MainWindow : Window
         timeline.Snapping = snapping.IsChecked == true;
         snapping.IsCheckedChanged += (_, _) => timeline.Snapping = snapping.IsChecked == true;
 
+        var linked = this.FindControl<ToggleButton>("LinkedToggle")!;
+        timeline.Linked = linked.IsChecked == true;
+        linked.IsCheckedChanged += (_, _) => timeline.Linked = linked.IsChecked == true;
+
+        // Tool palette (radio group): each button selects the matching timeline tool.
+        WireTool("SelectTool", EditTool.Select, timeline);
+        WireTool("BladeTool", EditTool.Blade, timeline);
+        WireTool("SlipTool", EditTool.Slip, timeline);
+        WireTool("HandTool", EditTool.Hand, timeline);
+        WireTool("ZoomTool", EditTool.Zoom, timeline);
+
         timeline.SelectedClipChanged += clip =>
         {
             string? name = clip is null ? null : Path.GetFileName(_project!.MediaPool.Get(clip.MediaRefId)?.AbsolutePath ?? "clip");
             SetStatus(name is null ? "" : $"Selected: {name}");
+        };
+    }
+
+    /// <summary>Binds a tool-palette radio button to its <see cref="EditTool"/> on the timeline.</summary>
+    private void WireTool(string name, EditTool tool, TimelineControl timeline)
+    {
+        var button = this.FindControl<RadioButton>(name)!;
+        if (button.IsChecked == true)
+            timeline.ActiveTool = tool;
+        button.IsCheckedChanged += (_, _) =>
+        {
+            if (button.IsChecked == true)
+            {
+                timeline.ActiveTool = tool;
+                SetStatus($"{tool} tool");
+            }
         };
     }
 

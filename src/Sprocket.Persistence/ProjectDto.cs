@@ -65,7 +65,10 @@ internal sealed record ClipDto(
     long SourceInTicks,
     long SourceOutTicks,
     long TimelineStartTicks,
-    List<EffectDto> Effects);
+    List<EffectDto> Effects,
+    // Linked-clip group (PLAN.md step 13). Null/absent = unlinked; additive + nullable, so v1 files without
+    // it load as unlinked and a project with no links serializes byte-identically (WhenWritingNull).
+    Guid? LinkGroupId = null);
 
 internal sealed record EffectDto(
     string EffectTypeId,

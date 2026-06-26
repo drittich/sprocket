@@ -154,6 +154,116 @@ public sealed class SetClipPlacementCommand : EditCommand
     }
 }
 
+/// <summary>
+/// Splits a clip in two at timeline time <paramref name="at"/> — the Blade (razor) op (PLAN.md step 13,
+/// UI.md §3.2). The original clip becomes the left half (its <see cref="Clip.SourceOut"/> is pulled back to
+/// the split point); a new right-half clip is inserted immediately after it, carrying the remaining source
+/// span, a copy of the effect stack, and a link group. Undo removes the right half and restores the
+/// original out-point. <paramref name="at"/> must lie strictly inside the clip.
+/// </summary>
+public sealed class SplitClipCommand : EditCommand
+{
+    private readonly Track _track;
+    private readonly Clip _left;
+    private readonly Clip _right;
+    private readonly Timecode _oldOut;
+    private readonly Timecode _splitSource;
+    private int _rightIndex = -1;
+
+    /// <summary>
+    /// Prepares the split. <paramref name="rightLinkGroup"/> sets the new half's
+    /// <see cref="Clip.LinkGroupId"/> (a linked blade gives every right half a fresh shared group so the two
+    /// sides stay independently linked); when omitted the right half inherits the original's group.
+    /// </summary>
+    public SplitClipCommand(Track track, Clip clip, Timecode at, Guid? rightLinkGroup = null)
+        : base("Split clip")
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        ArgumentNullException.ThrowIfNull(clip);
+        if (at <= clip.TimelineStart || at >= clip.TimelineEnd)
+            throw new ArgumentException("The split point must lie strictly inside the clip.", nameof(at));
+
+        _track = track;
+        _left = clip;
+        _oldOut = clip.SourceOut;
+        _splitSource = clip.MapToSource(at);
+
+        _right = new Clip(clip.MediaRefId, _splitSource, clip.SourceOut, at)
+        {
+            LinkGroupId = rightLinkGroup ?? clip.LinkGroupId,
+        };
+        foreach (EffectInstance e in clip.Effects)
+            _right.Effects.Add(e.Clone());
+    }
+
+    /// <summary>The new right-hand clip produced by the split (e.g. to select it after a blade).</summary>
+    public Clip RightClip => _right;
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        _left.SourceOut = _splitSource;
+        int leftIndex = _track.Clips.IndexOf(_left);
+        _rightIndex = leftIndex < 0 ? _track.Clips.Count : leftIndex + 1;
+        _track.Clips.Insert(_rightIndex, _right);
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        _track.Clips.Remove(_right);
+        _left.SourceOut = _oldOut;
+    }
+}
+
+/// <summary>
+/// Groups several commands into one undo entry, applied in order and reverted in reverse (PLAN.md step 13).
+/// A linked edit — moving or blading a clip together with its companion A/V — is one user gesture, so it
+/// must undo/redo as a unit. Coalesces with another <see cref="CompositeCommand"/> of the same shape (same
+/// number of children, each child mergeable with its counterpart), so a continuous linked drag stays a
+/// single undo entry inside a <see cref="EditHistory.BeginCoalescing"/> scope.
+/// </summary>
+public sealed class CompositeCommand : EditCommand
+{
+    private readonly IReadOnlyList<IEditCommand> _commands;
+
+    /// <summary>Wraps <paramref name="commands"/> (none yet applied) as one reversible unit.</summary>
+    public CompositeCommand(string label, IReadOnlyList<IEditCommand> commands)
+        : base(label)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        if (commands.Count == 0)
+            throw new ArgumentException("A composite needs at least one command.", nameof(commands));
+        _commands = commands;
+    }
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        foreach (IEditCommand c in _commands)
+            c.Apply();
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        for (int i = _commands.Count - 1; i >= 0; i--)
+            _commands[i].Revert();
+    }
+
+    /// <inheritdoc />
+    public override bool TryMergeWith(IEditCommand next)
+    {
+        if (next is not CompositeCommand other || other._commands.Count != _commands.Count)
+            return false;
+        // All children must merge with their counterpart (no partial merge — the gesture is atomic).
+        for (int i = 0; i < _commands.Count; i++)
+            if (!_commands[i].TryMergeWith(other._commands[i]))
+                return false;
+        return true;
+    }
+}
+
 /// <summary>Appends an effect to a clip's effect stack; undo removes it.</summary>
 public sealed class AddEffectCommand(Clip clip, EffectInstance effect) : EditCommand("Add effect")
 {

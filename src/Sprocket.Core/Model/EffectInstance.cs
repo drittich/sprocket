@@ -60,4 +60,17 @@ public sealed class EffectInstance
         Parameters[name] = value;
         return this;
     }
+
+    /// <summary>
+    /// A copy with the same type and parameters. <see cref="AnimatableValue"/> is immutable so the entries
+    /// are shared by reference; only the parameter map is fresh. Used when a blade split copies a clip's
+    /// effect stack onto the new right-hand half (PLAN.md step 13).
+    /// </summary>
+    public EffectInstance Clone()
+    {
+        var copy = new EffectInstance(EffectTypeId);
+        foreach ((string name, AnimatableValue value) in Parameters)
+            copy.Parameters[name] = value;
+        return copy;
+    }
 }

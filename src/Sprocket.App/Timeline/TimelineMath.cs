@@ -4,6 +4,29 @@ using Sprocket.Core.Timing;
 
 namespace Sprocket.App;
 
+/// <summary>
+/// The active timeline tool (UI.md §3.2 palette, PLAN.md step 13). <see cref="Select"/> moves/trims clips;
+/// <see cref="Blade"/> splits a clip at the cursor; <see cref="Slip"/> shifts a clip's source in/out without
+/// moving it on the timeline; <see cref="Hand"/> pans the view and <see cref="Zoom"/> zooms it (view-only).
+/// </summary>
+public enum EditTool
+{
+    /// <summary>Default arrow: select, move, and edge-trim clips.</summary>
+    Select,
+
+    /// <summary>Razor: click a clip to split it at the cursor.</summary>
+    Blade,
+
+    /// <summary>Slip a clip's source in/out (its visible content) without moving it on the timeline.</summary>
+    Slip,
+
+    /// <summary>Pan the timeline view (drag to scroll).</summary>
+    Hand,
+
+    /// <summary>Zoom the timeline view (click to zoom in, modifier-click to zoom out).</summary>
+    Zoom,
+}
+
 /// <summary>What part of a clip a pointer is over — selects the drag behaviour.</summary>
 public enum ClipDragMode
 {
@@ -78,6 +101,21 @@ public static class TimelineMath
         if (pointerX >= clipX0 && pointerX <= clipX1)
             return ClipDragMode.Move;
         return ClipDragMode.None;
+    }
+
+    /// <summary>
+    /// Clamps a slip <paramref name="delta"/> (ticks added to both source in/out) so the source window stays
+    /// within the media: <c>SourceIn ≥ 0</c> and <c>SourceOut ≤ mediaDuration</c>. The clip's duration and
+    /// timeline position are unchanged — slip only changes which part of the source plays. Returns 0 when the
+    /// clip already spans the whole source (no room to slip).
+    /// </summary>
+    public static long ClampSlip(long origIn, long origOut, long mediaDuration, long delta)
+    {
+        long minDelta = -origIn;                  // can't pull SourceIn below 0
+        long maxDelta = mediaDuration - origOut;  // can't push SourceOut past the media end
+        if (maxDelta < minDelta)
+            return 0;
+        return Math.Clamp(delta, minDelta, maxDelta);
     }
 
     /// <summary>

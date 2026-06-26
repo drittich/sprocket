@@ -395,3 +395,190 @@ public class ModelCommandTests
         Assert.Equal(2, timeline.Tracks.Count);
     }
 }
+
+/// <summary>
+/// Tests for the step-13 editing primitives: <see cref="SplitClipCommand"/> (blade), <see cref="CompositeCommand"/>
+/// (linked edits as one undo entry), and the <see cref="Timeline.ClipsLinkedTo"/> link relation. All headless.
+/// </summary>
+public class EditingToolsTests
+{
+    private static Clip MakeClip(Timecode start, Timecode dur, MediaRefId? media = null) =>
+        new(media ?? MediaRefId.New(), Timecode.Zero, dur, start);
+
+    [Fact]
+    public void Split_Divides_Source_And_Timeline_At_The_Cut()
+    {
+        var track = new VideoTrack();
+        // Clip: source [0,10), placed at t=2 → spans [2,12). Cut at t=5 → left [2,5), right [5,12).
+        Clip clip = MakeClip(Timecode.FromSeconds(2), Timecode.FromSeconds(10));
+        track.Clips.Add(clip);
+        var history = new EditHistory();
+
+        var split = new SplitClipCommand(track, clip, Timecode.FromSeconds(5));
+        history.Execute(split);
+
+        Assert.Equal(2, track.Clips.Count);
+        // Left half keeps the start, ends at the cut.
+        Assert.Equal(Timecode.FromSeconds(2), clip.TimelineStart);
+        Assert.Equal(Timecode.FromSeconds(3), clip.SourceOut); // source 0..3 (3s of the 10s source)
+        Assert.Equal(Timecode.FromSeconds(5), clip.TimelineEnd);
+        // Right half begins at the cut and carries the remaining source.
+        Clip right = split.RightClip;
+        Assert.Same(right, track.Clips[1]);
+        Assert.Equal(Timecode.FromSeconds(5), right.TimelineStart);
+        Assert.Equal(Timecode.FromSeconds(3), right.SourceIn);
+        Assert.Equal(Timecode.FromSeconds(10), right.SourceOut);
+        Assert.Equal(Timecode.FromSeconds(12), right.TimelineEnd);
+    }
+
+    [Fact]
+    public void Split_Undo_Restores_The_Single_Clip()
+    {
+        var track = new VideoTrack();
+        Clip clip = MakeClip(Timecode.Zero, Timecode.FromSeconds(8));
+        track.Clips.Add(clip);
+        var history = new EditHistory();
+
+        history.Execute(new SplitClipCommand(track, clip, Timecode.FromSeconds(3)));
+        history.Undo();
+
+        Assert.Same(clip, Assert.Single(track.Clips));
+        Assert.Equal(Timecode.FromSeconds(8), clip.SourceOut); // out-point restored
+        Assert.Equal(Timecode.FromSeconds(8), clip.TimelineEnd);
+    }
+
+    [Fact]
+    public void Split_Copies_The_Effect_Stack_Onto_The_Right_Half()
+    {
+        var track = new VideoTrack();
+        Clip clip = MakeClip(Timecode.Zero, Timecode.FromSeconds(6));
+        clip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.2));
+        track.Clips.Add(clip);
+
+        var split = new SplitClipCommand(track, clip, Timecode.FromSeconds(3));
+        split.Apply();
+
+        EffectInstance copied = Assert.Single(split.RightClip.Effects);
+        Assert.Equal(EffectTypeIds.Brightness, copied.EffectTypeId);
+        Assert.Equal(1.2, copied.Parameters[EffectParamNames.Amount].Evaluate(Timecode.Zero));
+        // It's a copy, not the same instance — editing one half's stack won't mutate the other.
+        Assert.NotSame(clip.Effects[0], copied);
+    }
+
+    [Theory]
+    [InlineData(0)]  // on the start edge
+    [InlineData(6)]  // on the end edge
+    public void Split_Rejects_A_Cut_On_Or_Outside_The_Clip(int seconds)
+    {
+        var track = new VideoTrack();
+        Clip clip = MakeClip(Timecode.Zero, Timecode.FromSeconds(6));
+        track.Clips.Add(clip);
+        Assert.Throws<ArgumentException>(() => new SplitClipCommand(track, clip, Timecode.FromSeconds(seconds)));
+    }
+
+    [Fact]
+    public void Split_Assigns_The_Right_Half_A_Given_Link_Group()
+    {
+        var track = new VideoTrack();
+        var original = Guid.NewGuid();
+        Clip clip = MakeClip(Timecode.Zero, Timecode.FromSeconds(6));
+        clip.LinkGroupId = original;
+        track.Clips.Add(clip);
+
+        var newGroup = Guid.NewGuid();
+        new SplitClipCommand(track, clip, Timecode.FromSeconds(3), newGroup).Apply();
+
+        Assert.Equal(original, clip.LinkGroupId);           // left keeps the original group
+        Assert.Equal(newGroup, track.Clips[1].LinkGroupId); // right gets the fresh group
+    }
+
+    [Fact]
+    public void Composite_Applies_In_Order_And_Reverts_In_Reverse()
+    {
+        var log = new List<string>();
+        var history = new EditHistory();
+        var composite = new CompositeCommand("group",
+        [
+            new Probe("a", log),
+            new Probe("b", log),
+        ]);
+
+        history.Execute(composite);
+        Assert.Equal(["+a", "+b"], log);
+
+        history.Undo();
+        Assert.Equal(["+a", "+b", "-b", "-a"], log); // reverse order on revert
+    }
+
+    [Fact]
+    public void Composite_Is_One_Undo_Entry()
+    {
+        var log = new List<string>();
+        var history = new EditHistory();
+        history.Execute(new CompositeCommand("group", [new Probe("a", log), new Probe("b", log)]));
+
+        Assert.Equal(1, history.UndoCount);
+        Assert.Equal("group", history.UndoLabel);
+    }
+
+    [Fact]
+    public void Composite_Coalesces_With_A_Same_Shape_Composite()
+    {
+        var track = new VideoTrack();
+        Clip v = MakeClip(Timecode.FromSeconds(2), Timecode.FromSeconds(4));
+        Clip a = MakeClip(Timecode.FromSeconds(2), Timecode.FromSeconds(4));
+        track.Clips.AddRange([v, a]);
+        var history = new EditHistory();
+
+        using (history.BeginCoalescing())
+        {
+            // Two consecutive linked moves of the same two clips collapse into one undo entry.
+            history.Execute(MoveBoth(v, a, Timecode.FromSeconds(3)));
+            history.Execute(MoveBoth(v, a, Timecode.FromSeconds(5)));
+        }
+
+        Assert.Equal(1, history.UndoCount);
+        Assert.Equal(Timecode.FromSeconds(5), v.TimelineStart);
+        Assert.Equal(Timecode.FromSeconds(5), a.TimelineStart);
+
+        history.Undo(); // one undo returns both to their original start
+        Assert.Equal(Timecode.FromSeconds(2), v.TimelineStart);
+        Assert.Equal(Timecode.FromSeconds(2), a.TimelineStart);
+    }
+
+    [Fact]
+    public void ClipsLinkedTo_Returns_Companions_Sharing_The_Group()
+    {
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var video = new VideoTrack();
+        var audio = new AudioTrack();
+        var group = Guid.NewGuid();
+        Clip v = MakeClip(Timecode.Zero, Timecode.FromSeconds(5));
+        Clip a = MakeClip(Timecode.Zero, Timecode.FromSeconds(5));
+        Clip unrelated = MakeClip(Timecode.Zero, Timecode.FromSeconds(5));
+        v.LinkGroupId = group;
+        a.LinkGroupId = group;
+        video.Clips.AddRange([v, unrelated]);
+        audio.Clips.Add(a);
+        timeline.Tracks.AddRange([video, audio]);
+
+        (Track Track, Clip Clip) companion = Assert.Single(timeline.ClipsLinkedTo(v));
+        Assert.Same(a, companion.Clip);
+        Assert.Same(audio, companion.Track);
+        Assert.Empty(timeline.ClipsLinkedTo(unrelated)); // unlinked → no companions
+    }
+
+    private static CompositeCommand MoveBoth(Clip v, Clip a, Timecode start) =>
+        new("Move linked clips",
+        [
+            new SetClipPlacementCommand(v, v.SourceIn, v.SourceOut, start),
+            new SetClipPlacementCommand(a, a.SourceIn, a.SourceOut, start),
+        ]);
+
+    // Records apply/revert calls in order so composite ordering is observable.
+    private sealed class Probe(string id, List<string> log) : EditCommand(id)
+    {
+        public override void Apply() => log.Add($"+{Label}");
+        public override void Revert() => log.Add($"-{Label}");
+    }
+}

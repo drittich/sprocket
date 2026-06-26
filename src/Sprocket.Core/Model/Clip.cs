@@ -34,6 +34,13 @@ public sealed class Clip
     /// <summary>Where the clip sits on the timeline.</summary>
     public Timecode TimelineStart { get; set; }
 
+    /// <summary>
+    /// Identifies a linked-clip group (PLAN.md step 13, UI.md §3.2). Clips that share a non-null
+    /// <see cref="LinkGroupId"/> are companion A/V — a video clip and its source's audio — and the editor
+    /// moves / blades them together when "Linked" is on. <see langword="null"/> means the clip is unlinked.
+    /// </summary>
+    public Guid? LinkGroupId { get; set; }
+
     /// <summary>Ordered effect stack, applied bottom→top (ARCHITECTURE.md §5d).</summary>
     public List<EffectInstance> Effects { get; } = new();
 

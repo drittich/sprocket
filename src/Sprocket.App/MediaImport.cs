@@ -16,21 +16,33 @@ namespace Sprocket.App;
 internal static class MediaImport
 {
     /// <summary>
-    /// Probes <paramref name="path"/> and adds it to the project (deduplicating by absolute path — re-importing
-    /// the same file returns the existing reference rather than a second copy). Returns the imported (or
-    /// existing) <see cref="MediaRef"/>, or <see langword="null"/> if the file can't be opened/probed.
+    /// The outcome of an import: the imported (or already-present) <see cref="MediaRef"/> on success, or a
+    /// human-readable <see cref="Error"/> explaining why the file could not be opened.
     /// </summary>
-    public static MediaRef? TryImport(Project project, EditHistory history, string path)
+    public readonly record struct Result(MediaRef? Media, string? Error)
+    {
+        public bool Succeeded => Media is not null;
+    }
+
+    /// <summary>
+    /// Probes <paramref name="path"/> and adds it to the project (deduplicating by absolute path — re-importing
+    /// the same file returns the existing reference rather than a second copy). Returns a <see cref="Result"/>
+    /// carrying the imported/existing <see cref="MediaRef"/>, or the failure reason (the underlying FFmpeg
+    /// message) when the file can't be opened/probed — so the caller can show *why* rather than a bare "failed".
+    /// </summary>
+    public static Result TryImport(Project project, EditHistory history, string path)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(history);
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-            return null;
+        if (string.IsNullOrWhiteSpace(path))
+            return new Result(null, "No file path.");
+        if (!File.Exists(path))
+            return new Result(null, "File not found.");
 
         // Already imported? Match on the stored absolute path so a file isn't added twice.
         foreach (MediaRef existing in project.MediaPool.Items)
             if (string.Equals(existing.AbsolutePath, path, StringComparison.OrdinalIgnoreCase))
-                return existing;
+                return new Result(existing, null);
 
         ProbedMediaInfo info;
         try
@@ -38,13 +50,13 @@ internal static class MediaImport
             using MediaSource probe = MediaSource.Open(path);
             info = probe.Info;
         }
-        catch
+        catch (Exception ex)
         {
-            return null; // not a media file we can open (§15) — caller reports it
+            return new Result(null, ex.Message); // surfaced to the user (§15)
         }
 
         var media = new MediaRef(MediaRefId.New(), path, info);
         history.Execute(new AddMediaCommand(project.MediaPool, media));
-        return media;
+        return new Result(media, null);
     }
 }

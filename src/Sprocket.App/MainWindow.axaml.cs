@@ -563,19 +563,29 @@ public partial class MainWindow : Window
         if (_project is null)
             return;
 
-        int added = 0, failed = 0;
+        int added = 0;
+        var failures = new List<(string Name, string Reason)>();
         foreach (string path in paths)
         {
-            if (MediaImport.TryImport(_project, _history, path) is not null)
+            MediaImport.Result result = MediaImport.TryImport(_project, _history, path);
+            if (result.Succeeded)
                 added++;
             else
-                failed++;
+                failures.Add((Path.GetFileName(path), result.Error ?? "could not open"));
         }
 
         _mediaBrowser?.Refresh();
-        SetStatus(failed == 0
-            ? $"Imported {added} file{(added == 1 ? "" : "s")}."
-            : $"Imported {added}, skipped {failed} (could not open).");
+
+        if (failures.Count == 0)
+            SetStatus($"Imported {added} file{(added == 1 ? "" : "s")}.");
+        else if (paths.Count == 1)
+            SetStatus($"Could not import {failures[0].Name}: {failures[0].Reason}");
+        else
+        {
+            string detail = $"{failures[0].Name}: {failures[0].Reason}"
+                + (failures.Count > 1 ? $" (+{failures.Count - 1} more)" : "");
+            SetStatus($"Imported {added}, {failures.Count} failed — {detail}");
+        }
     }
 
     // ── File ops ────────────────────────────────────────────────────────────────────────────────────

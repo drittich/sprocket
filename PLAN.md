@@ -587,6 +587,55 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
     **Transform** effect (scale / position / rotation / anchor / opacity) as a new built-in
     `IVideoEffect`; **Color** (exposure / contrast / color) on the same SkSL shape; numeric +
     slider editing bound to `AnimatableValue`, with keyframe affordances.
+    - **✅ DONE (`Sprocket.Core/Model` + `Sprocket.Render/SkiaEffectPipeline` + `Sprocket.App/Inspector/*`; 25 new
+      tests — Core +5, Render +8, App +12, all green).** The Inspector placeholder is now a live type-driven
+      property editor, and the two new built-in effects run as real SkSL on the same preview/export pipeline as
+      brightness/fade. Honours the §2 graph (effect registry + parameter metadata are pure data in **Core**; the
+      shaders live in **Render**; the panel lives in **App**). Delivered:
+      - **Two new built-in effects (Core ids + Render SkSL):** `EffectTypeIds.Transform`
+        (scale / positionX·Y / rotation / anchorX·Y / opacity) and `EffectTypeIds.Color`
+        (exposure / contrast / saturation), with their parameter names added to `EffectParamNames`. **Color** is
+        a per-pixel premultiplied-safe shader on the same shape as brightness (exposure = `exp2` gain, contrast
+        about mid-grey, saturation = luma mix, clamped to `[0,a]`). **Transform** is a *geometric* stage: the C#
+        side composes scale→rotate→position about the anchor in canvas space, inverts the affine, and feeds the
+        inverse (`m` 2×2 + `t`) to the SkSL so it maps each output coordinate back to a source coordinate; the
+        root image shader switches to **Decal** tiling whenever a transform is present, so a shrunk/moved layer
+        reveals the background instead of smearing edge pixels. A non-invertible transform (e.g. scale 0) draws
+        nothing. Both chain like brightness/fade in `BuildEffectShader` (which now also receives the layer's dest
+        rect to anchor the transform), so they compose on **preview and export** with no per-frame pixel alloc (§7).
+      - **Type-driven parameter metadata (Core, §4):** `EffectParameterDescriptor` (name, label, default, min,
+        max, step, optional unit) added to every `EffectDescriptor`, and `EffectDescriptor.CreateInstance()` now
+        builds a fresh instance by setting **each declared parameter to its default** (no per-effect factory
+        duplication). The Inspector — and any future plugin (step 23) — gets its editing UI for free from this
+        list. `EffectCatalog` now registers Transform + Color alongside the slice effects.
+      - **`InspectorPanel` (App, built in code like `TimelineControl`/`MediaBrowserPanel`):** a read-only **Clip**
+        section (source / start / duration / trim) plus one **collapsible `Expander` section per effect**, each
+        rendered automatically from the effect's parameter descriptors as a **label + keyframe toggle + numeric
+        box + slider**. A **`+ Effect`** flyout adds any catalog effect; a per-section **✕** removes one. All
+        editing runs through the step-10 command stack: a **slider drag coalesces to one undo entry**
+        (`BeginCoalescing` on pointer-down, sealed on release/capture-lost), the numeric box commits a single
+        edit on Enter/blur, and the model updates live. The **keyframe affordance** (◇/◆) converts a parameter
+        to/from animated and scrubs a keyframe in **at the playhead**; animated values' displayed value tracks
+        the playhead via `OnPlayheadMoved`. Edits during a gesture refresh values rather than rebuilding so the
+        control isn't torn down mid-drag; undo/redo + add/remove rebuild the sections. Unregistered (plugin)
+        effects still get editable sliders via fallback descriptors derived from their stored params.
+      - **Pure, tested helpers (App, mirroring the step-12 `TimelineMath` split):** `InspectorFormat` (value →
+        trimmed string + unit) and `AnimatableEditing` (`SetValueAt` = replace-constant vs upsert-keyframe;
+        `EnableKeyframing` / `DisableKeyframing`; `UpsertKeyframe` preserving the other keyframes). The control's
+        slider/pointer binding rests on these + manual verification (the App is a UI-bound `WinExe`).
+      - **App wiring:** the Inspector is bound to the project, the shared `EditHistory`, and a playhead accessor
+        (`() => engine.Position`); the timeline's `SelectedClipChanged` feeds it the clip, and the engine's
+        `PositionChanged` drives `OnPlayheadMoved`. The effect serializes for free via the existing
+        `EffectInstance` JSON (no persistence change).
+      - **Tests (25):** Core — Transform/Color present + categorised, parameter lists in order, `CreateInstance`
+        sets every default, all defaults within range; Render (headless raster, real SkSL) — exposure ±1 stop
+        doubles/halves, contrast darkens below mid-grey, Color identity is a pass-through, Transform identity
+        leaves the centre, transform opacity halves toward background, a full-width position shift reveals the
+        Decal background, and a Transform→Color chain composes; App — value formatting + units, and the
+        scalar-set / enable / disable / upsert keyframe transforms. Clean build (0 warnings); a
+        `SPROCKET_APP_SECONDS=5` smoke launch starts the shell with the Inspector wired and tears down cleanly
+        (exit 0). Full suite: **241 tests green** (Core 84, Media 24, Render 16, Audio 16, Playback 31, Export 6,
+        Persistence 12, App 52).
 17. **Monitors.** Dual **Source / Program** monitors (same render graph, second surface),
     safe-area / framing-grid overlay, **Fit** zoom, and full transport (jump-to-start/end,
     frame-step, play/pause).

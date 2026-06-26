@@ -8,6 +8,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using Sprocket.App.Inspector;
 using Sprocket.App.MediaBrowser;
 using Sprocket.Core.Commands;
 using Sprocket.Core.Model;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
 
     private ThumbnailService? _thumbnails;
     private MediaBrowserPanel? _mediaBrowser;
+    private InspectorPanel? _inspector;
 
     private bool _suppressSeek;        // guards programmatic scrubber updates from re-triggering a seek
     private bool _exporting;
@@ -69,6 +71,7 @@ public partial class MainWindow : Window
         WireMenu();
         PopulateProjectChrome(status);
         WireMediaBrowser();
+        WireInspector();
 
         _history.Changed += OnHistoryChanged;
         OnHistoryChanged(); // initialise menu-enable + save-state
@@ -227,6 +230,21 @@ public partial class MainWindow : Window
         browser.Attach(_project, _history, _thumbnails);
     }
 
+    /// <summary>
+    /// Binds the type-driven Inspector (PLAN.md step 16): the selected clip's Clip section + one section per
+    /// effect, each built from the effect's parameter descriptors with slider/numeric editing and keyframe
+    /// affordances, all through the command stack. The playhead accessor lets animated values display (and
+    /// keyframe in) at the current time. Independent of playback, so it works even with no engine.
+    /// </summary>
+    private void WireInspector()
+    {
+        if (_project is null || this.FindControl<InspectorPanel>("Inspector") is not { } inspector)
+            return;
+
+        _inspector = inspector;
+        inspector.Attach(_project, _history, () => _engine?.Position ?? Timecode.Zero);
+    }
+
     // ── Transport ───────────────────────────────────────────────────────────────────────────────────
 
     private void WireTransport()
@@ -265,6 +283,7 @@ public partial class MainWindow : Window
             scrubber.Value = Math.Clamp(pos.Ticks, 0, scrubber.Maximum);
             _suppressSeek = false;
             positionText.Text = FormatTime(pos);
+            _inspector?.OnPlayheadMoved(); // animated parameter values track the playhead
         });
 
         _engine.StateChanged += state => Dispatcher.UIThread.Post(() =>
@@ -308,6 +327,7 @@ public partial class MainWindow : Window
         timeline.SelectedClipChanged += clip =>
         {
             _mediaBrowser?.SetSelectedClip(clip); // the Effects browser applies to this clip
+            _inspector?.SetSelectedClip(clip);    // the Inspector edits this clip's properties
             string? name = clip is null ? null : Path.GetFileName(_project!.MediaPool.Get(clip.MediaRefId)?.AbsolutePath ?? "clip");
             SetStatus(name is null ? "" : $"Selected: {name}");
         };

@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sprocket.App"
         xmlns:mb="clr-namespace:Sprocket.App.MediaBrowser"
+        xmlns:insp="clr-namespace:Sprocket.App.Inspector"
         x:Class="Sprocket.App.MainWindow"
         Width="1280" Height="800"
         MinWidth="900" MinHeight="600"
@@ -178,14 +179,13 @@
         <GridSplitter Grid.Column="3" Width="6" Background="Transparent" ResizeDirection="Columns"
                       HorizontalAlignment="Stretch" />
 
-        <!-- Inspector (type-driven properties land in step 16). -->
+        <!-- Inspector: type-driven, collapsible property sections for the selected clip (PLAN.md step 16). -->
         <Border Grid.Column="4" Classes="pane">
           <DockPanel>
             <Border DockPanel.Dock="Top" Classes="paneHeader">
               <TextBlock Classes="title" Text="Inspector" />
             </Border>
-            <TextBlock Classes="placeholder" Margin="16"
-                       Text="No clip selected.&#10;Clip properties (Transform, Color) arrive with the Inspector — step 16." />
+            <insp:InspectorPanel x:Name="Inspector" />
           </DockPanel>
         </Border>
       </Grid>

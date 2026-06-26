@@ -11,7 +11,7 @@
     <SolidColorBrush x:Key="Text" Color="#D5DBE6" />
     <SolidColorBrush x:Key="MutedText" Color="#9AA4B2" />
     <SolidColorBrush x:Key="FaintText" Color="#6A7180" />
-    <SolidColorBrush x:Key="Accent" Color="#6C5CE7" />
+    <SolidColorBrush x:Key="Accent" Color="#4227a3" />
   </Application.Resources>
 
   <Application.Styles>

@@ -40,10 +40,48 @@ half4 main(float2 coord) {
     return src.eval(coord) * opacity;
 }";
 
+    // Color — exposure/contrast/saturation on premultiplied colour (PLAN.md step 16). All three operations are
+    // premultiplied-safe: where alpha is 0 the result stays 0, so they compose correctly over the chain (and a
+    // shrunk Transform's transparent surround stays transparent). rgb is clamped to [0, a] to stay valid premult.
+    private const string ColorSksl = @"
+uniform shader src;
+uniform float exposure;
+uniform float contrast;
+uniform float saturation;
+half4 main(float2 coord) {
+    half4 c = src.eval(coord);
+    float a = c.a;
+    float3 rgb = float3(c.rgb) * exp2(exposure);
+    float mid = 0.5 * a;
+    rgb = (rgb - mid) * contrast + mid;
+    float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    rgb = mix(float3(luma), rgb, saturation);
+    rgb = clamp(rgb, 0.0, a);
+    return half4(half3(rgb), c.a);
+}";
+
+    // Transform — scale/rotate/position the layer (PLAN.md step 16). The C# side builds the forward transform
+    // around the anchor in canvas space, inverts it, and passes the inverse affine (m = 2×2, t = translation)
+    // so the shader maps each output coordinate back to a source coordinate before sampling. The root image
+    // shader uses Decal tiling when a transform is present, so coordinates outside the frame sample transparent
+    // (a shrunk layer reveals the background rather than smearing edge pixels). opacity scales the result.
+    private const string TransformSksl = @"
+uniform shader src;
+uniform float4 m;   // inverse affine: (scaleX, skewX, skewY, scaleY)
+uniform float2 t;   // inverse translation
+uniform float opacity;
+half4 main(float2 coord) {
+    float2 c = float2(m.x * coord.x + m.y * coord.y + t.x,
+                      m.z * coord.x + m.w * coord.y + t.y);
+    return src.eval(c) * opacity;
+}";
+
     private static readonly SKSamplingOptions Sampling = new(SKFilterMode.Linear);
 
     private readonly SKRuntimeEffect _brightness;
     private readonly SKRuntimeEffect _fade;
+    private readonly SKRuntimeEffect _color;
+    private readonly SKRuntimeEffect _transform;
     private readonly SKPaint _paint = new();
     private readonly List<SKShader> _scratch = new(); // shaders built for the current draw, disposed after it
     private bool _disposed;
@@ -55,6 +93,10 @@ half4 main(float2 coord) {
             ?? throw new InvalidOperationException($"Brightness SkSL failed to compile: {brightnessErr}");
         _fade = SKRuntimeEffect.CreateShader(FadeSksl, out string fadeErr)
             ?? throw new InvalidOperationException($"Fade SkSL failed to compile: {fadeErr}");
+        _color = SKRuntimeEffect.CreateShader(ColorSksl, out string colorErr)
+            ?? throw new InvalidOperationException($"Color SkSL failed to compile: {colorErr}");
+        _transform = SKRuntimeEffect.CreateShader(TransformSksl, out string transformErr)
+            ?? throw new InvalidOperationException($"Transform SkSL failed to compile: {transformErr}");
     }
 
     /// <summary>
@@ -128,16 +170,19 @@ half4 main(float2 coord) {
 
         // Root of the chain: the decoded image as a shader, mapped into the destination rectangle so the
         // runtime effects sample it in canvas space (a uniform fit scale, hence one factor for both axes).
+        // When a Transform is in the chain it can sample outside the frame; Decal tiling makes that read as
+        // transparent (so a shrunk layer reveals the background) — otherwise Clamp keeps the step-7 fit-draw.
         float scale = dest.Width / width;
         SKMatrix localMatrix = SKMatrix.CreateScaleTranslation(scale, scale, dest.Left, dest.Top);
+        SKShaderTileMode tile = HasTransform(effects) ? SKShaderTileMode.Decal : SKShaderTileMode.Clamp;
 
         _scratch.Clear();
-        SKShader shader = image.ToShader(SKShaderTileMode.Clamp, SKShaderTileMode.Clamp, Sampling, localMatrix);
+        SKShader shader = image.ToShader(tile, tile, Sampling, localMatrix);
         _scratch.Add(shader);
 
         foreach (ResolvedEffect effect in effects)
         {
-            SKShader? next = BuildEffectShader(effect, shader);
+            SKShader? next = BuildEffectShader(effect, shader, dest);
             if (next is null)
                 continue; // unknown effect id: pass through unchanged
             shader = next;
@@ -164,11 +209,20 @@ half4 main(float2 coord) {
         _paint.BlendMode = SKBlendMode.SrcOver;
     }
 
+    private static bool HasTransform(IReadOnlyList<ResolvedEffect> effects)
+    {
+        for (int i = 0; i < effects.Count; i++)
+            if (effects[i].EffectTypeId == EffectTypeIds.Transform)
+                return true;
+        return false;
+    }
+
     /// <summary>
     /// Builds the shader for one effect wrapping <paramref name="src"/> (the previous stage), or
-    /// <see langword="null"/> for an effect type with no Render binding (skipped).
+    /// <see langword="null"/> for an effect type with no Render binding (skipped). <paramref name="dest"/> is
+    /// the layer's canvas rectangle, needed to anchor the geometric <see cref="EffectTypeIds.Transform"/>.
     /// </summary>
-    private SKShader? BuildEffectShader(ResolvedEffect effect, SKShader src)
+    private SKShader? BuildEffectShader(ResolvedEffect effect, SKShader src, SKRect dest)
     {
         switch (effect.EffectTypeId)
         {
@@ -190,9 +244,64 @@ half4 main(float2 coord) {
                 return _fade.ToShader(uniforms, children);
             }
 
+            case EffectTypeIds.Color:
+            {
+                var uniforms = new SKRuntimeEffectUniforms(_color)
+                {
+                    ["exposure"] = (float)effect.Get(EffectParamNames.Exposure, 0.0),
+                    ["contrast"] = (float)Math.Max(0.0, effect.Get(EffectParamNames.Contrast, 1.0)),
+                    ["saturation"] = (float)Math.Max(0.0, effect.Get(EffectParamNames.Saturation, 1.0)),
+                };
+                var children = new SKRuntimeEffectChildren(_color) { ["src"] = src };
+                return _color.ToShader(uniforms, children);
+            }
+
+            case EffectTypeIds.Transform:
+                return BuildTransformShader(effect, src, dest);
+
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Builds the geometric transform shader: composes scale → rotate → position about the anchor (in canvas
+    /// space), inverts it, and feeds the inverse affine to the SkSL so it can map output coordinates back to
+    /// source coordinates. A degenerate (non-invertible, e.g. scale 0) transform draws nothing.
+    /// </summary>
+    private SKShader? BuildTransformShader(ResolvedEffect effect, SKShader src, SKRect dest)
+    {
+        double scale = effect.Get(EffectParamNames.Scale, 1.0);
+        double posX = effect.Get(EffectParamNames.PositionX, 0.0);
+        double posY = effect.Get(EffectParamNames.PositionY, 0.0);
+        double rotation = effect.Get(EffectParamNames.Rotation, 0.0);
+        double anchorX = effect.Get(EffectParamNames.AnchorX, 0.5);
+        double anchorY = effect.Get(EffectParamNames.AnchorY, 0.5);
+        float opacity = (float)Math.Clamp(effect.Get(EffectParamNames.Opacity, 1.0), 0.0, 1.0);
+
+        // Anchor + position in canvas space (position is a fraction of the layer rectangle).
+        float ax = dest.Left + (float)anchorX * dest.Width;
+        float ay = dest.Top + (float)anchorY * dest.Height;
+        float offX = (float)posX * dest.Width;
+        float offY = (float)posY * dest.Height;
+
+        // Forward: translate anchor→origin, scale, rotate, translate back + position offset.
+        SKMatrix forward = SKMatrix.CreateTranslation(-ax, -ay);
+        forward = SKMatrix.Concat(SKMatrix.CreateScale((float)scale, (float)scale), forward);
+        forward = SKMatrix.Concat(SKMatrix.CreateRotationDegrees((float)rotation), forward);
+        forward = SKMatrix.Concat(SKMatrix.CreateTranslation(ax + offX, ay + offY), forward);
+
+        if (!forward.TryInvert(out SKMatrix inv))
+            return null; // collapsed transform (e.g. scale 0): contributes nothing
+
+        var uniforms = new SKRuntimeEffectUniforms(_transform)
+        {
+            ["m"] = new[] { inv.ScaleX, inv.SkewX, inv.SkewY, inv.ScaleY },
+            ["t"] = new[] { inv.TransX, inv.TransY },
+            ["opacity"] = opacity,
+        };
+        var children = new SKRuntimeEffectChildren(_transform) { ["src"] = src };
+        return _transform.ToShader(uniforms, children);
     }
 
     /// <inheritdoc />
@@ -208,5 +317,7 @@ half4 main(float2 coord) {
         _paint.Dispose();
         _brightness.Dispose();
         _fade.Dispose();
+        _color.Dispose();
+        _transform.Dispose();
     }
 }

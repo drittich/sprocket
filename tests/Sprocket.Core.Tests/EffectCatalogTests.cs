@@ -56,4 +56,70 @@ public class EffectCatalogTests
         Assert.All(EffectCatalog.InCategory(EffectCategory.Color), d => Assert.Equal(EffectCategory.Color, d.Category));
         Assert.Contains(EffectCatalog.InCategory(EffectCategory.Color), d => d.Id == EffectTypeIds.Brightness);
     }
+
+    // ── Step 16: Transform & Color effects, type-driven parameter descriptors ──────────────────────────
+
+    [Fact]
+    public void BuiltIns_Contains_The_Step16_Effects()
+    {
+        Assert.Contains(EffectCatalog.BuiltIns, d => d.Id == EffectTypeIds.Transform);
+        Assert.Contains(EffectCatalog.BuiltIns, d => d.Id == EffectTypeIds.Color);
+
+        Assert.Equal(EffectCategory.Video, EffectCatalog.Find(EffectTypeIds.Transform)!.Category);
+        Assert.Equal(EffectCategory.Color, EffectCatalog.Find(EffectTypeIds.Color)!.Category);
+    }
+
+    [Fact]
+    public void Transform_Exposes_Its_Geometric_Parameters()
+    {
+        EffectDescriptor transform = EffectCatalog.Find(EffectTypeIds.Transform)!;
+        string[] names = transform.Parameters.Select(p => p.Name).ToArray();
+        Assert.Equal(
+            new[]
+            {
+                EffectParamNames.Scale, EffectParamNames.PositionX, EffectParamNames.PositionY,
+                EffectParamNames.Rotation, EffectParamNames.AnchorX, EffectParamNames.AnchorY,
+                EffectParamNames.Opacity,
+            },
+            names);
+    }
+
+    [Fact]
+    public void Color_Exposes_Exposure_Contrast_Saturation()
+    {
+        EffectDescriptor color = EffectCatalog.Find(EffectTypeIds.Color)!;
+        string[] names = color.Parameters.Select(p => p.Name).ToArray();
+        Assert.Equal(
+            new[] { EffectParamNames.Exposure, EffectParamNames.Contrast, EffectParamNames.Saturation },
+            names);
+    }
+
+    [Fact]
+    public void CreateInstance_Sets_Every_Descriptor_Parameter_To_Its_Default()
+    {
+        EffectDescriptor transform = EffectCatalog.Find(EffectTypeIds.Transform)!;
+        EffectInstance instance = transform.CreateInstance();
+
+        // Every declared parameter is present, and at its declared default value.
+        foreach (EffectParameterDescriptor p in transform.Parameters)
+        {
+            Assert.True(instance.Parameters.ContainsKey(p.Name));
+            Assert.Equal(p.Default, instance.Parameters[p.Name].Evaluate(Sprocket.Core.Timing.Timecode.Zero), 5);
+        }
+
+        // Scale/opacity default to identity; anchor to centre.
+        Assert.Equal(1.0, instance.Parameters[EffectParamNames.Scale].Evaluate(Sprocket.Core.Timing.Timecode.Zero), 5);
+        Assert.Equal(0.5, instance.Parameters[EffectParamNames.AnchorX].Evaluate(Sprocket.Core.Timing.Timecode.Zero), 5);
+    }
+
+    [Fact]
+    public void Parameter_Defaults_Are_Within_Their_Declared_Range()
+    {
+        foreach (EffectDescriptor d in EffectCatalog.BuiltIns)
+            foreach (EffectParameterDescriptor p in d.Parameters)
+            {
+                Assert.True(p.Min <= p.Max, $"{d.Id}.{p.Name} has Min > Max");
+                Assert.InRange(p.Default, p.Min, p.Max);
+            }
+    }
 }

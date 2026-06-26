@@ -14,6 +14,22 @@ public static class EffectTypeIds
     /// parameter, <see cref="EffectParamNames.Opacity"/>, animated 1→0 (or 0→1) over a range.
     /// </summary>
     public const string Fade = "builtin.fade";
+
+    /// <summary>
+    /// Geometric transform: scale, position, rotation around an anchor, plus layer opacity (PLAN.md step 16).
+    /// Parameters: <see cref="EffectParamNames.Scale"/>, <see cref="EffectParamNames.PositionX"/>/
+    /// <see cref="EffectParamNames.PositionY"/>, <see cref="EffectParamNames.Rotation"/>,
+    /// <see cref="EffectParamNames.AnchorX"/>/<see cref="EffectParamNames.AnchorY"/>, and
+    /// <see cref="EffectParamNames.Opacity"/>.
+    /// </summary>
+    public const string Transform = "builtin.transform";
+
+    /// <summary>
+    /// Colour / tone adjustment on the same per-pixel SkSL shape as brightness (PLAN.md step 16).
+    /// Parameters: <see cref="EffectParamNames.Exposure"/> (stops), <see cref="EffectParamNames.Contrast"/>,
+    /// and <see cref="EffectParamNames.Saturation"/>.
+    /// </summary>
+    public const string Color = "builtin.color";
 }
 
 /// <summary>Well-known parameter names used by the built-in effects.</summary>
@@ -22,8 +38,36 @@ public static class EffectParamNames
     /// <summary>Brightness multiplier (1.0 = unchanged).</summary>
     public const string Amount = "amount";
 
-    /// <summary>Opacity / gain multiplier in [0, 1] — used by <see cref="EffectTypeIds.Fade"/>.</summary>
+    /// <summary>Opacity / gain multiplier in [0, 1] — used by <see cref="EffectTypeIds.Fade"/> and
+    /// <see cref="EffectTypeIds.Transform"/>.</summary>
     public const string Opacity = "opacity";
+
+    /// <summary>Uniform scale factor (1.0 = unchanged) — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string Scale = "scale";
+
+    /// <summary>Horizontal position offset, as a fraction of the frame width — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string PositionX = "positionX";
+
+    /// <summary>Vertical position offset, as a fraction of the frame height — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string PositionY = "positionY";
+
+    /// <summary>Rotation in degrees, clockwise — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string Rotation = "rotation";
+
+    /// <summary>Anchor X in [0, 1] across the frame (0.5 = centre) — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string AnchorX = "anchorX";
+
+    /// <summary>Anchor Y in [0, 1] down the frame (0.5 = centre) — <see cref="EffectTypeIds.Transform"/>.</summary>
+    public const string AnchorY = "anchorY";
+
+    /// <summary>Exposure in stops (0 = unchanged) — <see cref="EffectTypeIds.Color"/>.</summary>
+    public const string Exposure = "exposure";
+
+    /// <summary>Contrast around mid-grey (1.0 = unchanged) — <see cref="EffectTypeIds.Color"/>.</summary>
+    public const string Contrast = "contrast";
+
+    /// <summary>Saturation (1.0 = unchanged, 0 = greyscale) — <see cref="EffectTypeIds.Color"/>.</summary>
+    public const string Saturation = "saturation";
 }
 
 /// <summary>

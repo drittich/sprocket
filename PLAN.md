@@ -545,6 +545,44 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
 15. **Media bin & browsers.** Poster-frame thumbnails, waveform rendering, search, and
     format/alpha badges (`4K · 1080p · WAV · Alpha`) over the `MediaPool`; an **Effects** browser
     over the `IVideoEffect` registry; the **Audio** tab.
+    - **✅ DONE (`src/Sprocket.Core/Model/EffectCatalog.cs`; `src/Sprocket.App/MediaBrowser/*`; 28 new tests —
+      Core +5, App +23, all green).** The Project panel's placeholder list grew into the tabbed browser of
+      [UI.md §3.3](UI.md), editing the real model through the step-10 command stack. Honours the §2 graph
+      (the registry is pure data in **Core**; the browser/thumbnails live in **App** over Media + Render + Skia).
+      Delivered:
+      - **Effect registry (Core, §4/§7):** `EffectCatalog` + `EffectDescriptor` (id, display name,
+        `EffectCategory`, description, and a default-instance factory) — the "`IVideoEffect` registry" the
+        Effects browser lists over. Today it registers the two slice effects (Brightness → Color, Fade → Video);
+        the Transform/Color effects (step 16) and plugins (step 23) register here as they land, so every browser
+        and the Inspector draw from one list instead of hard-coding the built-ins. `Find`/`DisplayName` fall back
+        to the raw id for unregistered (plugin) effects so they still label.
+      - **Tabbed media browser (`MediaBrowserPanel`, built in code like `TimelineControl`/`PreviewSurface`):**
+        **Media** (poster/waveform thumbnails + metadata badges + a live search filter), **Effects** (the catalog,
+        **double-click adds the effect to the selected timeline clip** via `AddEffectCommand` — undoable, dirty
+        flips), a deferred **Transitions** placeholder (honest — step 21), and an **Audio** tab listing the bin's
+        audio sources as waveforms. The timeline's `SelectedClipChanged` feeds the browser the apply target;
+        the pane header's item count and status hints route back to the shell.
+      - **Thumbnails (`ThumbnailService`):** a poster frame (software-decode one frame via `MediaSource`, seek a
+        little in, Skia fit-draw → PNG → Avalonia `Bitmap`) and a waveform (read mono PCM via `AudioSource`,
+        reduce to per-column peaks, draw bars). Generated **off the UI thread** and **cached by source + size**;
+        offline/undecodable sources fall back to a glyph rather than failing (§15). A one-off thumbnail is a
+        deliberate managed copy — **not** the per-frame render hot path — so §1 is unaffected (documented in the
+        service); poster decode forces the software path for determinism. Disposed with the window.
+      - **Pure, tested helpers (App, mirroring the step-12 `TimelineMath` split):** `MediaBadges` (duration +
+        resolution tier `4K/1080p/720p/W×H` for video, format tag for audio — the **Alpha** badge's slot waits on
+        the premultiplied-alpha path, step 20), `WaveformBuilder` (interleaved PCM → mono-mixed per-bucket peaks
+        in [0,1]), and `MediaSearch` (case-insensitive substring filter). The thumbnail decode + the panel's
+        rendering rest on these + manual verification (the App is a UI-bound `WinExe`).
+      - **Tests (28):** `EffectCatalog` (built-ins present, `Find`/`DisplayName` incl. unknown-id fallback,
+        factory builds a fresh instance with default params, category filter); `MediaBadges` (resolution tiers,
+        duration `m:ss`, format tag, video-vs-audio describe), `WaveformBuilder` (bucket count, peak capture,
+        stereo mono-mix, empty → zeros, argument validation), `MediaSearch` (empty matches all, case-insensitive
+        substring, empty-text). Clean build (0 warnings); a `SPROCKET_APP_SECONDS=6` smoke launch starts the
+        shell, builds thumbnails, and tears down cleanly (exit 0). Full suite: **216 tests green** (Core 79,
+        Media 24, Render 8, Audio 16, Playback 31, Export 6, Persistence 12, App 40).
+      - **Note:** import/drag-drop of new media (file dialog → `MediaPool`) and dragging an effect/clip onto the
+        timeline are follow-on conveniences; today's browser lists the bootstrapped source(s) and applies effects
+        by selection. The waveform reads a bounded lead-in for very long sources (summary thumbnail).
 16. **Inspector & expanded effects.** Type-driven inspector with collapsible sections;
     **Transform** effect (scale / position / rotation / anchor / opacity) as a new built-in
     `IVideoEffect`; **Color** (exposure / contrast / color) on the same SkSL shape; numeric +

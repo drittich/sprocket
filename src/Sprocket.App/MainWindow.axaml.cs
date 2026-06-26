@@ -8,6 +8,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using Sprocket.App.MediaBrowser;
 using Sprocket.Core.Commands;
 using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
@@ -29,6 +30,9 @@ public partial class MainWindow : Window
     private readonly PlaybackEngine? _engine;
     private readonly Project? _project;
     private readonly EditHistory _history = new();
+
+    private ThumbnailService? _thumbnails;
+    private MediaBrowserPanel? _mediaBrowser;
 
     private bool _suppressSeek;        // guards programmatic scrubber updates from re-triggering a seek
     private bool _exporting;
@@ -64,6 +68,7 @@ public partial class MainWindow : Window
         WireWindowChrome();
         WireMenu();
         PopulateProjectChrome(status);
+        WireMediaBrowser();
 
         _history.Changed += OnHistoryChanged;
         OnHistoryChanged(); // initialise menu-enable + save-state
@@ -109,6 +114,12 @@ public partial class MainWindow : Window
             if (_maxButton is not null)
                 _maxButton.Content = WindowState == WindowState.Maximized ? "❐" : "▢";
         }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _thumbnails?.Dispose(); // releases the cached thumbnail bitmaps
+        base.OnClosed(e);
     }
 
     // ── Menu + keyboard ────────────────────────────────────────────────────────────────────────────
@@ -176,12 +187,6 @@ public partial class MainWindow : Window
         _projectName = mediaPath is null ? "Untitled" : Path.GetFileNameWithoutExtension(mediaPath);
         this.FindControl<TextBlock>("ProjectTitleText")!.Text = _projectName;
 
-        var media = _project.MediaPool.Items.ToList();
-        this.FindControl<ListBox>("MediaList")!.ItemsSource =
-            media.Select(m => Path.GetFileName(m.AbsolutePath)).ToList();
-        this.FindControl<TextBlock>("ProjectItemsText")!.Text =
-            media.Count == 1 ? "1 item" : $"{media.Count} items";
-
         Timeline timeline = _project.Timeline;
         double fps = Fps(timeline.FrameRate);
         (int w, int h) = (timeline.Resolution.Width, timeline.Resolution.Height);
@@ -200,6 +205,26 @@ public partial class MainWindow : Window
             return;
         int tracks = _project.Timeline.Tracks.Count;
         _timelineHeader!.Text = $"Timeline · {_projectName} · {tracks} track{(tracks == 1 ? "" : "s")}";
+    }
+
+    /// <summary>
+    /// Binds the Project panel's tabbed media browser (PLAN.md step 15): the media bin (poster/waveform
+    /// thumbnails + badges + search), the Effects browser (double-click adds to the selected clip via the
+    /// command stack), and the Audio tab. The browser reports its item count to the pane header and routes
+    /// hints to the status strip. Independent of playback, so the bin works even when no engine is available.
+    /// </summary>
+    private void WireMediaBrowser()
+    {
+        if (_project is null || this.FindControl<MediaBrowserPanel>("MediaBrowser") is not { } browser)
+            return;
+
+        _mediaBrowser = browser;
+        _thumbnails = new ThumbnailService();
+
+        var itemsText = this.FindControl<TextBlock>("ProjectItemsText")!;
+        browser.ItemCountChanged += n => itemsText.Text = n == 1 ? "1 item" : $"{n} items";
+        browser.Status += SetStatus;
+        browser.Attach(_project, _history, _thumbnails);
     }
 
     // ── Transport ───────────────────────────────────────────────────────────────────────────────────
@@ -282,6 +307,7 @@ public partial class MainWindow : Window
 
         timeline.SelectedClipChanged += clip =>
         {
+            _mediaBrowser?.SetSelectedClip(clip); // the Effects browser applies to this clip
             string? name = clip is null ? null : Path.GetFileName(_project!.MediaPool.Get(clip.MediaRefId)?.AbsolutePath ?? "clip");
             SetStatus(name is null ? "" : $"Selected: {name}");
         };

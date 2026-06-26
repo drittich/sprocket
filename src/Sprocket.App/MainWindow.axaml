@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sprocket.App"
+        xmlns:mb="clr-namespace:Sprocket.App.MediaBrowser"
         x:Class="Sprocket.App.MainWindow"
         Width="1280" Height="800"
         MinWidth="900" MinHeight="600"
@@ -120,7 +121,7 @@
 
       <Grid Grid.Row="0" ColumnDefinitions="240,6,*,6,300">
 
-        <!-- Project panel (media bin lands in step 15). -->
+        <!-- Project panel: tabbed media bin / effects / transitions / audio browser (PLAN.md step 15). -->
         <Border Grid.Column="0" Classes="pane">
           <DockPanel>
             <Border DockPanel.Dock="Top" Classes="paneHeader">
@@ -131,16 +132,7 @@
                            Text="0 items" />
               </Grid>
             </Border>
-            <Border DockPanel.Dock="Top" Background="{DynamicResource PanelBg}" Padding="8,6">
-              <StackPanel Orientation="Horizontal" Spacing="12">
-                <TextBlock Text="Media" Foreground="{DynamicResource Text}" FontSize="12" />
-                <TextBlock Text="Effects" Foreground="{DynamicResource FaintText}" FontSize="12" />
-                <TextBlock Text="Transitions" Foreground="{DynamicResource FaintText}" FontSize="12" />
-                <TextBlock Text="Audio" Foreground="{DynamicResource FaintText}" FontSize="12" />
-              </StackPanel>
-            </Border>
-            <ListBox x:Name="MediaList" Background="Transparent" Foreground="{DynamicResource MutedText}"
-                     FontSize="12" BorderThickness="0" />
+            <mb:MediaBrowserPanel x:Name="MediaBrowser" />
           </DockPanel>
         </Border>
 

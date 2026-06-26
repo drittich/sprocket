@@ -5,6 +5,7 @@
     <Project Path="src/Sprocket.Render/Sprocket.Render.csproj" />
     <Project Path="src/Sprocket.Audio/Sprocket.Audio.csproj" />
     <Project Path="src/Sprocket.Playback/Sprocket.Playback.csproj" />
+    <Project Path="src/Sprocket.Export/Sprocket.Export.csproj" />
     <Project Path="src/Sprocket.App/Sprocket.App.csproj" />
     <Project Path="src/Sprocket.Spike/Sprocket.Spike.csproj" />
   </Folder>
@@ -14,5 +15,6 @@
     <Project Path="tests/Sprocket.Render.Tests/Sprocket.Render.Tests.csproj" />
     <Project Path="tests/Sprocket.Audio.Tests/Sprocket.Audio.Tests.csproj" />
     <Project Path="tests/Sprocket.Playback.Tests/Sprocket.Playback.Tests.csproj" />
+    <Project Path="tests/Sprocket.Export.Tests/Sprocket.Export.Tests.csproj" />
   </Folder>
 </Solution>

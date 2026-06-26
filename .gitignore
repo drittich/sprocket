@@ -1,22 +1,6 @@
 .impeccable/hook.cache.json
 .vs/
-src/Sprocket.App/bin/
-src/Sprocket.App/obj/
-src/Sprocket.Audio/bin/
-src/Sprocket.Audio/obj/
-src/Sprocket.Core/bin/
-src/Sprocket.Core/obj/
-src/Sprocket.Media/bin/
-src/Sprocket.Media/obj/
-src/Sprocket.Playback/bin/
-src/Sprocket.Playback/obj/
-src/Sprocket.Render/bin/
-src/Sprocket.Render/obj/
-src/Sprocket.Spike/bin/
-src/Sprocket.Spike/obj/
-tests/Sprocket.Core.Tests/bin/
-tests/Sprocket.Core.Tests/obj/
-tests/Sprocket.Media.Tests/bin/
-tests/Sprocket.Media.Tests/obj/
-tests/Sprocket.Playback.Tests/bin/
-tests/Sprocket.Playback.Tests/obj/
+
+# Build output — ignore for every project (src and tests), current and future.
+**/bin/
+**/obj/

@@ -1,9 +1,14 @@
 using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
+using Sprocket.Export;
 using Sprocket.Playback;
 
 namespace Sprocket.App;
@@ -11,21 +16,25 @@ namespace Sprocket.App;
 public partial class MainWindow : Window
 {
     private readonly PlaybackEngine? _engine;
+    private readonly Project? _project;
     private bool _suppressSeek;   // guards programmatic scrubber updates from re-triggering a seek
+    private bool _exporting;
 
     // Parameterless ctor for the XAML designer / tooling.
-    public MainWindow() : this(null, string.Empty) { }
+    public MainWindow() : this(null, null, string.Empty) { }
 
-    public MainWindow(PlaybackEngine? engine, string status)
+    public MainWindow(PlaybackEngine? engine, Project? project, string status)
     {
         AvaloniaXamlLoader.Load(this);
         _engine = engine;
+        _project = project;
 
         var statusText = this.FindControl<TextBlock>("StatusText")!;
         var playPause = this.FindControl<Button>("PlayPauseButton")!;
         var scrubber = this.FindControl<Slider>("Scrubber")!;
         var positionText = this.FindControl<TextBlock>("PositionText")!;
         var durationText = this.FindControl<TextBlock>("DurationText")!;
+        var exportButton = this.FindControl<Button>("ExportButton")!;
         var preview = this.FindControl<PreviewSurface>("Preview")!;
 
         statusText.Text = status;
@@ -34,8 +43,12 @@ public partial class MainWindow : Window
         {
             playPause.IsEnabled = false;
             scrubber.IsEnabled = false;
+            exportButton.IsEnabled = false;
             return;
         }
+
+        exportButton.IsEnabled = _project is not null;
+        exportButton.Click += (_, _) => _ = ExportAsync(exportButton, statusText);
 
         preview.Attach(_engine);
 
@@ -76,6 +89,39 @@ public partial class MainWindow : Window
         // Optional timed auto-exit for unattended profiling runs: SPROCKET_APP_SECONDS=12
         if (int.TryParse(Environment.GetEnvironmentVariable("SPROCKET_APP_SECONDS"), out int seconds) && seconds > 0)
             DispatcherTimer.RunOnce(Close, TimeSpan.FromSeconds(seconds));
+    }
+
+    /// <summary>
+    /// Exports the loaded project to an <c>.mp4</c> next to the app output on a background thread (export is
+    /// CPU-bound and must not block the UI), pausing playback first and streaming progress to the status strip.
+    /// The actual pipeline lives in <see cref="VideoExporter"/>; this is just the composition-root trigger.
+    /// </summary>
+    private async Task ExportAsync(Button exportButton, TextBlock statusText)
+    {
+        if (_exporting || _project is null)
+            return;
+
+        _exporting = true;
+        exportButton.IsEnabled = false;
+        _engine?.Pause();
+
+        string outputPath = Path.Combine(AppContext.BaseDirectory, "export.mp4");
+        var progress = new Progress<double>(p => statusText.Text = $"Exporting… {p * 100:0}%");
+
+        try
+        {
+            await Task.Run(() => VideoExporter.Export(_project, outputPath, progress: progress));
+            statusText.Text = $"Exported → {outputPath}";
+        }
+        catch (Exception ex)
+        {
+            statusText.Text = $"Export failed: {ex.Message}";
+        }
+        finally
+        {
+            _exporting = false;
+            exportButton.IsEnabled = true;
+        }
     }
 
     private static string FormatTime(Timecode t)

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Sprocket.Export — the offline export pipeline (PLAN.md step 8, ARCHITECTURE.md §5/§11).
+    Drives the SAME render graph used by preview, but offline at full source resolution: for every
+    output frame it resolves the VideoFramePlan, renders the layers onto an offscreen Skia surface
+    (reusing the step-7 SkiaEffectPipeline), reads back the pixels, and feeds them — plus the mixed
+    audio (Sprocket.Audio) — to the Sprocket.Media MediaEncoder (H.264 + AAC → MP4).
+
+    Sits above Core + Media + Render + Audio (mirroring how Playback composes Core+Media+Render),
+    keeping the App composition root thin and the whole export path headlessly testable. The actual
+    FFmpeg muxing lives in Sprocket.Media (§11); the Skia compositing in Sprocket.Render.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sprocket.Core\Sprocket.Core.csproj" />
+    <ProjectReference Include="..\Sprocket.Media\Sprocket.Media.csproj" />
+    <ProjectReference Include="..\Sprocket.Render\Sprocket.Render.csproj" />
+    <ProjectReference Include="..\Sprocket.Audio\Sprocket.Audio.csproj" />
+  </ItemGroup>
+
+</Project>

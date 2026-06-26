@@ -17,7 +17,7 @@
 
     <!-- Transport (bottom): play/pause, position, scrubber, duration. -->
     <Border DockPanel.Dock="Bottom" Background="#16161C" Padding="14,10">
-      <Grid ColumnDefinitions="Auto,Auto,*,Auto" VerticalAlignment="Center">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto" VerticalAlignment="Center">
         <Button x:Name="PlayPauseButton" Grid.Column="0"
                 Width="44" Height="36"
                 Padding="0"
@@ -35,11 +35,17 @@
                 Minimum="0" Maximum="1" Value="0"
                 VerticalAlignment="Center" />
         <TextBlock x:Name="DurationText" Grid.Column="3"
-                   Margin="10,0,0,0"
+                   Margin="10,0,14,0"
                    VerticalAlignment="Center"
                    FontFamily="Cascadia Code,Consolas,monospace"
                    Foreground="#8A93A2"
                    Text="0:00.00" />
+        <Button x:Name="ExportButton" Grid.Column="4"
+                Height="36"
+                Padding="14,0"
+                VerticalContentAlignment="Center"
+                FontSize="13"
+                Content="Export" />
       </Grid>
     </Border>
 

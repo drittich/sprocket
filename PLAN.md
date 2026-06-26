@@ -302,6 +302,43 @@ Linux and macOS rest on bundling the native libs + on-device verification — se
        brightness→fade **chain**, unknown-effect pass-through, and degenerate-bounds no-op. Full suite: **117
        tests green** (Core 42, Media 24, Audio 16, Render 8, Playback 27).
 8. Export pipeline (full-res encode).
+   - **✅ DONE (`src/Sprocket.Media/MediaEncoder.cs` + new `src/Sprocket.Export`; 6 tests in
+     `tests/Sprocket.Export.Tests`).** The slice now renders the timeline offline to a full-resolution
+     H.264/AAC MP4 through the **same render graph** that drives preview (ARCHITECTURE.md §5) — slice DoD #7.
+     The FFmpeg muxing stays in `Sprocket.Media`; a new `Sprocket.Export` project orchestrates over Core +
+     Media + Render + Audio (it sits beside Playback in the §2 graph). Delivered:
+     - **`MediaEncoder`** (Media) — the reverse of `MediaSource`/`AudioSource` (§11 "Encoder: mirror in
+       reverse"). Allocates an MP4 `FormatContext`, opens an **H.264** (`libx264`, CRF-quality by default)
+       video stream and an optional **AAC** audio stream, writes the header, then accepts composited RGBA
+       frames (staged → swscale → yuv420p, PTS = frame index in a 1/fps time base) and interleaved float PCM
+       (swresample flt→fltp planar, PTS = sample index in a 1/sampleRate time base). Packets are stamped and
+       `InterleavedWritePacket`'d; `Finish()` flushes both encoders and writes the trailer. Sets
+       `AV_CODEC_FLAG.GlobalHeader` when the muxer wants it and exposes the encoder's `AudioFrameSize`. All
+       libav* interop stays behind this one class — Export never sees FFmpeg.
+     - **`Sprocket.Export.VideoExporter`** — the offline driver: for each output frame it calls
+       `RenderGraph.PlanVideoFrame` (the identical resolution step preview uses), clears a full-res **raster**
+       `SKSurface` to black, draws each resolved layer with the step-7 effect shaders, reads the pixels back
+       (`SKPixmap`, no extra copy), and writes them to the encoder; audio is mixed by `AudioMixer` over the
+       same timeline. A single interleave loop emits whichever stream's next packet is earlier on the timeline
+       (video frame vs. AAC-sized audio chunk) so the muxer interleaves cleanly. Raster (not GPU) + **software,
+       full-resolution decode** (`HardwareAccelMode.Disabled`, never proxies §17) makes the output
+       bit-deterministic — the precondition for golden-frame testing. Offline/missing sources render as
+       black/silence rather than failing (§15); progress + cancellation are honoured between frames.
+     - **`ExportFrameProvider`** — a per-source forward decoder with a one-frame look-ahead: returns the latest
+       decoded frame at/just before each requested source time, seeking only on a backward jump. Owns its
+       `MediaSource` + `VideoFramePool`.
+     - **`SkiaEffectPipeline.DrawLayer`** (Render, refactor) — the per-layer draw was factored out of `Present`
+       into a non-clearing `DrawLayer` (with track opacity via paint alpha + blend mode), so export clears once
+       then composites N layers bottom→top while preview still clears-then-draws its single layer. Multi-layer
+       export now works for free; the single-layer hot path is byte-for-byte the step-7 path.
+     - **App wiring** — `MediaBootstrap` now returns the `Project`; `MainWindow` has an **Export** button that
+       runs `VideoExporter` on a background thread (pausing playback, streaming `0–100%` to the status strip)
+       to `export.mp4` in the app dir — slice DoD #7 demonstrable in the running app.
+     - **Tests (6, real encode→decode round-trips)** — export the fixture and reopen it: format/dimensions/fps/
+       duration match and audio is present; full frame count is rendered; a **brightness-0.3 clip exports a
+       visibly darker first frame than an unmodified one** (proving the effect shaders run on the export path);
+       a project with no audio track yields a video-only file; progress reaches completion; an empty timeline
+       throws. Full suite: **123 tests green** (Core 42, Media 24, Audio 16, Render 8, Playback 27, Export 6).
 9. Project save/load (JSON).
 
 ## Post-slice build order (target UI & full feature set)

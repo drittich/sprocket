@@ -83,14 +83,46 @@ half4 main(float2 coord) {
             return;
 
         SKRect dest = FramePresenter.ComputeFitRect(bounds, width, height);
+        DrawLayer(canvas, dest, pixels, rowBytes, width, height, effects);
+    }
 
+    /// <summary>
+    /// Draws one decoded RGBA8888 layer (<paramref name="width"/>×<paramref name="height"/> at
+    /// <paramref name="pixels"/>, stride <paramref name="rowBytes"/>) into <paramref name="dest"/> with its
+    /// <paramref name="effects"/> chain, compositing onto whatever is already on the canvas with
+    /// <paramref name="opacity"/> and <paramref name="blend"/> — <b>without clearing</b>. This is the
+    /// per-layer primitive shared by the single-layer preview (<see cref="Present"/>, which clears first) and
+    /// the export path, which clears once then draws each resolved layer bottom→top. The native pixels are
+    /// wrapped, not copied (§1), and must remain valid for the call. Does nothing for a degenerate layer.
+    /// </summary>
+    public void DrawLayer(
+        SKCanvas canvas,
+        SKRect dest,
+        nint pixels,
+        int rowBytes,
+        int width,
+        int height,
+        IReadOnlyList<ResolvedEffect> effects,
+        double opacity = 1.0,
+        SKBlendMode blend = SKBlendMode.SrcOver)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(canvas);
+
+        if (pixels == 0 || width <= 0 || height <= 0 || dest.Width <= 0 || dest.Height <= 0)
+            return;
+
+        byte alpha = (byte)Math.Clamp(opacity * 255.0, 0, 255);
         var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
         using SKImage image = SKImage.FromPixels(info, pixels, rowBytes);
 
-        // No effects → the plain fit-draw, identical to the allocation-clean step-4 path.
+        // No effects → a plain image draw (the allocation-clean step-4 path). Track opacity/blend still apply.
         if (effects is null || effects.Count == 0)
         {
-            canvas.DrawImage(image, dest, Sampling);
+            _paint.Color = SKColors.White.WithAlpha(alpha); // paint alpha modulates the image when shader is null
+            _paint.BlendMode = blend;
+            canvas.DrawImage(image, dest, Sampling, _paint);
+            ResetPaint();
             return;
         }
 
@@ -113,14 +145,23 @@ half4 main(float2 coord) {
         }
 
         _paint.Shader = shader;
+        _paint.Color = SKColors.White.WithAlpha(alpha); // paint alpha modulates the shader output
+        _paint.BlendMode = blend;
         canvas.DrawRect(dest, _paint);
-        _paint.Shader = null;
+        ResetPaint();
 
         // The draw has consumed the shader graph; release the per-frame shader objects (the image is freed by
         // the using above). Intermediate child shaders are not auto-disposed by their parents, so dispose all.
         foreach (SKShader s in _scratch)
             s.Dispose();
         _scratch.Clear();
+    }
+
+    private void ResetPaint()
+    {
+        _paint.Shader = null;
+        _paint.Color = SKColors.White;
+        _paint.BlendMode = SKBlendMode.SrcOver;
     }
 
     /// <summary>

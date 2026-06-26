@@ -18,8 +18,9 @@ namespace Sprocket.App;
 /// </summary>
 internal static class MediaBootstrap
 {
-    /// <summary>The created engine and a human-readable status line, or a null engine and an error message.</summary>
-    public readonly record struct Result(PlaybackEngine? Engine, string Status);
+    /// <summary>The created engine, the project it plays (for export), and a human-readable status line; or a
+    /// null engine/project and an error message.</summary>
+    public readonly record struct Result(PlaybackEngine? Engine, Project? Project, string Status);
 
     /// <summary>Opens <c>args[0]</c> (if it is an existing file) or a generated sample, and builds the engine.</summary>
     public static Result Create(string[] args)
@@ -59,11 +60,11 @@ internal static class MediaBootstrap
                 $"{Path.GetFileName(path)}  ·  {info.Width}×{info.Height}  ·  " +
                 $"{Fps(info.FrameRate):0.##} fps  ·  {info.Duration.ToSeconds():0.0}s  ·  " +
                 (audioWired ? "audio master clock" : "no audio (software clock)");
-            return new Result(engine, status);
+            return new Result(engine, project, status);
         }
         catch (Exception ex)
         {
-            return new Result(null, $"Could not open media: {ex.Message}");
+            return new Result(null, null, $"Could not open media: {ex.Message}");
         }
     }
 

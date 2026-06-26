@@ -13,7 +13,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             MediaBootstrap.Result result = MediaBootstrap.Create(desktop.Args ?? []);
-            var window = new MainWindow(result.Engine, result.Status);
+            var window = new MainWindow(result.Engine, result.Project, result.Status);
             desktop.MainWindow = window;
 
             // Tear the engine (and its decode worker) down cleanly when the window closes.

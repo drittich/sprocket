@@ -46,6 +46,7 @@ Sprocket.slnx
 │   ├── Sprocket.Render       // SkiaSharp compositing + effects (SKRuntimeEffect shaders).
 │   ├── Sprocket.Audio        // mixer + IAudioOutput (Silk.NET.OpenAL). Master clock.
 │   ├── Sprocket.Playback     // playback engine: scheduling, ring buffers, A/V sync, transport.
+│   ├── Sprocket.Export       // offline export: drives the render graph + mixer → MediaEncoder (MP4).
 │   ├── Sprocket.Persistence  // (planned, PLAN step 9) project (de)serialization to JSON.
 │   ├── Sprocket.Plugins      // (planned, PLAN step 23) IVideoEffect contract + AssemblyLoadContext host.
 │   └── Sprocket.App          // Avalonia UI (MVVM): timeline control, preview surface, panels.
@@ -54,20 +55,27 @@ Sprocket.slnx
     ├── Sprocket.Core.Tests        // headless: render-graph resolution, trim, fades, time math.
     ├── Sprocket.Media.Tests       // decode/seek correctness against known fixtures.
     ├── Sprocket.Audio.Tests       // mixer/clock against fakes; AudioSource decode/resample/seek.
-    └── Sprocket.Playback.Tests    // clock, pump drop/hold, present pipeline.
-    (Sprocket.Render.Tests — planned: golden-frame, effects produce expected pixels)
+    ├── Sprocket.Render.Tests      // effects produce expected pixels (offscreen raster, SkSL).
+    ├── Sprocket.Playback.Tests    // clock, pump drop/hold, present pipeline.
+    └── Sprocket.Export.Tests      // export round-trip: encode → reopen → assert format/effects.
 ```
 
 **Dependency direction (acyclic):**
 
 ```
 Sprocket.App ──► Sprocket.Playback ──► Sprocket.Render ──► Sprocket.Core
-     │              │      │              │
-     │              │      └──► Sprocket.Audio ──► Sprocket.Core
-     │              └──► Sprocket.Media ──────────► Sprocket.Core
+     │   │          │      │              │
+     │   │          │      └──► Sprocket.Audio ──► Sprocket.Core
+     │   │          └──► Sprocket.Media ──────────► Sprocket.Core
+     │   └──► Sprocket.Export ──► {Core, Media, Render, Audio}
      └──► Sprocket.Persistence ──► Sprocket.Core   (planned)
                 Sprocket.Plugins ──► Sprocket.Core   (planned)
 ```
+
+`Sprocket.Export` composes the same four lower layers Playback uses plus Audio — it reuses the render
+graph (Core), full-res decode (Media), the effect shaders (Render), and the mixer (Audio) to write an
+MP4 offline, so it sits beside Playback rather than under it. The FFmpeg muxer (`MediaEncoder`) lives in
+Media with the rest of the libav* interop (§11); Export only orchestrates.
 
 **`Sprocket.Core` is the keystone and depends on nothing.** It defines the data model and the
 *abstractions* the render graph and engine call into: `IFrameSource`/`IVideoCompositor` (video),

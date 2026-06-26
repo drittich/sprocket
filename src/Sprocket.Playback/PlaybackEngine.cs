@@ -1,4 +1,5 @@
 using Sprocket.Core.Model;
+using Sprocket.Core.Rendering;
 using Sprocket.Core.Timing;
 using Sprocket.Media;
 
@@ -27,7 +28,15 @@ public enum PlaybackState
 /// <param name="Width">Frame width in pixels.</param>
 /// <param name="Height">Frame height in pixels.</param>
 /// <param name="Pts">The frame's source presentation time.</param>
-public readonly record struct PresentedFrame(nint Pixels, int RowBytes, int Width, int Height, Timecode Pts);
+/// <param name="Effects">The active clip's effect chain, evaluated at the current playhead time (bottom→top);
+/// empty when the clip has none. The Render layer turns these into the SkSL shader graph (PLAN.md step 7).</param>
+public readonly record struct PresentedFrame(
+    nint Pixels,
+    int RowBytes,
+    int Width,
+    int Height,
+    Timecode Pts,
+    IReadOnlyList<ResolvedEffect> Effects);
 
 /// <summary>
 /// The slice's playback engine (PLAN.md step 4): drives a single video track from a master
@@ -190,9 +199,21 @@ public sealed class PlaybackEngine : IAsyncDisposable
         {
             PresentedFrame? frame = _current is null
                 ? null
-                : new PresentedFrame(_current.Pixels, _current.RowBytes, _current.Width, _current.Height, _current.Pts);
+                : new PresentedFrame(
+                    _current.Pixels, _current.RowBytes, _current.Width, _current.Height, _current.Pts,
+                    ResolveCurrentEffects());
             use(frame);
         }
+    }
+
+    /// <summary>
+    /// Resolves the effect chain for the clip under the playhead at the current position, evaluated at that
+    /// time so animated parameters (the fade ramp) track the live position. Empty when no clip/effects.
+    /// </summary>
+    private IReadOnlyList<ResolvedEffect> ResolveCurrentEffects()
+    {
+        Clip? clip = _videoTrack?.ResolveActiveClip(Position);
+        return clip is null ? [] : RenderGraph.ResolveEffects(clip, Position);
     }
 
     private async Task PumpLoopAsync(CancellationToken ct)

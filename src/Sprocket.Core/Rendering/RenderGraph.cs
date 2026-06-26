@@ -32,7 +32,7 @@ public static class RenderGraph
                 continue;
 
             Timecode sourceT = clip.MapToSource(t);
-            IReadOnlyList<ResolvedEffect> effects = ResolveEffects(clip, t);
+            IReadOnlyList<ResolvedEffect> effects = ResolveEffectsCore(clip, t);
             layers.Add(new VideoLayer(clip.MediaRefId, sourceT, effects, track.Opacity, track.BlendMode));
         }
 
@@ -103,7 +103,19 @@ public static class RenderGraph
         return compositor.Snapshot(surface);
     }
 
-    private static ResolvedEffect[] ResolveEffects(Clip clip, Timecode t)
+    /// <summary>
+    /// Evaluates a clip's effect stack at timeline time <paramref name="t"/> into the order-preserving
+    /// <see cref="ResolvedEffect"/> list the Render layer turns into shaders. Exposed so the playback
+    /// preview can resolve effects for the live frame off the same code path the planner uses (§5, §7).
+    /// Returns an empty list for a clip with no effects (no allocation).
+    /// </summary>
+    public static IReadOnlyList<ResolvedEffect> ResolveEffects(Clip clip, Timecode t)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        return ResolveEffectsCore(clip, t);
+    }
+
+    private static ResolvedEffect[] ResolveEffectsCore(Clip clip, Timecode t)
     {
         if (clip.Effects.Count == 0)
             return [];

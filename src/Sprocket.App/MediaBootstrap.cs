@@ -39,7 +39,12 @@ internal static class MediaBootstrap
             project.MediaPool.Add(new MediaRef(mediaId, path, info));
 
             var track = new VideoTrack { Name = "V1" };
-            track.Clips.Add(new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero));
+            var videoClip = new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero);
+            // Slice DoD #4/#5: a GPU brightness effect plus a fade in/out, both as SkSL shaders (step 7).
+            videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.15));
+            videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
+                .Set(EffectParamNames.Opacity, FadeInOut(info.Duration)));
+            track.Clips.Add(videoClip);
             timeline.Tracks.Add(track);
 
             // Master clock: the audio device clock when the source has audio and a device is available
@@ -81,7 +86,11 @@ internal static class MediaBootstrap
             audio = AudioSource.Open(path, sampleRate, channels);
 
             var audioTrack = new AudioTrack { Name = "A1" };
-            audioTrack.Clips.Add(new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero));
+            var audioClip = new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero);
+            // The same fade envelope drives audio gain in the mixer (§6) as drives video alpha (§7).
+            audioClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
+                .Set(EffectParamNames.Opacity, FadeInOut(project.Timeline.Duration)));
+            audioTrack.Clips.Add(audioClip);
             project.Timeline.Tracks.Add(audioTrack);
 
             var mixer = new AudioMixer(sampleRate, channels, id => id == mediaId ? audio : null);
@@ -101,6 +110,24 @@ internal static class MediaBootstrap
     }
 
     private static double Fps(Rational r) => r.Den > 0 ? (double)r.Num / r.Den : 0;
+
+    /// <summary>
+    /// A fade-in over the first second and fade-out over the last second of a clip of length
+    /// <paramref name="duration"/> (opacity 0→1 … 1→0). Degrades to a plain fade-in/out pair for very short
+    /// clips. The opacity drives both video alpha (shader) and audio gain (mixer) so the fade is consistent.
+    /// </summary>
+    private static AnimatableValue FadeInOut(Timecode duration)
+    {
+        // Keep the ramps short relative to the clip so a tiny clip still gets a (degenerate) fade.
+        Timecode ramp = Timecode.Min(Timecode.FromSeconds(1), new Timecode(duration.Ticks / 2));
+        return AnimatableValue.Animated(
+        [
+            new Keyframe(Timecode.Zero, 0.0, Interpolation.Linear),
+            new Keyframe(ramp, 1.0, Interpolation.Linear),
+            new Keyframe(duration - ramp, 1.0, Interpolation.Linear),
+            new Keyframe(duration, 0.0, Interpolation.Linear),
+        ]);
+    }
 }
 
 /// <summary>

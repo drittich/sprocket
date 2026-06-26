@@ -277,6 +277,30 @@ Linux and macOS rest on bundling the native libs + on-device verification — se
        compiled/preferred type lists are populated. Full suite: **109 tests green** (Core 42, Media 24, Audio
        16, Playback 27).
 7. Effects (brightness, fade) + audio volume/fade in mixer.
+   - **✅ DONE (`src/Sprocket.Render/SkiaEffectPipeline.cs`; 8 tests in `tests/Sprocket.Render.Tests`).** The
+     slice's effects now run as real SkSL on the GPU preview, and the audio half (gain/fade) was already
+     delivered with the mixer in step 5. Honours the §2 graph (Render → Core + SkiaSharp only). Delivered:
+     - **`SkiaEffectPipeline`** — compiles the two built-in effects once as `SKRuntimeEffect` (SkSL) fragment
+       shaders (**Brightness** = premultiplied `rgb * amount`; **Fade** = whole-pixel `* opacity`, which reads
+       as fade-to-black over the cleared preview and is a correct premultiplied fade-out when composited) and
+       **chains them as a shader graph** — effect N's `src` child is effect N-1's output, rooted at the decoded
+       image's `ToShader` (ARCHITECTURE.md §7) — so the stack resolves in minimal GPU passes, not N round-trips.
+       Unknown effect ids pass through (a plugin with no Render binding is a no-op, not a crash). The per-frame
+       allocation is only the small bounded shader/uniform objects §7 acknowledges; **with no effects it falls
+       back to the plain fit-draw**, keeping the step-4 hot path exactly as allocation-clean as measured.
+     - **Live param resolution** — `RenderGraph.ResolveEffects(clip, t)` is now public; `PlaybackEngine`
+       evaluates the active clip's stack at the **current playhead** and carries it on `PresentedFrame.Effects`,
+       so the fade ramp animates with position. `PreviewSurface` owns the pipeline (compiled on attach, disposed
+       on detach) and applies it inside the Avalonia Skia lease (§10).
+     - **App bootstrap** — the slice clip now carries a Brightness (1.15×) and a fade-in/out, and the audio clip
+       carries the **same** fade envelope, so one `Fade` drives video alpha (shader) and audio gain (mixer §6)
+       consistently — slice DoD #4/#5 is demonstrable in the running app.
+     - **Audio volume/fade** — already complete in the mixer (step 5): per-track gain (dB), master gain, and the
+       fade gain-ramp across the buffer, all covered by `AudioMixerTests`; no change needed here.
+     - **Tests (8, headless raster, deterministic)** — run the real SkSL on an offscreen CPU surface (the spike's
+       Linux-check discipline) and read pixels back: no-effects pass-through, brightness up/down, fade half/zero,
+       brightness→fade **chain**, unknown-effect pass-through, and degenerate-bounds no-op. Full suite: **117
+       tests green** (Core 42, Media 24, Audio 16, Render 8, Playback 27).
 8. Export pipeline (full-res encode).
 9. Project save/load (JSON).
 

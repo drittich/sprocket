@@ -21,12 +21,15 @@ public sealed class PreviewSurface : Control
     private static readonly SKColor Background = new(0x0E, 0x0E, 0x12);
 
     private PlaybackEngine? _engine;
+    private SkiaEffectPipeline? _pipeline;
 
     /// <summary>Attaches the engine whose current frame this surface presents. Call once.</summary>
     public void Attach(PlaybackEngine engine)
     {
         ArgumentNullException.ThrowIfNull(engine);
         _engine = engine;
+        // Compiles the brightness/fade SkSL once; reused on every draw to apply the clip's effect chain (§7).
+        _pipeline ??= new SkiaEffectPipeline();
         // The engine raises FramePresented on its pump thread; marshal the invalidation to the UI thread.
         engine.FramePresented += OnFramePresented;
         InvalidateVisual();
@@ -35,17 +38,26 @@ public sealed class PreviewSurface : Control
     private void OnFramePresented() =>
         Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
 
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _pipeline?.Dispose();
+        _pipeline = null;
+        base.OnDetachedFromVisualTree(e);
+    }
+
     public override void Render(DrawingContext context) =>
-        context.Custom(new DrawOp(new Rect(Bounds.Size), _engine));
+        context.Custom(new DrawOp(new Rect(Bounds.Size), _engine, _pipeline));
 
     private sealed class DrawOp : ICustomDrawOperation
     {
         private readonly PlaybackEngine? _engine;
+        private readonly SkiaEffectPipeline? _pipeline;
 
-        public DrawOp(Rect bounds, PlaybackEngine? engine)
+        public DrawOp(Rect bounds, PlaybackEngine? engine, SkiaEffectPipeline? pipeline)
         {
             Bounds = bounds;
             _engine = engine;
+            _pipeline = pipeline;
         }
 
         public Rect Bounds { get; }
@@ -72,10 +84,18 @@ public sealed class PreviewSurface : Control
             // wrap and draw it. The draw uploads the pixels to the GPU on the shared context.
             _engine.UseCurrentFrame(frame =>
             {
-                if (frame is { } f)
-                    FramePresenter.Present(canvas, bounds, f.Pixels, f.RowBytes, f.Width, f.Height, Background);
-                else
+                if (frame is not { } f)
+                {
                     canvas.Clear(Background);
+                    return;
+                }
+
+                // The pipeline applies the clip's brightness/fade effect chain on the GPU (§7); with no
+                // effects it is a plain fit-draw. Fall back to the bare presenter if it isn't available yet.
+                if (_pipeline is not null)
+                    _pipeline.Present(canvas, bounds, f.Pixels, f.RowBytes, f.Width, f.Height, f.Effects, Background);
+                else
+                    FramePresenter.Present(canvas, bounds, f.Pixels, f.RowBytes, f.Width, f.Height, Background);
             });
         }
     }

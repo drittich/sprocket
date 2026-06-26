@@ -11,6 +11,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Sprocket.Core.Tests/Sprocket.Core.Tests.csproj" />
     <Project Path="tests/Sprocket.Media.Tests/Sprocket.Media.Tests.csproj" />
+    <Project Path="tests/Sprocket.Render.Tests/Sprocket.Render.Tests.csproj" />
     <Project Path="tests/Sprocket.Audio.Tests/Sprocket.Audio.Tests.csproj" />
     <Project Path="tests/Sprocket.Playback.Tests/Sprocket.Playback.Tests.csproj" />
   </Folder>

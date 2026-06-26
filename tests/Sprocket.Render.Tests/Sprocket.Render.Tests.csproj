@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The effect tests run real SkSL on an offscreen raster surface, so they need the native libSkiaSharp.
+         Pinned to 3.119.4 to match Sprocket.Render (ARCHITECTURE.md §14). The per-OS native asset packages
+         place the right runtimes/<rid>/native binary; the loader picks the one for the test host. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.4" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Sprocket.Render\Sprocket.Render.csproj" />
+  </ItemGroup>
+
+</Project>

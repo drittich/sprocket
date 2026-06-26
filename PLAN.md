@@ -251,6 +251,31 @@ Linux and macOS rest on bundling the native libs + on-device verification — se
    Linux, VideoToolbox on macOS), with software fallback. Runtime-probe available device types per OS;
    decode to a GPU frame, download via `av_hwframe_transfer_data`, then swscale → RGBA (zero-copy
    `FromTexture` deferred). Fall back to the software decode path whenever no device is usable.
+   - **✅ DONE (`src/Sprocket.Media/HardwareContext.cs` + `MediaSource`; 6 tests in `tests/Sprocket.Media.Tests`).**
+     `MediaSource` now decodes on the GPU when one is available and degrades to software otherwise, with no
+     change to its `IFrameSource`/ring consumers — frames still arrive as pooled native RGBA. Delivered:
+     - **`IHardwareContext` + `HardwareDevice`** — wraps an FFmpeg `AVHWDeviceContext` of one
+       `AVHWDeviceType`. `TryCreate(type)` is a runtime probe (returns `null` if the driver/GPU is absent);
+       `PlatformPreferredTypes()` gives the per-OS ordering (**Windows** D3D11VA→CUDA→QSV→DXVA2, **Linux**
+       VAAPI→CUDA→VDPAU, **macOS** VideoToolbox); `CompiledTypes()` lists what the FFmpeg build supports.
+     - **`MediaSource.Open(path, HardwareAccelMode.Auto|Disabled)`** — `Auto` (default) negotiates a device:
+       for each platform-preferred type it checks the decoder's `avcodec_get_hw_config` for a matching
+       `HW_DEVICE_CTX` config (yielding the GPU pixel format), opens the device, attaches it
+       (`hw_device_ctx = av_buffer_ref(...)`), and installs a `get_format` callback that selects the GPU
+       format. **Any failure — no config, device won't open, or `Open()` throws — tears the hardware down and
+       reopens a plain software decoder** (§11/§15). `HardwareDeviceName` reports what engaged (null = software).
+     - **Decode branch** — when a decoded frame carries the GPU pixel format it is downloaded to a CPU frame
+       via `av_hwframe_transfer_data` (the documented copy; zero-copy `FromTexture` stays deferred) and then
+       run through the existing swscale → RGBA step; software frames go straight to swscale. A failed download
+       skips the frame rather than crashing. Frame PTS and seek (decode-to-target) are unchanged.
+     - **Verified on this Windows machine:** the bundled FFmpeg exposes CUDA/VAAPI/DXVA2/QSV/D3D11VA/Vulkan/
+       D3D12VA; `Auto` selected **D3D11VA** and decoded the fixture on the GPU. Linux/macOS rest on the same
+       managed code + bundled libs (steps 24–25) + on-device verification.
+     - **Tests (6, deterministic regardless of GPU):** software mode uses no device and decodes in order; auto
+       mode decodes whether or not hardware engages; **the hardware and software paths produce identical frame
+       PTS** (so the GPU path never breaks frame-accuracy — this comparison ran hardware-vs-software here);
+       compiled/preferred type lists are populated. Full suite: **109 tests green** (Core 42, Media 24, Audio
+       16, Playback 27).
 7. Effects (brightness, fade) + audio volume/fade in mixer.
 8. Export pipeline (full-res encode).
 9. Project save/load (JSON).

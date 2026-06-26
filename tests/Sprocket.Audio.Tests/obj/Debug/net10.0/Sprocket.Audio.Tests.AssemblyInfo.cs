@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Sprocket.Audio.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e91486c042179272148c8dd14c556c25a3b70115")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+65362f7287f73d7a62e3dd4b446fae423f8ae48a")]
 [assembly: System.Reflection.AssemblyProductAttribute("Sprocket.Audio.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Sprocket.Audio.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

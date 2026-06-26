@@ -216,7 +216,7 @@ public partial class MainWindow : Window
         WireTimeline();
 
         _exportButton!.Click += (_, _) => _ = ExportAsync();
-        this.FindControl<Button>("AddTrackButton")!.Click += (_, _) => AddTrack();
+        WireAddTrackButton();
 
         Timecode duration = _engine!.Duration;
         scrubber.Maximum = Math.Max(1, duration.Ticks);
@@ -303,17 +303,30 @@ public partial class MainWindow : Window
         };
     }
 
+    /// <summary>Attaches a flyout to <c>+ Track</c> offering a new Video or Audio track (PLAN.md step 14).</summary>
+    private void WireAddTrackButton()
+    {
+        var button = this.FindControl<Button>("AddTrackButton")!;
+        var videoItem = new MenuItem { Header = "Add _Video Track" };
+        videoItem.Click += (_, _) => AddTrack(video: true);
+        var audioItem = new MenuItem { Header = "Add _Audio Track" };
+        audioItem.Click += (_, _) => AddTrack(video: false);
+        button.Flyout = new MenuFlyout { ItemsSource = new[] { videoItem, audioItem } };
+    }
+
     /// <summary>
-    /// Demonstrates the foundational command stack end-to-end: appends an audio track through an
-    /// <see cref="AddTrackCommand"/>, so Edit ▸ Undo removes it and the save-state indicator flips. The
-    /// timeline editing UI (drag/trim/blade) that fully exercises the stack lands in steps 12–13.
+    /// Adds a video or audio track through an <see cref="AddTrackCommand"/> (PLAN.md step 14), so it is undoable
+    /// and the dirty indicator flips. The new track is appended on top in z-order; the playback engine and mixer
+    /// pick it up live. Tracks are auto-numbered per kind (V1/V2…, A1/A2…).
     /// </summary>
-    private void AddTrack()
+    private void AddTrack(bool video)
     {
         if (_project is null)
             return;
-        int n = _project.Timeline.AudioTracks.Count() + 1;
-        _history.Execute(new AddTrackCommand(_project.Timeline, new AudioTrack { Name = $"A{n}" }));
+        Sprocket.Core.Model.Track track = video
+            ? new VideoTrack { Name = $"V{_project.Timeline.VideoTracks.Count() + 1}" }
+            : new AudioTrack { Name = $"A{_project.Timeline.AudioTracks.Count() + 1}" };
+        _history.Execute(new AddTrackCommand(_project.Timeline, track));
     }
 
     // ── Edit-history reactions: menu enable + dirty indicator ───────────────────────────────────────

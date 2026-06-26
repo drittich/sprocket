@@ -5,6 +5,7 @@ using Avalonia.Rendering.SceneGraph;
 using Avalonia.Skia;
 using Avalonia.Threading;
 using SkiaSharp;
+using Sprocket.Core.Model;
 using Sprocket.Playback;
 using Sprocket.Render;
 
@@ -80,23 +81,32 @@ public sealed class PreviewSurface : Control
                 return;
             }
 
-            // The engine holds the frame's lock for the callback, so the native buffer stays valid while we
-            // wrap and draw it. The draw uploads the pixels to the GPU on the shared context.
-            _engine.UseCurrentFrame(frame =>
+            // The engine holds the frame lock for the callback, so the native buffers stay valid while we wrap
+            // and draw them. Clear once, then composite each enabled video track's frame bottom→top — the same
+            // multi-layer compositing the export path uses (PLAN.md step 14). The draws upload to the GPU on the
+            // shared context (§10); pixels are wrapped, not copied (§1).
+            _engine.UseLayers(layers =>
             {
-                if (frame is not { } f)
-                {
-                    canvas.Clear(Background);
+                canvas.Clear(Background);
+                if (layers.Count == 0 || _pipeline is null)
                     return;
-                }
 
-                // The pipeline applies the clip's brightness/fade effect chain on the GPU (§7); with no
-                // effects it is a plain fit-draw. Fall back to the bare presenter if it isn't available yet.
-                if (_pipeline is not null)
-                    _pipeline.Present(canvas, bounds, f.Pixels, f.RowBytes, f.Width, f.Height, f.Effects, Background);
-                else
-                    FramePresenter.Present(canvas, bounds, f.Pixels, f.RowBytes, f.Width, f.Height, Background);
+                foreach (PresentedVideoLayer l in layers)
+                {
+                    SKRect dest = FramePresenter.ComputeFitRect(bounds, l.Width, l.Height);
+                    _pipeline.DrawLayer(
+                        canvas, dest, l.Pixels, l.RowBytes, l.Width, l.Height,
+                        l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                }
             });
         }
+
+        private static SKBlendMode ToBlendMode(BlendMode mode) => mode switch
+        {
+            BlendMode.Multiply => SKBlendMode.Multiply,
+            BlendMode.Screen => SKBlendMode.Screen,
+            BlendMode.Add => SKBlendMode.Plus,
+            _ => SKBlendMode.SrcOver,
+        };
     }
 }

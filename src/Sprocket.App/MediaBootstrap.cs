@@ -29,8 +29,10 @@ internal static class MediaBootstrap
         {
             string path = args.Length > 0 && File.Exists(args[0]) ? args[0] : SampleClip.EnsureExists();
 
-            MediaSource source = MediaSource.Open(path);
-            ProbedMediaInfo info = source.Info;
+            // Probe once for format; the engine/mixer open their own per-source decoders via the factories below.
+            ProbedMediaInfo info;
+            using (MediaSource probe = MediaSource.Open(path))
+                info = probe.Info;
 
             int sampleRate = info.SampleRate > 0 ? info.SampleRate : 48000;
             var timeline = new Timeline(info.FrameRate, new Resolution(info.Width, info.Height), sampleRate);
@@ -54,10 +56,11 @@ internal static class MediaBootstrap
 
             // Master clock: the audio device clock when the source has audio and a device is available
             // (audio is the master, ARCHITECTURE.md §8); otherwise the software wall-clock (video-only).
-            (IMasterClock? clock, bool audioWired) = TryCreateAudioClock(project, mediaId, path, sampleRate, linkGroup);
+            (IMasterClock? clock, bool audioWired) = TryCreateAudioClock(project, mediaId, sampleRate, linkGroup);
 
-            var feed = new RingVideoFrameFeed(new VideoDecodeRing(source));
-            var engine = new PlaybackEngine(project, feed, clock); // engine owns + disposes the clock
+            // Multi-track preview (PLAN.md step 14): a per-source feed factory lets the engine composite N video
+            // tracks; each opens its own decoder. Tracks added at runtime (+ Track) are picked up by the pump.
+            var engine = new PlaybackEngine(project, id => OpenVideoFeed(project, id), clock); // engine owns + disposes the clock
             engine.Start();
 
             string status =
@@ -73,23 +76,21 @@ internal static class MediaBootstrap
     }
 
     /// <summary>
-    /// Builds the audio track + audio master clock for the source, or returns <c>(null, false)</c> so the
-    /// engine falls back to its default <c>SoftwareClock</c> — when the source has no audio, or no audio device
-    /// is available. Failures degrade gracefully (ARCHITECTURE.md §15): a missing device must not stop playback.
+    /// Builds the companion audio track + audio master clock for the source, or returns <c>(null, false)</c> so
+    /// the engine falls back to its default <c>SoftwareClock</c> — when the source has no audio, or no audio
+    /// device is available. Failures degrade gracefully (ARCHITECTURE.md §15): a missing device must not stop
+    /// playback. The mixer resolves a PCM reader per source on demand, so it already mixes N audio tracks.
     /// </summary>
     private static (IMasterClock? clock, bool audioWired) TryCreateAudioClock(
-        Project project, MediaRefId mediaId, string path, int sampleRate, Guid linkGroup)
+        Project project, MediaRefId mediaId, int sampleRate, Guid linkGroup)
     {
         if (project.MediaPool.Get(mediaId) is not { Info.HasAudio: true })
             return (null, false);
 
         const int channels = 2; // stereo output; the source is upmixed/downmixed at decode
-        AudioSource? audio = null;
         OpenAlAudioOutput? output = null;
         try
         {
-            audio = AudioSource.Open(path, sampleRate, channels);
-
             var audioTrack = new AudioTrack { Name = "A1" };
             var audioClip = new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero) { LinkGroupId = linkGroup };
             // The same fade envelope drives audio gain in the mixer (§6) as drives video alpha (§7).
@@ -98,19 +99,53 @@ internal static class MediaBootstrap
             audioTrack.Clips.Add(audioClip);
             project.Timeline.Tracks.Add(audioTrack);
 
-            var mixer = new AudioMixer(sampleRate, channels, id => id == mediaId ? audio : null);
+            // Per-source PCM readers (mirrors the export path) — the mixer owns + disposes them and sums N layers.
+            var mixer = new AudioMixer(sampleRate, channels, id => OpenPcmReader(project, id, sampleRate, channels));
 
             output = new OpenAlAudioOutput();
             output.Configure(sampleRate, channels);
 
-            // The engine takes ownership: it disposes the mixer (which disposes the AudioSource) and the output.
+            // The engine takes ownership: it disposes the mixer (which disposes the readers) and the output.
             return (new AudioEngine(output, mixer, project), true);
         }
         catch
         {
             output?.Dispose();
-            audio?.Dispose();
             return (null, false); // degrade to the software clock; video still plays
+        }
+    }
+
+    /// <summary>Opens a video frame feed for a source, or <c>null</c> for an offline / no-video source (the engine
+    /// then contributes no layer for that track). Each call opens its own decoder; the feed owns + disposes it.</summary>
+    private static IVideoFrameFeed? OpenVideoFeed(Project project, MediaRefId id)
+    {
+        MediaRef? media = project.MediaPool.Get(id);
+        if (media is not { Info.HasVideo: true })
+            return null;
+        try
+        {
+            return new RingVideoFrameFeed(new VideoDecodeRing(MediaSource.Open(media.AbsolutePath)));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Opens a PCM reader for the mixer, or <c>null</c> (mixed as silence) for an offline / no-audio
+    /// source. The mixer owns + disposes the returned reader.</summary>
+    private static IPcmReader? OpenPcmReader(Project project, MediaRefId id, int sampleRate, int channels)
+    {
+        MediaRef? media = project.MediaPool.Get(id);
+        if (media is not { Info.HasAudio: true })
+            return null;
+        try
+        {
+            return AudioSource.Open(media.AbsolutePath, sampleRate, channels);
+        }
+        catch
+        {
+            return null;
         }
     }
 

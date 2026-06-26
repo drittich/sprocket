@@ -509,6 +509,39 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
 14. **Multiple tracks.** Lift the 1V+1A slice to N video + N audio tracks, **`+ Track`**, and
     per-track **Mute/Solo** UI (model support already exists: `AudioTrack.Muted/Solo`, video
     `Enabled`).
+    - **✅ DONE (`src/Sprocket.Playback` rework + `src/Sprocket.App`; 4 new tests in
+      `tests/Sprocket.Playback.Tests/MultiTrackPlaybackTests.cs`).** The editor now drives, composites, and mixes
+      N video + N audio tracks. The render graph, audio mixer, and export already resolved N layers (steps 5–8);
+      the remaining gap was the **live preview**, which drove a single video feed. Delivered:
+      - **Multi-track preview engine.** `PlaybackEngine` now owns one **`VideoTrackPlayer`** per video track
+        (each with its own feed, one-frame prefetch, and drop/hold sync — the slice's per-track logic, factored
+        out) instead of a single feed. A new **per-source feed-factory constructor** (`Func<MediaRefId,
+        IVideoFrameFeed?>`) lets the app open a decoder per source; players are **reconciled against the timeline
+        each pump**, so `+ Track` / undo are picked up live. `UseLayers` exposes the players' frames bottom→top
+        (with each track's resolved effects, opacity, blend); seeks re-seek every player via the existing
+        generation bump. The **legacy single-feed constructor + `UseCurrentFrame`** are preserved unchanged, so
+        the slice's 27 playback tests stand as-is. Frame lifetime/locking (one frame gate guarding every player's
+        presented frame) keeps the no-managed-pixels rule (§1) intact across N layers.
+      - **Preview compositing.** `PreviewSurface` clears once then draws each layer with
+        `SkiaEffectPipeline.DrawLayer` (track opacity + blend + effect chain) — the same multi-layer composite the
+        export path uses, now on the GPU preview.
+      - **Multi-source audio.** `MediaBootstrap` builds the mixer with a **per-source PCM-reader factory**
+        (mirrors export's `OpenPcmReader`), so the `AudioMixer`/`AudioEngine` — which already sum N audible layers
+        with mute/solo (§6) — mix multiple audio tracks/sources. The probe `MediaSource` is opened once for format
+        then disposed; the engine/mixer open their own per-source decoders via the factories.
+      - **`+ Track` UI.** The `+ Track` button now opens a flyout to add a **Video** or **Audio** track through
+        `AddTrackCommand` (undoable, auto-numbered V1/V2…, A1/A2…). Per-track **Mute/Solo** (audio) and **Enable**
+        (video) already live in the timeline track headers (step 12); video **Enable** now removes a track from
+        the composite and audio mute/solo are honoured by the mixer plan.
+      - **Tests (4 new):** two video tracks composite to two layers; a disabled video track drops out of the
+        composite; layers carry the right opacity/blend in z-order; a video track added at runtime is reconciled
+        into the composite. The existing 27 playback tests (single-feed path) are unchanged. Full suite: **188
+        tests green** (Core 74, Media 24, Render 8, Audio 16, Playback 31, Export 6, Persistence 12, App 17).
+        Clean build (0 warnings), smoke launch starts + tears down cleanly.
+      - **Note:** until the media bin / import (step 15) there is one media source, so placing *distinct* clips on
+        the new tracks (drag-from-bin) lands at step 15 — multi-track compositing/mixing is proven by tests now
+        and becomes visually rich then. Two clips from the *same* source on two tracks share one reader; distinct
+        sources mix/compose cleanly.
 15. **Media bin & browsers.** Poster-frame thumbnails, waveform rendering, search, and
     format/alpha badges (`4K · 1080p · WAV · Alpha`) over the `MediaPool`; an **Effects** browser
     over the `IVideoEffect` registry; the **Audio** tab.

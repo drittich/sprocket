@@ -19,17 +19,32 @@ public enum PlaybackState
 }
 
 /// <summary>
-/// A snapshot of the currently-presented frame's pixels, valid only for the duration of the
-/// <see cref="PlaybackEngine.UseCurrentFrame"/> callback (the engine holds the frame's lock during it).
-/// The pixels live in the decoder's native buffer (no managed copy, ARCHITECTURE.md §1).
+/// A snapshot of one composited video layer's pixels, valid only for the duration of the
+/// <see cref="PlaybackEngine.UseLayers"/>/<see cref="PlaybackEngine.UseCurrentFrame"/> callback (the engine holds
+/// the frame lock during it). The pixels live in the decoder's native buffer (no managed copy, ARCHITECTURE.md §1).
 /// </summary>
 /// <param name="Pixels">Pointer to the RGBA8888 pixels.</param>
 /// <param name="RowBytes">Stride in bytes.</param>
 /// <param name="Width">Frame width in pixels.</param>
 /// <param name="Height">Frame height in pixels.</param>
 /// <param name="Pts">The frame's source presentation time.</param>
-/// <param name="Effects">The active clip's effect chain, evaluated at the current playhead time (bottom→top);
-/// empty when the clip has none. The Render layer turns these into the SkSL shader graph (PLAN.md step 7).</param>
+/// <param name="Effects">The clip's effect chain, evaluated at the current playhead time (bottom→top).</param>
+/// <param name="Opacity">The track's opacity in [0, 1].</param>
+/// <param name="BlendMode">How the track blends onto the layers beneath it.</param>
+public readonly record struct PresentedVideoLayer(
+    nint Pixels,
+    int RowBytes,
+    int Width,
+    int Height,
+    Timecode Pts,
+    IReadOnlyList<ResolvedEffect> Effects,
+    double Opacity,
+    BlendMode BlendMode);
+
+/// <summary>
+/// A snapshot of the single (top-most) presented frame — the back-compatible view for a one-layer consumer.
+/// See <see cref="PresentedVideoLayer"/> for the per-field meaning.
+/// </summary>
 public readonly record struct PresentedFrame(
     nint Pixels,
     int RowBytes,
@@ -39,63 +54,95 @@ public readonly record struct PresentedFrame(
     IReadOnlyList<ResolvedEffect> Effects);
 
 /// <summary>
-/// The slice's playback engine (PLAN.md step 4): drives a single video track from a master
-/// <see cref="IClock"/>, keeping the presented frame in sync by dropping or holding decoded frames
-/// (ARCHITECTURE.md §8). Transport (<see cref="Play"/>/<see cref="Pause"/>/<see cref="SeekTo"/>) is callable
-/// from the UI thread; a background pump consumes the <see cref="IVideoFrameFeed"/> and updates the presented
-/// frame. Audio and multi-track compositing are deferred (PLAN steps 5/14) — this is video-only.
+/// The playback engine (PLAN.md steps 4/14): drives every enabled video track from a master
+/// <see cref="IClock"/>, keeping each track's presented frame in sync by dropping or holding decoded frames
+/// (ARCHITECTURE.md §8). Transport (<see cref="Play"/>/<see cref="Pause"/>/<see cref="SeekTo"/>) is callable from
+/// the UI thread; a background pump advances one <see cref="VideoTrackPlayer"/> per track and the preview
+/// composites their frames top-down (<see cref="UseLayers"/>). Audio sync is handled by the audio master clock.
 /// </summary>
 /// <remarks>
 /// <para><b>Events</b> (<see cref="FramePresented"/>, <see cref="PositionChanged"/>, <see cref="StateChanged"/>,
 /// <see cref="PlaybackEnded"/>) are raised on the background pump thread; UI subscribers must marshal to their
-/// own thread. <see cref="UseCurrentFrame"/> is the safe way to read the live frame: it holds the frame lock
-/// for the callback so the pump cannot recycle the buffer mid-draw.</para>
-/// <para>For the slice the engine plays the first enabled video track and assumes one source/feed. Multiple
-/// clips/sources and audio-master sync slot onto the same pump without redesign.</para>
+/// own thread. <see cref="UseLayers"/>/<see cref="UseCurrentFrame"/> hold the frame lock for the callback so the
+/// pump cannot recycle a buffer mid-draw.</para>
+/// <para>Two construction modes: a single fixed feed (the slice/test path, one video track) or a per-source feed
+/// factory (the app path), where players are reconciled against the timeline's video tracks each pump so
+/// <c>+ Track</c> / undo are picked up live.</para>
 /// </remarks>
 public sealed class PlaybackEngine : IAsyncDisposable
 {
     private readonly Project _project;
-    private readonly VideoTrack? _videoTrack;
-    private readonly IVideoFrameFeed _feed;
     private readonly IMasterClock _clock;
     private readonly int _paceMsPlaying;
 
+    private readonly Func<MediaRefId, IVideoFrameFeed?>? _feedFactory;
+    private readonly bool _reconcile;
+
     private readonly object _frameGate = new();
-    private VideoFrame? _current;     // presented frame; guarded by _frameGate
-    private VideoFrame? _next;        // pump-thread-only prefetch (one frame of read-ahead)
+    private readonly List<VideoTrackPlayer> _players = [];
 
     private readonly object _transportGate = new();
     private PlaybackState _state = PlaybackState.Stopped;
     private bool _endHandled;
 
-    private long _seekGeneration;     // bumped by SeekTo; the pump drops its stale prefetch on change
+    private long _seekGeneration;     // bumped by SeekTo; the pump re-seeks players on change
+    private long _lastPumpGen;
     private CancellationTokenSource? _pumpCts;
     private Task? _pump;
     private bool _started;
     private bool _disposed;
 
-    /// <summary>Creates an engine over <paramref name="project"/>, playing its first enabled video track from
+    /// <summary>
+    /// Single-feed engine (slice/test path): plays the project's first enabled video track from
     /// <paramref name="feed"/>. <paramref name="clock"/> is the master clock (audio device clock when audio is
-    /// present, ARCHITECTURE.md §8); it defaults to a fresh <see cref="SoftwareClock"/> for the video-only case.
-    /// If the clock is <see cref="IAsyncDisposable"/> the engine takes ownership and disposes it on teardown.</summary>
+    /// present, ARCHITECTURE.md §8) and defaults to a fresh <see cref="SoftwareClock"/>. If the clock is
+    /// <see cref="IAsyncDisposable"/> the engine takes ownership and disposes it on teardown.
+    /// </summary>
     public PlaybackEngine(Project project, IVideoFrameFeed feed, IMasterClock? clock = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(feed);
 
         _project = project;
-        _feed = feed;
         _clock = clock ?? new SoftwareClock();
-        _videoTrack = project.Timeline.VideoTracks.FirstOrDefault(t => t.Enabled)
-                      ?? project.Timeline.VideoTracks.FirstOrDefault();
+        _reconcile = false;
 
-        Rational fps = project.Timeline.FrameRate;
-        double frameMs = fps.Num > 0 ? 1000.0 * fps.Den / fps.Num : 1000.0 / 30;
-        _paceMsPlaying = Math.Clamp((int)(frameMs / 2), 4, 33);
+        VideoTrack? track = project.Timeline.VideoTracks.FirstOrDefault(t => t.Enabled)
+                            ?? project.Timeline.VideoTracks.FirstOrDefault();
+        if (track is not null)
+            _players.Add(new VideoTrackPlayer(track, feed, _frameGate));
+        else
+            _ = feed.DisposeAsync(); // no video track to drive; don't leak the feed
+
+        _paceMsPlaying = ComputePace(project);
     }
 
-    /// <summary>Raised after the presented frame changes. Fires on the pump thread.</summary>
+    /// <summary>
+    /// Multi-track engine (app path): plays every enabled video track, creating each track's feed via
+    /// <paramref name="feedFactory"/> (mapping a source media id to a feed, or <c>null</c> for an offline/no-video
+    /// source). Players are reconciled against the timeline each pump, so tracks added/removed at runtime are
+    /// picked up. <paramref name="clock"/> as in the single-feed constructor.
+    /// </summary>
+    public PlaybackEngine(Project project, Func<MediaRefId, IVideoFrameFeed?> feedFactory, IMasterClock? clock = null)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(feedFactory);
+
+        _project = project;
+        _clock = clock ?? new SoftwareClock();
+        _feedFactory = feedFactory;
+        _reconcile = true;
+        _paceMsPlaying = ComputePace(project);
+    }
+
+    private static int ComputePace(Project project)
+    {
+        Rational fps = project.Timeline.FrameRate;
+        double frameMs = fps.Num > 0 ? 1000.0 * fps.Den / fps.Num : 1000.0 / 30;
+        return Math.Clamp((int)(frameMs / 2), 4, 33);
+    }
+
+    /// <summary>Raised after any track's presented frame changes. Fires on the pump thread.</summary>
     public event Action? FramePresented;
 
     /// <summary>Raised each pump tick with the current timeline position. Fires on the pump thread.</summary>
@@ -120,8 +167,8 @@ public sealed class PlaybackEngine : IAsyncDisposable
     public Timecode Duration => _project.Timeline.Duration;
 
     /// <summary>
-    /// Starts the feed and the background pump and positions the playhead at the start, so the first frame is
-    /// presented before play begins. Idempotent.
+    /// Starts the background pump and positions the playhead at the start, so the first frame is presented before
+    /// play begins. Feeds are started lazily by their track players on the first pump. Idempotent.
     /// </summary>
     public void Start()
     {
@@ -130,10 +177,9 @@ public sealed class PlaybackEngine : IAsyncDisposable
             return;
         _started = true;
 
-        _feed.Start();
         _pumpCts = new CancellationTokenSource();
         _pump = Task.Run(() => PumpLoopAsync(_pumpCts.Token));
-        SeekTo(Timecode.Zero); // position the feed at the active clip's in-point and load frame 0
+        SeekTo(Timecode.Zero); // position the feeds at the active clips' in-points and load frame 0
     }
 
     /// <summary>Begins (or resumes) playback. Replays from the start if currently parked at the end.</summary>
@@ -167,8 +213,9 @@ public sealed class PlaybackEngine : IAsyncDisposable
     }
 
     /// <summary>
-    /// Moves the playhead to <paramref name="position"/> (clamped to the timeline), seeking the feed so the
-    /// presented frame updates to match. Keeps the running/paused state. Safe to call while playing (scrub).
+    /// Moves the playhead to <paramref name="position"/> (clamped to the timeline). The pump sees the bumped
+    /// generation, re-seeks every track's feed, and force-presents the post-seek frames. Keeps the running/paused
+    /// state. Safe to call while playing (scrub).
     /// </summary>
     public void SeekTo(Timecode position)
     {
@@ -176,11 +223,6 @@ public sealed class PlaybackEngine : IAsyncDisposable
         Timecode clamped = PlaybackMath.ClampToTimeline(position, Duration);
 
         _clock.Seek(clamped);
-        Clip? clip = _videoTrack?.ResolveActiveClip(clamped);
-        if (clip is not null)
-            _feed.RequestSeek(clip.MapToSource(clamped));
-
-        // The pump sees the bumped generation, drops its stale prefetch, and force-presents the post-seek frame.
         Interlocked.Increment(ref _seekGeneration);
 
         lock (_transportGate)
@@ -188,53 +230,78 @@ public sealed class PlaybackEngine : IAsyncDisposable
     }
 
     /// <summary>
-    /// Invokes <paramref name="use"/> with the currently-presented frame (or <c>null</c> if none yet), holding
-    /// the frame lock for the duration so the pump cannot recycle the native buffer. Keep the callback short
-    /// (it runs under a lock contended by the pump) and do not retain the <see cref="PresentedFrame"/> beyond it.
+    /// Invokes <paramref name="use"/> with the composited video layers (bottom→top in z-order), holding the frame
+    /// lock for the duration so the pump cannot recycle a native buffer. Keep the callback short and do not retain
+    /// the layers beyond it. The list is empty when no track has a frame to show.
     /// </summary>
-    public void UseCurrentFrame(Action<PresentedFrame?> use)
+    public void UseLayers(Action<IReadOnlyList<PresentedVideoLayer>> use)
     {
         ArgumentNullException.ThrowIfNull(use);
+        Timecode pos = Position;
         lock (_frameGate)
         {
-            PresentedFrame? frame = _current is null
-                ? null
-                : new PresentedFrame(
-                    _current.Pixels, _current.RowBytes, _current.Width, _current.Height, _current.Pts,
-                    ResolveCurrentEffects());
-            use(frame);
+            var layers = new List<PresentedVideoLayer>(_players.Count);
+            // Bottom→top: iterate video tracks in z-order and emit the matching player's frame if it has one.
+            foreach (VideoTrack track in _project.Timeline.VideoTracks)
+            {
+                if (!track.Enabled)
+                    continue;
+                VideoTrackPlayer? player = FindPlayer(track);
+                if (player?.Current is not { } frame)
+                    continue;
+                Clip? clip = track.ResolveActiveClip(pos);
+                if (clip is null)
+                    continue;
+                layers.Add(new PresentedVideoLayer(
+                    frame.Pixels, frame.RowBytes, frame.Width, frame.Height, frame.Pts,
+                    RenderGraph.ResolveEffects(clip, pos), track.Opacity, track.BlendMode));
+            }
+            use(layers);
         }
     }
 
     /// <summary>
-    /// Resolves the effect chain for the clip under the playhead at the current position, evaluated at that
-    /// time so animated parameters (the fade ramp) track the live position. Empty when no clip/effects.
+    /// Invokes <paramref name="use"/> with the top-most presented layer as a <see cref="PresentedFrame"/> (or
+    /// <c>null</c>), holding the frame lock for the duration. Back-compatible single-layer view.
     /// </summary>
-    private IReadOnlyList<ResolvedEffect> ResolveCurrentEffects()
+    public void UseCurrentFrame(Action<PresentedFrame?> use)
     {
-        Clip? clip = _videoTrack?.ResolveActiveClip(Position);
-        return clip is null ? [] : RenderGraph.ResolveEffects(clip, Position);
+        ArgumentNullException.ThrowIfNull(use);
+        Timecode pos = Position;
+        lock (_frameGate)
+        {
+            PresentedFrame? top = null;
+            // Top-most = last enabled video track (in bottom→top order) that has a frame.
+            foreach (VideoTrack track in _project.Timeline.VideoTracks)
+            {
+                if (!track.Enabled)
+                    continue;
+                VideoTrackPlayer? player = FindPlayer(track);
+                if (player?.Current is not { } frame)
+                    continue;
+                Clip? clip = track.ResolveActiveClip(pos);
+                IReadOnlyList<ResolvedEffect> effects = clip is null ? [] : RenderGraph.ResolveEffects(clip, pos);
+                top = new PresentedFrame(frame.Pixels, frame.RowBytes, frame.Width, frame.Height, frame.Pts, effects);
+            }
+            use(top);
+        }
+    }
+
+    private VideoTrackPlayer? FindPlayer(VideoTrack track)
+    {
+        foreach (VideoTrackPlayer p in _players)
+            if (ReferenceEquals(p.Track, track))
+                return p;
+        return null;
     }
 
     private async Task PumpLoopAsync(CancellationToken ct)
     {
-        long lastSeekGen = Interlocked.Read(ref _seekGeneration);
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                bool forcePresent = false;
-                long gen = Interlocked.Read(ref _seekGeneration);
-                if (gen != lastSeekGen)
-                {
-                    lastSeekGen = gen;
-                    _next?.Dispose();   // prefetch belongs to a superseded position
-                    _next = null;
-                    forcePresent = true;
-                }
-
-                await PumpOnceAsync(forcePresent, ct).ConfigureAwait(false);
-
+                await PumpOnceAsync(forcePresent: false, ct).ConfigureAwait(false);
                 int pace = State == PlaybackState.Playing ? _paceMsPlaying : 16;
                 await Task.Delay(pace, ct).ConfigureAwait(false);
             }
@@ -245,36 +312,28 @@ public sealed class PlaybackEngine : IAsyncDisposable
         }
     }
 
-    /// <summary>One pump iteration: catch the presented frame up to the playhead, then report position/end.
-    /// Factored out so deterministic tests can step the pump without the real-time delay loop.</summary>
+    /// <summary>One pump iteration: reconcile players to the tracks, catch each up to the playhead, then report
+    /// position/end. Factored out so deterministic tests can step the pump without the real-time delay loop.</summary>
     internal async Task PumpOnceAsync(bool forcePresent, CancellationToken ct)
     {
+        long gen = Interlocked.Read(ref _seekGeneration);
+        bool seekChanged = gen != _lastPumpGen;
+        if (seekChanged)
+        {
+            _lastPumpGen = gen;
+            foreach (VideoTrackPlayer p in _players)
+                p.MarkNeedsSeek();
+        }
+        bool force = forcePresent || seekChanged;
+
+        if (_reconcile)
+            await ReconcilePlayersAsync().ConfigureAwait(false);
+
         Timecode pos = PlaybackMath.ClampToTimeline(_clock.Now, Duration);
-        Clip? clip = _videoTrack?.ResolveActiveClip(pos);
 
         bool promoted = false;
-        if (clip is not null)
-        {
-            Timecode target = clip.MapToSource(pos);
-
-            _next ??= await _feed.ReadAsync(ct).ConfigureAwait(false);
-
-            // After a seek, present the freshly decoded frame even if its PTS sits just past the target.
-            if (forcePresent && _next is not null)
-            {
-                Promote(_next);
-                promoted = true;
-                _next = await _feed.ReadAsync(ct).ConfigureAwait(false);
-            }
-
-            // Advance through every frame already due, dropping intermediates, landing on the latest ≤ target.
-            while (_next is not null && PlaybackMath.ShouldPromote(_next.Pts, target, forcePresent: false))
-            {
-                Promote(_next);
-                promoted = true;
-                _next = await _feed.ReadAsync(ct).ConfigureAwait(false);
-            }
-        }
+        foreach (VideoTrackPlayer player in _players)
+            promoted |= await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
 
         if (promoted)
             FramePresented?.Invoke();
@@ -283,16 +342,27 @@ public sealed class PlaybackEngine : IAsyncDisposable
         HandleEnd(pos);
     }
 
-    /// <summary>Swaps <paramref name="frame"/> in as the presented frame under the lock and recycles the old one.</summary>
-    private void Promote(VideoFrame frame)
+    /// <summary>Adds players for newly-added video tracks and disposes players for removed ones, so runtime
+    /// <c>+ Track</c> / undo are reflected. A fresh player seeks on its first pump (it starts needing a seek).</summary>
+    private async Task ReconcilePlayersAsync()
     {
-        VideoFrame? old;
-        lock (_frameGate)
+        // Remove players whose track is no longer in the timeline.
+        for (int i = _players.Count - 1; i >= 0; i--)
         {
-            old = _current;
-            _current = frame;
+            if (!_project.Timeline.VideoTracks.Contains(_players[i].Track))
+            {
+                VideoTrackPlayer gone = _players[i];
+                _players.RemoveAt(i);
+                await gone.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        old?.Dispose();
+
+        // Add players for tracks that don't have one yet.
+        foreach (VideoTrack track in _project.Timeline.VideoTracks)
+        {
+            if (FindPlayer(track) is null)
+                _players.Add(new VideoTrackPlayer(track, _feedFactory!, _frameGate));
+        }
     }
 
     private void HandleEnd(Timecode pos)
@@ -341,7 +411,9 @@ public sealed class PlaybackEngine : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
 
-        await _feed.DisposeAsync().ConfigureAwait(false);
+        foreach (VideoTrackPlayer player in _players)
+            await player.DisposeAsync().ConfigureAwait(false);
+        _players.Clear();
 
         // The audio master clock owns a device + feed loop; the software clock owns nothing. Dispose whichever
         // we were given if it is disposable, so the whole playback session tears down through one call.
@@ -350,13 +422,6 @@ public sealed class PlaybackEngine : IAsyncDisposable
         else if (_clock is IDisposable syncClock)
             syncClock.Dispose();
 
-        lock (_frameGate)
-        {
-            _current?.Dispose();
-            _current = null;
-        }
-        _next?.Dispose();
-        _next = null;
         _pumpCts?.Dispose();
     }
 }

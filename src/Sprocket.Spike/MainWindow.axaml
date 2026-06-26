@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Sprocket.Spike"
+        x:Class="Sprocket.Spike.MainWindow"
+        Width="1280" Height="760"
+        Title="Sprocket — Architecture Spike"
+        Background="#0E0E12">
+  <Grid>
+    <local:BrightnessPreviewControl x:Name="Preview" />
+
+    <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="14"
+            Background="#B0000000" CornerRadius="8" Padding="12,8">
+      <StackPanel Spacing="2">
+        <TextBlock Text="Architecture Spike — decode → GPU shader → Avalonia"
+                   Foreground="#8FB8FF" FontSize="12" FontWeight="SemiBold"/>
+        <TextBlock x:Name="Stats"
+                   FontFamily="Cascadia Code,Consolas,monospace"
+                   Foreground="#C8FFC8" FontSize="13" Text="starting…"/>
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

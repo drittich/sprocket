@@ -9,7 +9,6 @@ using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
-using Avalonia.VisualTree;
 using Sprocket.App.Inspector;
 using Sprocket.App.MediaBrowser;
 using Sprocket.Core.Commands;
@@ -122,26 +121,33 @@ public partial class MainWindow : Window
     protected override void OnOpened(EventArgs e)
     {
         base.OnOpened(e);
-
-        // The GPU custom-draw PreviewSurface perturbs Avalonia's first composited frame: sibling controls
-        // (notably the transport bar) can stay unpainted until something invalidates them — e.g. a pointer-over.
-        // Force a full repaint of the visual tree across the first few frames after the window is shown so
-        // everything appears immediately. Spread over a few passes because a single kick can race the first
-        // GPU composition (the cause of the earlier, incomplete fix).
-        KickFirstFramePaint(3);
+        ForceFirstFrameComposite();
     }
 
-    private void KickFirstFramePaint(int remainingPasses)
+    /// <summary>
+    /// Works around an Avalonia 12 compositor regression (AvaloniaUI/Avalonia#20726, #8123) where controls can
+    /// stay unpainted on the first composited frame until a layout/composition pass is forced — the same bug
+    /// users "fix" by hovering or resizing the window. The GPU custom-draw <see cref="PreviewSurface"/> makes it
+    /// deterministic for its DockPanel sibling, the transport bar. A render-only <c>InvalidateVisual</c> is not
+    /// enough (the scene node is never committed), so a few frames after the window is shown we force a full
+    /// layout pass plus a 1px size nudge (the reliable recovery), then stop.
+    /// </summary>
+    private void ForceFirstFrameComposite()
     {
-        if (_root is null || remainingPasses <= 0)
-            return;
-
-        Dispatcher.UIThread.Post(() =>
+        int tick = 0;
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
+        timer.Tick += (_, _) =>
         {
-            foreach (Visual visual in _root!.GetSelfAndVisualDescendants())
-                visual.InvalidateVisual();
-            KickFirstFramePaint(remainingPasses - 1);
-        }, DispatcherPriority.Background);
+            switch (++tick)
+            {
+                case 1 when !double.IsNaN(Width): Width += 1; break; // a real size change rebuilds the scene
+                case 2 when !double.IsNaN(Width): Width -= 1; break; // restore
+            }
+            _root?.InvalidateMeasure();
+            if (tick >= 3)
+                timer.Stop();
+        };
+        timer.Start();
     }
 
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)

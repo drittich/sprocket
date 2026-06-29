@@ -210,18 +210,23 @@
             <Border DockPanel.Dock="Bottom" Background="{DynamicResource PanelBg}" Padding="10,8"
                     BorderBrush="{DynamicResource Edge}" BorderThickness="0,1,0,0">
               <!-- Full transport (UI.md §3.4): ⏮ ◀◀ ▶ ▶▶ ⏭ — jump-to-start, frame-step back, play/pause,
-                   frame-step forward, jump-to-end. Drives whichever monitor (Program/Source) is active. -->
-              <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*,Auto" VerticalAlignment="Center">
+                   frame-step forward, jump-to-end — plus jump-to-previous/next-keyframe (◆◀ ▶◆, PLAN.md
+                   step 16d). Drives whichever monitor (Program/Source) is active. -->
+              <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto" VerticalAlignment="Center">
                 <Button x:Name="JumpStartButton" Grid.Column="0" Classes="transport" Content="⏮" />
                 <Button x:Name="StepBackButton" Grid.Column="1" Classes="transport" Content="◀◀" Margin="4,0,0,0" />
                 <Button x:Name="PlayPauseButton" Grid.Column="2" Classes="transport" Content="▶" Margin="4,0,0,0" />
                 <Button x:Name="StepForwardButton" Grid.Column="3" Classes="transport" Content="▶▶" Margin="4,0,0,0" />
                 <Button x:Name="JumpEndButton" Grid.Column="4" Classes="transport" Content="⏭" Margin="4,0,0,0" />
-                <TextBlock x:Name="PositionText" Grid.Column="5" Margin="14,0,10,0" VerticalAlignment="Center"
+                <Button x:Name="PrevKeyframeButton" Grid.Column="5" Classes="transport" Content="◆◀" Margin="12,0,0,0"
+                        ToolTip.Tip="Jump to previous keyframe of the selected clip" />
+                <Button x:Name="NextKeyframeButton" Grid.Column="6" Classes="transport" Content="▶◆" Margin="4,0,0,0"
+                        ToolTip.Tip="Jump to next keyframe of the selected clip" />
+                <TextBlock x:Name="PositionText" Grid.Column="7" Margin="14,0,10,0" VerticalAlignment="Center"
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource Text}"
                            Text="0:00.00" />
-                <Slider x:Name="Scrubber" Grid.Column="6" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center" />
-                <TextBlock x:Name="DurationText" Grid.Column="7" Margin="10,0,0,0" VerticalAlignment="Center"
+                <Slider x:Name="Scrubber" Grid.Column="8" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center" />
+                <TextBlock x:Name="DurationText" Grid.Column="9" Margin="10,0,0,0" VerticalAlignment="Center"
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource MutedText}"
                            Text="0:00.00" />
               </Grid>

@@ -156,4 +156,156 @@ public static class AnimatableEditing
         }
         return changed ? AnimatableValue.Animated(keyframes) : current;
     }
+
+    /// <summary>
+    /// Cycles the keyframe at <paramref name="time"/> through the interpolation modes
+    /// (Hold → Linear → Ease In → Ease Out → Ease In/Out → Hold), the Premiere-parity successor to the
+    /// step-16b Hold↔Linear toggle (PLAN.md step 16d). A no-op when no keyframe sits there.
+    /// </summary>
+    public static AnimatableValue CycleInterpolation(AnimatableValue current, Timecode time)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        if (!current.IsAnimated)
+            return current;
+        foreach (Keyframe k in current.Keyframes)
+            if (k.Time.Ticks == time.Ticks)
+                return SetInterpolation(current, time, NextMode(k.Interpolation));
+        return current;
+    }
+
+    /// <summary>The next interpolation mode in the cycle used by <see cref="CycleInterpolation"/>.</summary>
+    public static Interpolation NextMode(Interpolation mode) => mode switch
+    {
+        Interpolation.Hold => Interpolation.Linear,
+        Interpolation.Linear => Interpolation.EaseIn,
+        Interpolation.EaseIn => Interpolation.EaseOut,
+        Interpolation.EaseOut => Interpolation.EaseInOut,
+        Interpolation.EaseInOut => Interpolation.Bezier,
+        Interpolation.Bezier => Interpolation.Hold,
+        _ => Interpolation.Linear,
+    };
+
+    /// <summary>
+    /// Sets the <em>outgoing</em> Bezier handle of the keyframe at <paramref name="time"/> and switches it to
+    /// <see cref="Interpolation.Bezier"/> so the segment leaving it uses the custom velocity curve (the editable
+    /// velocity graph, PLAN.md step 16d). A no-op when no keyframe sits there or the value isn't animated.
+    /// </summary>
+    public static AnimatableValue SetOutgoingHandle(AnimatableValue current, Timecode time, BezierHandle handle)
+        => RemapKeyframeAt(current, time, k => k with { Interpolation = Interpolation.Bezier, EaseOut = handle });
+
+    /// <summary>
+    /// Sets the <em>incoming</em> Bezier handle of the keyframe at <paramref name="time"/> — the second control
+    /// point of the segment arriving at it (only in effect when the previous keyframe is
+    /// <see cref="Interpolation.Bezier"/>). The keyframe's own mode is left unchanged. A no-op when no keyframe
+    /// sits there or the value isn't animated.
+    /// </summary>
+    public static AnimatableValue SetIncomingHandle(AnimatableValue current, Timecode time, BezierHandle handle)
+        => RemapKeyframeAt(current, time, k => k with { EaseIn = handle });
+
+    /// <summary>Applies <paramref name="map"/> to the keyframe at <paramref name="time"/>, keeping the rest;
+    /// a no-op when nothing matches.</summary>
+    private static AnimatableValue RemapKeyframeAt(AnimatableValue current, Timecode time, Func<Keyframe, Keyframe> map)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        if (!current.IsAnimated)
+            return current;
+
+        var keyframes = new List<Keyframe>(current.Keyframes.Count);
+        bool changed = false;
+        foreach (Keyframe k in current.Keyframes)
+        {
+            if (k.Time.Ticks == time.Ticks)
+            {
+                keyframes.Add(map(k));
+                changed = true;
+            }
+            else
+            {
+                keyframes.Add(k);
+            }
+        }
+        return changed ? AnimatableValue.Animated(keyframes) : current;
+    }
+
+    /// <summary>
+    /// Shifts every keyframe whose time is in <paramref name="times"/> by <paramref name="deltaTicks"/>
+    /// (negative = left) as one operation — the keyframe nudge / multi-select move (PLAN.md step 16d). Times
+    /// are matched by exact tick. If a shifted keyframe lands on an unselected one the shifted keyframe wins
+    /// (the unselected is dropped), mirroring <see cref="MoveKeyframe"/>; collisions between two shifted
+    /// keyframes keep the last. A no-op when nothing is animated, the delta is zero, or no time matches.
+    /// </summary>
+    public static AnimatableValue NudgeKeyframes(AnimatableValue current, IReadOnlyCollection<long> times, long deltaTicks)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(times);
+        if (!current.IsAnimated || deltaTicks == 0 || times.Count == 0)
+            return current;
+
+        var selected = new HashSet<long>(times);
+        // Destination ticks of the shifted keyframes — used to drop the unselected keyframes they land on.
+        var shiftedTo = new HashSet<long>();
+        bool any = false;
+        foreach (Keyframe k in current.Keyframes)
+            if (selected.Contains(k.Time.Ticks))
+            {
+                shiftedTo.Add(k.Time.Ticks + deltaTicks);
+                any = true;
+            }
+        if (!any)
+            return current;
+
+        var result = new List<Keyframe>(current.Keyframes.Count);
+        foreach (Keyframe k in current.Keyframes)
+        {
+            if (selected.Contains(k.Time.Ticks))
+                result.Add(k with { Time = new Timecode(k.Time.Ticks + deltaTicks) });
+            else if (!shiftedTo.Contains(k.Time.Ticks)) // an unselected keyframe a shifted one lands on is dropped
+                result.Add(k);
+        }
+        return AnimatableValue.Animated(result);
+    }
+
+    /// <summary>The keyframes at the given times, in ascending time order — the "copy" payload for a keyframe
+    /// copy/paste (PLAN.md step 16d). Empty when nothing matches or the value isn't animated.</summary>
+    public static IReadOnlyList<Keyframe> CopyKeyframes(AnimatableValue current, IReadOnlyCollection<long> times)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(times);
+        if (!current.IsAnimated || times.Count == 0)
+            return [];
+        var selected = new HashSet<long>(times);
+        var copied = new List<Keyframe>();
+        foreach (Keyframe k in current.Keyframes)
+            if (selected.Contains(k.Time.Ticks))
+                copied.Add(k);
+        copied.Sort(static (a, b) => a.Time.CompareTo(b.Time));
+        return copied;
+    }
+
+    /// <summary>
+    /// Pastes <paramref name="clipboard"/> keyframes onto <paramref name="current"/> so the earliest one lands
+    /// at <paramref name="at"/> and the rest keep their relative spacing (PLAN.md step 16d). Each pasted
+    /// keyframe is upserted (value + interpolation), overwriting any existing keyframe at the same time. A
+    /// constant value becomes animated. A no-op when the clipboard is empty.
+    /// </summary>
+    public static AnimatableValue PasteKeyframes(AnimatableValue current, IReadOnlyList<Keyframe> clipboard, Timecode at)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(clipboard);
+        if (clipboard.Count == 0)
+            return current;
+
+        long origin = clipboard[0].Time.Ticks;
+        foreach (Keyframe k in clipboard)
+            origin = Math.Min(origin, k.Time.Ticks);
+
+        AnimatableValue result = current;
+        foreach (Keyframe k in clipboard)
+        {
+            var t = new Timecode(at.Ticks + (k.Time.Ticks - origin));
+            result = UpsertKeyframe(result, t, k.Value);
+            result = SetInterpolation(result, t, k.Interpolation);
+        }
+        return result;
+    }
 }

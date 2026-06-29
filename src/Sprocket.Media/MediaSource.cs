@@ -309,8 +309,9 @@ public sealed unsafe class MediaSource : IDisposable
 
     /// <summary>
     /// Seeks so the next <see cref="TryDecodeNextFrame"/> returns the frame at/just after <paramref name="target"/>:
-    /// seek to the keyframe at or before the target, flush the decoder, then arm decode-to-target discard
-    /// (ARCHITECTURE.md §8 "seeking").
+    /// seek to the I-frame at or before the target, flush the decoder, then arm decode-to-target discard
+    /// (ARCHITECTURE.md §8 "seeking"). ("I-frame" = the codec GOP key picture; "keyframe" is reserved for the
+    /// animation sense, PLAN.md step 16d.)
     /// </summary>
     public void SeekTo(Timecode target)
     {
@@ -318,7 +319,7 @@ public sealed unsafe class MediaSource : IDisposable
 
         long targetPts = MediaTime.ToStreamTimestamp(target, _videoTimeBase);
 
-        // AVSEEK_FLAG.Backward: land on the keyframe at or before the target so the GOP decodes cleanly.
+        // AVSEEK_FLAG.Backward: land on the I-frame at or before the target so the GOP decodes cleanly.
         _format.SeekFrame(targetPts, _videoIndex, AVSEEK_FLAG.Backward);
         FlushDecoder();
 

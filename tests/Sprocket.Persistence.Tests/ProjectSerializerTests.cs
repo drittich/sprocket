@@ -149,6 +149,59 @@ public class ProjectSerializerTests
     }
 
     [Fact]
+    public void Round_Trips_Eased_Interpolation_Modes()
+    {
+        // The step-16d eased modes serialize via the string enum converter (additive — no schema bump).
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var project = new Project(timeline);
+        var track = new VideoTrack { Name = "V1" };
+        var clip = new Clip(VideoId, Timecode.Zero, Timecode.FromSeconds(4), Timecode.Zero);
+        clip.Effects.Add(new EffectInstance(EffectTypeIds.Transform).Set(EffectParamNames.Scale,
+            AnimatableValue.Animated(
+            [
+                new Keyframe(Timecode.Zero, 1.0, Interpolation.EaseOut),
+                new Keyframe(Timecode.FromSeconds(2), 1.5, Interpolation.EaseIn),
+                new Keyframe(Timecode.FromSeconds(4), 1.0, Interpolation.EaseInOut),
+            ])));
+        track.Clips.Add(clip);
+        timeline.Tracks.Add(track);
+
+        AnimatableValue scale = RoundTrip(project).Timeline.VideoTracks.First()
+            .Clips.Single().Effects.Single().Parameters[EffectParamNames.Scale];
+        Assert.Collection(scale.Keyframes,
+            k => Assert.Equal(Interpolation.EaseOut, k.Interpolation),
+            k => Assert.Equal(Interpolation.EaseIn, k.Interpolation),
+            k => Assert.Equal(Interpolation.EaseInOut, k.Interpolation));
+        // The eased value survives the trip too (midpoint of an EaseOut segment is below linear).
+        Assert.Equal(1.125, scale.Evaluate(Timecode.FromSeconds(1)), 6); // 1.0 + 0.5*(0.5²)=1.125
+    }
+
+    [Fact]
+    public void Round_Trips_Custom_Bezier_Handles()
+    {
+        // The step-16d custom velocity handles serialize as nullable additive fields (no schema bump).
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var project = new Project(timeline);
+        var track = new VideoTrack { Name = "V1" };
+        var clip = new Clip(VideoId, Timecode.Zero, Timecode.FromSeconds(4), Timecode.Zero);
+        clip.Effects.Add(new EffectInstance(EffectTypeIds.Transform).Set(EffectParamNames.Scale,
+            AnimatableValue.Animated(
+            [
+                new Keyframe(Timecode.Zero, 1.0, Interpolation.Bezier, EaseOut: new BezierHandle(0.2, 0.1)),
+                new Keyframe(Timecode.FromSeconds(4), 2.0, EaseIn: new BezierHandle(0.8, 0.9)),
+            ])));
+        track.Clips.Add(clip);
+        timeline.Tracks.Add(track);
+
+        AnimatableValue scale = RoundTrip(project).Timeline.VideoTracks.First()
+            .Clips.Single().Effects.Single().Parameters[EffectParamNames.Scale];
+        Assert.Equal(Interpolation.Bezier, scale.Keyframes[0].Interpolation);
+        Assert.Equal(new BezierHandle(0.2, 0.1), scale.Keyframes[0].EaseOut);
+        Assert.Equal(new BezierHandle(0.8, 0.9), scale.Keyframes[1].EaseIn);
+        Assert.Null(scale.Keyframes[1].EaseOut); // unset handles stay null (and serialize as omitted)
+    }
+
+    [Fact]
     public void Serialized_Json_Carries_The_Schema_Version()
     {
         string json = ProjectSerializer.Serialize(BuildRichProject());

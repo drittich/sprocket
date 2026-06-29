@@ -204,6 +204,19 @@ public sealed class InspectorPanel : UserControl
         };
         ToolTip.SetTip(keyButton, "Toggle keyframing at the playhead");
 
+        // Velocity-graph toggle (PLAN.md step 16d): expands the keyframe strip into the editable value graph.
+        var graphButton = new Button
+        {
+            Content = "∿",
+            FontSize = 12,
+            Padding = new Avalonia.Thickness(5, 1),
+            Background = Brushes.Transparent,
+            Foreground = FaintText,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsVisible = false,
+        };
+        ToolTip.SetTip(graphButton, "Show / hide the velocity graph");
+
         var label = new TextBlock
         {
             Text = p.DisplayName,
@@ -243,18 +256,25 @@ public sealed class InspectorPanel : UserControl
             Spacing = 4,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
+        rightGroup.Children.Add(graphButton);
         rightGroup.Children.Add(keyButton);
         rightGroup.Children.Add(box);
         DockPanel.SetDock(rightGroup, Dock.Right);
         top.Children.Add(rightGroup);
         top.Children.Add(label);
 
-        // Keyframe lane (PLAN.md step 16b): shown only when the parameter is animated. It edits the same
-        // AnimatableValue through the command stack; a keyframe drag coalesces to one undo entry.
+        // Keyframe lane (PLAN.md step 16b/16d): shown only when the parameter is animated. It edits the same
+        // AnimatableValue through the command stack; a keyframe/handle drag coalesces to one undo entry.
         var lane = new KeyframeLane { IsVisible = false };
         lane.DragStarted += BeginDrag;
         lane.DragEnded += EndDrag;
         lane.Edited += (next, coalescing) => ExecuteParam(effect, p.Name, next, coalescing);
+
+        graphButton.Click += (_, _) =>
+        {
+            lane.GraphMode = !lane.GraphMode;
+            graphButton.Foreground = lane.GraphMode ? Accent : FaintText;
+        };
 
         var stack = new StackPanel();
         stack.Children.Add(top);
@@ -274,9 +294,10 @@ public sealed class InspectorPanel : UserControl
             keyButton.Content = value.IsAnimated ? "◆" : "◇";
             keyButton.Foreground = value.IsAnimated ? Accent : FaintText;
 
+            graphButton.IsVisible = value.IsAnimated;
             lane.IsVisible = value.IsAnimated;
             if (value.IsAnimated && _clip is { } clip)
-                lane.Update(value, clip.TimelineStart.Ticks, clip.TimelineEnd.Ticks, _playhead().Ticks);
+                lane.Update(value, clip.TimelineStart.Ticks, clip.TimelineEnd.Ticks, _playhead().Ticks, p.Min, p.Max);
         });
 
         return stack;

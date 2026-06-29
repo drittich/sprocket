@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private MediaBrowserPanel? _mediaBrowser;
     private InspectorPanel? _inspector;
     private TimelineControl? _timeline;
+    private Clip? _selectedClip; // the timeline selection (keyframe navigation targets its keyframes, step 16d)
 
     // Dual monitors (PLAN.md step 17): the Program monitor wraps the main engine; the Source monitor previews
     // the selected clip's source. The transport bar drives whichever is active.
@@ -48,6 +49,7 @@ public partial class MainWindow : Window
     private IMonitor? _active;
     private PreviewSurface? _preview;
     private Button? _playPause;
+    private Button? _prevKeyframeButton, _nextKeyframeButton;
     private Slider? _scrubber;
     private TextBlock? _positionText, _durationText;
 
@@ -292,11 +294,42 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Delete || e.Key == Key.Back) { _timeline?.DeleteSelected(); e.Handled = true; }
         else if (alt && e.Key == Key.Left) { _timeline?.NudgeSelected(-1); e.Handled = true; }
         else if (alt && e.Key == Key.Right) { _timeline?.NudgeSelected(+1); e.Handled = true; }
+        // Jump-to-previous/next-keyframe of the selected clip (Premiere uses [ / ], step 16d).
+        else if (e.Key == Key.OemOpenBrackets) { JumpToKeyframe(-1); e.Handled = true; }
+        else if (e.Key == Key.OemCloseBrackets) { JumpToKeyframe(+1); e.Handled = true; }
         else if (e.Key == Key.Space) { _active?.TogglePlayPause(); e.Handled = true; }
     }
 
     private bool IsTypingInTextBox() =>
         TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox;
+
+    /// <summary>
+    /// Seeks the playhead to the previous (<paramref name="direction"/> &lt; 0) or next keyframe of the selected
+    /// clip, across all its animated parameters (PLAN.md step 16d). A no-op when there is no selection or no
+    /// keyframe in that direction. Keyframe times are absolute timeline times, so this drives the Program
+    /// monitor (the timeline), regardless of which monitor is active.
+    /// </summary>
+    private void JumpToKeyframe(int direction)
+    {
+        if (_selectedClip is not { } clip || _program is null)
+            return;
+        Timecode now = _program.Position;
+        Timecode? target = direction < 0
+            ? KeyframeNavigation.PreviousKeyframe(clip, now)
+            : KeyframeNavigation.NextKeyframe(clip, now);
+        if (target is { } t)
+            _program.SeekTo(t);
+    }
+
+    /// <summary>Enables the keyframe-jump buttons only when the selection has keyframes to navigate.</summary>
+    private void RefreshKeyframeNav()
+    {
+        bool has = _selectedClip is { } clip && KeyframeNavigation.HasKeyframes(clip);
+        if (_prevKeyframeButton is not null)
+            _prevKeyframeButton.IsEnabled = has;
+        if (_nextKeyframeButton is not null)
+            _nextKeyframeButton.IsEnabled = has;
+    }
 
     // ── Project chrome: title, media bin, sequence badge, telemetry ─────────────────────────────────
 
@@ -409,6 +442,11 @@ public partial class MainWindow : Window
         this.FindControl<Button>("JumpEndButton")!.Click += (_, _) => _active!.JumpToEnd();
         this.FindControl<Button>("StepBackButton")!.Click += (_, _) => _active!.StepFrame(-1);
         this.FindControl<Button>("StepForwardButton")!.Click += (_, _) => _active!.StepFrame(+1);
+        _prevKeyframeButton = this.FindControl<Button>("PrevKeyframeButton")!;
+        _nextKeyframeButton = this.FindControl<Button>("NextKeyframeButton")!;
+        _prevKeyframeButton.Click += (_, _) => JumpToKeyframe(-1);
+        _nextKeyframeButton.Click += (_, _) => JumpToKeyframe(+1);
+        RefreshKeyframeNav();
 
         _scrubber.ValueChanged += (_, e) =>
         {
@@ -564,8 +602,10 @@ public partial class MainWindow : Window
 
         timeline.SelectedClipChanged += clip =>
         {
+            _selectedClip = clip;
             _mediaBrowser?.SetSelectedClip(clip); // the Effects browser applies to this clip
             _inspector?.SetSelectedClip(clip);    // the Inspector edits this clip's properties
+            RefreshKeyframeNav();
 
             // The Source monitor previews the selected clip's source (rebuilds lazily only while its tab is open).
             MediaRef? media = clip is null ? null : _project!.MediaPool.Get(clip.MediaRefId);
@@ -707,6 +747,7 @@ public partial class MainWindow : Window
         bool dirty = _history.UndoCount != _savedUndoCount;
         _saveStateText!.Text = dirty ? "• unsaved changes" : "• all changes saved";
         UpdateTimelineHeader();
+        RefreshKeyframeNav(); // a keyframe just added/removed on the selection toggles the jump buttons
     }
 
     // ── Import ──────────────────────────────────────────────────────────────────────────────────────

@@ -82,7 +82,13 @@ internal sealed record AnimatableValueDto(
 internal sealed record KeyframeDto(
     long TimeTicks,
     double Value,
-    Interpolation Interpolation);
+    Interpolation Interpolation,
+    // Custom Bezier velocity handles (PLAN.md step 16d). Additive + nullable: non-Bezier keyframes omit them
+    // (WhenWritingNull), so pre-16d projects serialize byte-identically and still load.
+    BezierHandleDto? EaseOut = null,
+    BezierHandleDto? EaseIn = null);
+
+internal sealed record BezierHandleDto(double X, double Y);
 
 internal sealed record RationalDto(int Num, int Den);
 

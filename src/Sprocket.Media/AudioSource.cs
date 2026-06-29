@@ -16,7 +16,7 @@ namespace Sprocket.Media;
 /// </summary>
 /// <remarks>
 /// <para><b>Not thread-safe</b> (like <see cref="MediaSource"/>): one decoder + reusable frame/packet, driven
-/// by a single mixing thread. Seeking is keyframe-seek → flush → sample-accurate discard, mirroring the video
+/// by a single mixing thread. Seeking is I-frame-seek → flush → sample-accurate discard, mirroring the video
 /// path (§8). Resampled samples are buffered in a small managed leftover between <see cref="Read"/> calls —
 /// audio is the one data class allowed on the managed heap (§1), and the buffer holds at most one decoded
 /// frame's overflow so steady-state reads add no allocation.</para>

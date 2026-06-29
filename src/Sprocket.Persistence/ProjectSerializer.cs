@@ -142,9 +142,11 @@ public static class ProjectSerializer
 
         var keyframes = new List<KeyframeDto>(value.Keyframes.Count);
         foreach (Keyframe k in value.Keyframes)
-            keyframes.Add(new KeyframeDto(k.Time.Ticks, k.Value, k.Interpolation));
+            keyframes.Add(new KeyframeDto(k.Time.Ticks, k.Value, k.Interpolation, ToDto(k.EaseOut), ToDto(k.EaseIn)));
         return new AnimatableValueDto(null, keyframes);
     }
+
+    private static BezierHandleDto? ToDto(BezierHandle? h) => h is { } v ? new BezierHandleDto(v.X, v.Y) : null;
 
     private static RationalDto ToDto(Rational r) => new(r.Num, r.Den);
 
@@ -225,9 +227,12 @@ public static class ProjectSerializer
     private static AnimatableValue FromDto(AnimatableValueDto v)
     {
         if (v.Keyframes is { Count: > 0 } keyframes)
-            return AnimatableValue.Animated(keyframes.Select(k => new Keyframe(new Timecode(k.TimeTicks), k.Value, k.Interpolation)));
+            return AnimatableValue.Animated(keyframes.Select(k => new Keyframe(
+                new Timecode(k.TimeTicks), k.Value, k.Interpolation, FromDto(k.EaseOut), FromDto(k.EaseIn))));
         return AnimatableValue.Constant(v.Constant ?? 0);
     }
+
+    private static BezierHandle? FromDto(BezierHandleDto? h) => h is { } v ? new BezierHandle(v.X, v.Y) : null;
 
     private static Rational FromDto(RationalDto r) => new(r.Num, r.Den);
 }

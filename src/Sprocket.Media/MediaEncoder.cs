@@ -13,7 +13,7 @@ namespace Sprocket.Media;
 /// <param name="Height">Output frame height in pixels.</param>
 /// <param name="FrameRate">Output frame rate (the encoder time base is its reciprocal).</param>
 /// <param name="BitRate">Target bit rate in bits/s, or <c>0</c> to let the CRF quality setting drive size.</param>
-/// <param name="GopSize">Maximum keyframe interval in frames (<c>0</c> = encoder default).</param>
+/// <param name="GopSize">Maximum I-frame (GOP key picture) interval in frames (<c>0</c> = encoder default).</param>
 public readonly record struct VideoEncoderSettings(int Width, int Height, Rational FrameRate, long BitRate = 0, int GopSize = 0);
 
 /// <summary>Settings for the exported AAC audio stream.</summary>

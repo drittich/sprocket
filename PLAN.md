@@ -768,6 +768,83 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
     Premiere/After Effects convention, and already the model term); to remove the only clash, refer to
     the unrelated **codec** sense (the GOP I-frame `MediaSource` seeks to, step 3) as **"I-frame"** in
     code and docs from here on — no rename of the animation concept is needed.
+    - **✅ DONE — temporal interpolation + keyframe ops + navigation (`Sprocket.Core/Model/{AnimatableValue,
+      KeyframeNavigation}` + `Sprocket.App/Inspector/{AnimatableEditing,KeyframeLane}` + transport; 24 new tests —
+      Core +15, App +8, Persistence +1, all green).** Lands exactly on the existing seam as planned — the
+      per-keyframe `Interpolation` enum **just gains the new modes**, no model redesign (ARCHITECTURE.md §9).
+      Delivered:
+      - **Eased temporal interpolation (Core).** `Interpolation` adds `EaseIn` / `EaseOut` / `EaseInOut` (the
+        "Ease In / Ease Out / Auto Bezier" set) alongside `Hold` / `Linear`; `AnimatableValue.Evaluate` shapes the
+        segment's velocity through a small, exact `Ease()` curve (quadratic accel/decel + a cubic smoothstep —
+        Bezier-like velocity without a curve solver, so it's trivially testable). Each curve is monotonic with
+        f(0)=0, f(1)=1, so endpoints still land on the keyframe values; only the velocity between them changes.
+        **Additive:** old projects (Hold/Linear only) evaluate identically, and the modes round-trip through the
+        string-enum persistence (no schema bump — §12).
+      - **Keyframe navigation (Core).** `KeyframeNavigation.PreviousKeyframe` / `NextKeyframe` gather keyframes
+        across **every** animated parameter of **every** effect on a clip and find the nearest one strictly
+        before/after a time (so it never sticks on the current keyframe), plus `HasKeyframes`. Pure model
+        reasoning, headless-tested beside `RenderGraph`.
+      - **Keyframe ops (App `AnimatableEditing`).** `CycleInterpolation` (the step-16b Hold↔Linear toggle grown to
+        cycle Linear → Ease In → Ease Out → Ease In/Out → Hold → …), `NudgeKeyframes` (shift a whole multi-selection
+        by a tick delta as one op, shifted-wins on collision), and `CopyKeyframes` / `PasteKeyframes` (paste lands
+        the earliest at the playhead, keeps relative spacing, carries value + interpolation) — all pure transforms
+        on the immutable `AnimatableValue`, handed to `SetEffectParameterCommand` so every edit stays undoable
+        (step 10).
+      - **UI wiring (App, manual-verified like the other UI-bound controls).** The Inspector keyframe lane's
+        double-click now **cycles all interpolation modes** (was Hold↔Linear) and draws each mode distinctly
+        (square = Hold, diamond = Linear, circle = eased). The transport bar gains **◆◀ / ▶◆** jump-to-previous/
+        next-keyframe buttons (and `[` / `]` accelerators) that seek the Program playhead to the selected clip's
+        nearest keyframe via `KeyframeNavigation`; the buttons context-enable only when the selection has
+        keyframes (refreshed on selection + on every history change, so adding the first keyframe lights them up).
+      - **Terminology.** Honoured the directive: the **codec** sense of "keyframe" (the GOP key picture
+        `MediaSource`/`AudioSource` seek to, the `MediaEncoder` GOP size) is now called **"I-frame"** in those
+        comments; "keyframe" is reserved for the animation concept (the model term).
+      - **Tests (24):** Core — eased modes hit the endpoints, EaseOut/EaseIn bracket the linear midpoint,
+        EaseInOut is symmetric about 0.5, all eased modes are monotonic; `KeyframeNavigation` prev/next across
+        params, strict (doesn't stick on the current), null at the ends, `HasKeyframes`. App — `CycleInterpolation`
+        walks every mode and wraps + no-ops off a keyframe, `NextMode` covers all five once, `NudgeKeyframes`
+        single/multi/no-op, copy→paste reproduces values + interpolation at a new origin, empty-clipboard no-op.
+        Persistence — an EaseOut/EaseIn/EaseInOut ramp round-trips (modes **and** eased value). Clean build (0
+        warnings); a `SPROCKET_APP_SECONDS=5` smoke launch starts the shell with the keyframe transport wired and
+        tears down cleanly (exit 0). Full suite: **302 tests green** (Core 100, Media 24, Render 18, Audio 16,
+        Playback 40, Export 6, Persistence 13, App 85).
+    - **✅ DONE — editable velocity graph + multi-select gestures (items 1 & 3) (`Sprocket.Core/Model/
+      AnimatableValue` + `Sprocket.Persistence` + `Sprocket.App/Inspector/{AnimatableEditing,KeyframeGraphMath,
+      KeyframeLane,InspectorPanel}`; 11 new tests — Core +3, App +7, Persistence +1, all green).** Still purely
+      additive on the same seam (ARCHITECTURE.md §9). Delivered:
+      - **Custom Bezier velocity curves (Core).** `Interpolation` gains `Bezier`, and `Keyframe` gains two
+        nullable `BezierHandle`s (`EaseOut` = the outgoing control point, `EaseIn` = the incoming one) in
+        segment-normalized (time-fraction, value-progress) space — the CSS / After-Effects
+        `cubic-bezier(x1,y1,x2,y2)` model. `Evaluate` solves Bx(t)=x (Newton-Raphson + bisection fallback) then
+        returns By(t), exact at the endpoints; null handles fall back to a gentle "easy ease"
+        (`BezierHandle.DefaultEaseOut/In`). Additive: pre-16d keyframes (no handles) evaluate identically, and the
+        handles round-trip through persistence as nullable fields (`WhenWritingNull` → byte-identical for
+        non-Bezier projects, **no schema bump**).
+      - **Editing helpers (App `AnimatableEditing`).** `SetOutgoingHandle` (sets the handle **and** switches the
+        keyframe to Bezier) / `SetIncomingHandle` (handle only), and `Bezier` joins the `CycleInterpolation`
+        round-robin. The pure value-axis geometry (`KeyframeGraphMath`: value↔Y mapping, handle
+        progress↔value conversions with a flat-segment guard) mirrors the step-12 `TimelineMath` split.
+      - **Velocity-graph UI + multi-select (App `KeyframeLane`).** The lane now has a **graph mode** (toggled by a
+        `∿` button per animated parameter) that plots the live value curve and, for each Bezier segment, draws
+        **draggable handles** to shape the velocity freely — every drag is one coalesced undo entry. Both the
+        compact strip and the graph support **multi-select**: click, **Shift-click** to toggle, **rubber-band** to
+        box-select, then **drag the whole selection together** (via `NudgeKeyframes`) and **right-click** to delete
+        the selection. Keyframe glyphs read per mode (square Hold · diamond Linear · circle eased · hexagon
+        Bezier); selected keyframes get an accent ring. (The lane/handle drawing + pointer interaction rest on the
+        pure helpers + manual verification, the App being a UI-bound `WinExe`.)
+      - **Tests (11):** Core — Bezier default handles are a symmetric smooth ease, linear-equivalent handles match
+        linear, Bezier is monotonic. App — `SetOutgoing`/`SetIncoming` handle behaviour + no-op, custom handles
+        visibly shape the evaluated curve, `KeyframeGraphMath` value↔Y round-trip / clamp / degenerate-range
+        centring / progress conversions + flat-segment guard. Persistence — a Bezier keyframe's handles round-trip
+        (unset handles stay null). Clean build (0 warnings); a `SPROCKET_APP_SECONDS=5` smoke launch starts the
+        shell with the graph toggle wired and tears down cleanly (exit 0). Full suite: **313 tests green** (Core
+        103, Media 24, Render 18, Audio 16, Playback 40, Export 6, Persistence 14, App 92).
+    - **Remaining for 16d (item 2 — the non-additive part, deferred):** **spatial interpolation / motion paths**
+      for Transform position·anchor with on-canvas Bezier handles in the Program monitor. This needs position
+      modelled as a **2D pair** so X·Y interpolate jointly along a curve, which the current independent
+      `positionX`/`positionY` `AnimatableValue`s (each evaluated per-axis) can't express without the redesign the
+      additive framing avoids; it slots onto the same `AnimatableValue` + command seam when that 2D-position model
+      is introduced.
 17. **Monitors.** Dual **Source / Program** monitors (same render graph, second surface),
     safe-area / framing-grid overlay, **Fit** zoom, and full transport (jump-to-start/end,
     frame-step, play/pause).

@@ -135,39 +135,54 @@ public sealed class PreviewSurface : Control
             SKCanvas canvas = lease.SkCanvas;
             var bounds = SKRect.Create((float)Bounds.Width, (float)Bounds.Height);
 
-            if (_engine is null)
+            // Confine all drawing — crucially the canvas.Clear calls below — to this surface's own bounds. A
+            // Control does not clip to its bounds by default (ClipToBounds is false), so on entry the canvas
+            // clip is the enclosing pane's, which also covers the sibling transport bar + monitor header. This
+            // surface fills the pane and draws last (on top), so an unclipped Clear repaints the whole pane
+            // background and wipes those siblings — the real cause of the "controls blank until hover / flicker
+            // only while playing" symptom (a re-clear every presented frame). Clip to our bounds so it cannot.
+            int checkpoint = canvas.Save();
+            canvas.ClipRect(bounds);
+            try
             {
-                canvas.Clear(Background);
-                return;
-            }
-
-            // The engine holds the frame lock for the callback, so the native buffers stay valid while we wrap
-            // and draw them. Clear once, then composite each enabled video track's frame bottom→top — the same
-            // multi-layer compositing the export path uses (PLAN.md step 14). The draws upload to the GPU on the
-            // shared context (§10); pixels are wrapped, not copied (§1). When a logical frame size is set, all
-            // layers share one zoom rect and the overlay (UI.md §3.4) is drawn over it (PLAN.md step 17).
-            _engine.UseLayers(layers =>
-            {
-                canvas.Clear(Background);
-                if (layers.Count == 0 || _pipeline is null)
-                    return;
-
-                bool haveFrame = _frameWidth > 0 && _frameHeight > 0;
-                SKRect frameRect = haveFrame
-                    ? FramePresenter.ComputeZoomRect(bounds, _frameWidth, _frameHeight, _zoom)
-                    : SKRect.Empty;
-
-                foreach (PresentedVideoLayer l in layers)
+                if (_engine is null)
                 {
-                    SKRect dest = haveFrame ? frameRect : FramePresenter.ComputeFitRect(bounds, l.Width, l.Height);
-                    _pipeline.DrawLayer(
-                        canvas, dest, l.Pixels, l.RowBytes, l.Width, l.Height,
-                        l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                    canvas.Clear(Background);
+                    return;
                 }
 
-                if (_showGuides && haveFrame)
-                    MonitorOverlay.Draw(canvas, frameRect, thirds: true, safeAreas: true);
-            });
+                // The engine holds the frame lock for the callback, so the native buffers stay valid while we wrap
+                // and draw them. Clear once, then composite each enabled video track's frame bottom→top — the same
+                // multi-layer compositing the export path uses (PLAN.md step 14). The draws upload to the GPU on the
+                // shared context (§10); pixels are wrapped, not copied (§1). When a logical frame size is set, all
+                // layers share one zoom rect and the overlay (UI.md §3.4) is drawn over it (PLAN.md step 17).
+                _engine.UseLayers(layers =>
+                {
+                    canvas.Clear(Background);
+                    if (layers.Count == 0 || _pipeline is null)
+                        return;
+
+                    bool haveFrame = _frameWidth > 0 && _frameHeight > 0;
+                    SKRect frameRect = haveFrame
+                        ? FramePresenter.ComputeZoomRect(bounds, _frameWidth, _frameHeight, _zoom)
+                        : SKRect.Empty;
+
+                    foreach (PresentedVideoLayer l in layers)
+                    {
+                        SKRect dest = haveFrame ? frameRect : FramePresenter.ComputeFitRect(bounds, l.Width, l.Height);
+                        _pipeline.DrawLayer(
+                            canvas, dest, l.Pixels, l.RowBytes, l.Width, l.Height,
+                            l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                    }
+
+                    if (_showGuides && haveFrame)
+                        MonitorOverlay.Draw(canvas, frameRect, thirds: true, safeAreas: true);
+                });
+            }
+            finally
+            {
+                canvas.RestoreToCount(checkpoint);
+            }
         }
 
         private static SKBlendMode ToBlendMode(BlendMode mode) => mode switch

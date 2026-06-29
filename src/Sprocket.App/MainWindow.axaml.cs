@@ -118,38 +118,6 @@ public partial class MainWindow : Window
     private void ToggleMaximize() =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
-    protected override void OnOpened(EventArgs e)
-    {
-        base.OnOpened(e);
-        ForceFirstFrameComposite();
-    }
-
-    /// <summary>
-    /// Works around an Avalonia 12 compositor regression (AvaloniaUI/Avalonia#20726, #8123) where controls can
-    /// stay unpainted on the first composited frame until a layout/composition pass is forced — the same bug
-    /// users "fix" by hovering or resizing the window. The GPU custom-draw <see cref="PreviewSurface"/> makes it
-    /// deterministic for its DockPanel sibling, the transport bar. A render-only <c>InvalidateVisual</c> is not
-    /// enough (the scene node is never committed), so a few frames after the window is shown we force a full
-    /// layout pass plus a 1px size nudge (the reliable recovery), then stop.
-    /// </summary>
-    private void ForceFirstFrameComposite()
-    {
-        int tick = 0;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(60) };
-        timer.Tick += (_, _) =>
-        {
-            switch (++tick)
-            {
-                case 1 when !double.IsNaN(Width): Width += 1; break; // a real size change rebuilds the scene
-                case 2 when !double.IsNaN(Width): Width -= 1; break; // restore
-            }
-            _root?.InvalidateMeasure();
-            if (tick >= 3)
-                timer.Stop();
-        };
-        timer.Start();
-    }
-
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);

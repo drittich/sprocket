@@ -33,7 +33,15 @@ public static class RenderGraph
 
             Timecode sourceT = clip.MapToSource(t);
             IReadOnlyList<ResolvedEffect> effects = ResolveEffectsCore(clip, t);
-            layers.Add(new VideoLayer(clip.MediaRefId, sourceT, effects, track.Opacity, track.BlendMode));
+            layers.Add(clip.Kind switch
+            {
+                ClipKind.Generator => new VideoLayer(
+                    default, sourceT, effects, track.Opacity, track.BlendMode,
+                    LayerKind.Generator, ResolveGeneratorCore(clip.Generator!, t)),
+                ClipKind.Adjustment => new VideoLayer(
+                    default, sourceT, effects, track.Opacity, track.BlendMode, LayerKind.Adjustment),
+                _ => new VideoLayer(clip.MediaRefId, sourceT, effects, track.Opacity, track.BlendMode),
+            });
         }
 
         return new VideoFramePlan(project.Timeline.Resolution, t, layers);
@@ -77,9 +85,11 @@ public static class RenderGraph
     }
 
     /// <summary>
-    /// Executes a video plan against the layer seams: create a transparent surface, then for each layer
-    /// fetch its source frame, fold its effect chain, and composite it on. Returns the snapshotted
-    /// composited frame. This is the single code path shared by preview and export.
+    /// Executes a video plan against the layer seams: create a transparent surface, then for each layer fetch its
+    /// content, fold its effect chain, and composite it on. Returns the snapshotted composited frame. This is the
+    /// single code path shared by preview and export. Generator layers draw via
+    /// <see cref="IVideoCompositor{TImage}.CreateGeneratorFrame"/>; an adjustment layer applies its effects to a
+    /// snapshot of the composite so far and blends the result back (ARCHITECTURE.md §5, PLAN.md step 19).
     /// </summary>
     public static TImage Render<TImage>(
         VideoFramePlan plan,
@@ -93,7 +103,15 @@ public static class RenderGraph
         TImage surface = compositor.CreateTransparentSurface(plan.Resolution);
         foreach (VideoLayer layer in plan.Layers)
         {
-            TImage frame = frameSource.GetFrame(layer.MediaRefId, layer.SourceTime);
+            // An adjustment layer has no content of its own: take what is already composited beneath it, run the
+            // layer's effects over that, and blend the graded result back with the layer's opacity/blend.
+            TImage frame = layer.Kind switch
+            {
+                LayerKind.Generator => compositor.CreateGeneratorFrame(layer.Generator!, plan.Resolution, layer.SourceTime),
+                LayerKind.Adjustment => compositor.Snapshot(surface),
+                _ => frameSource.GetFrame(layer.MediaRefId, layer.SourceTime),
+            };
+
             foreach (ResolvedEffect effect in layer.Effects)
                 frame = compositor.ApplyEffect(frame, effect);
 
@@ -113,6 +131,28 @@ public static class RenderGraph
     {
         ArgumentNullException.ThrowIfNull(clip);
         return ResolveEffectsCore(clip, t);
+    }
+
+    /// <summary>
+    /// Evaluates a generator's animatable parameters at timeline time <paramref name="t"/> into a
+    /// <see cref="ResolvedGenerator"/> the Render layer draws from (PLAN.md step 19). String parameters pass
+    /// through unchanged. Exposed so the playback preview can resolve a generator layer off the same path the
+    /// planner uses.
+    /// </summary>
+    public static ResolvedGenerator ResolveGenerator(GeneratorSpec generator, Timecode t)
+    {
+        ArgumentNullException.ThrowIfNull(generator);
+        return ResolveGeneratorCore(generator, t);
+    }
+
+    private static ResolvedGenerator ResolveGeneratorCore(GeneratorSpec generator, Timecode t)
+    {
+        var values = new Dictionary<string, double>(generator.Parameters.Count);
+        foreach ((string name, AnimatableValue value) in generator.Parameters)
+            values[name] = value.Evaluate(t);
+        // Copy the string map so the resolved generator is an immutable snapshot independent of later edits.
+        var strings = new Dictionary<string, string>(generator.Strings);
+        return new ResolvedGenerator(generator.GeneratorTypeId, strings, values);
     }
 
     private static ResolvedEffect[] ResolveEffectsCore(Clip clip, Timecode t)

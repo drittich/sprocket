@@ -27,6 +27,13 @@ public interface IVideoCompositor<TImage>
     TImage CreateTransparentSurface(Resolution size);
 
     /// <summary>
+    /// Draws a generator's procedural content (title/text, colour matte) into a fresh <paramref name="size"/>
+    /// image at generator-local time <paramref name="localTime"/> (PLAN.md step 19). The result enters the effect
+    /// chain exactly like a decoded frame, so generator layers carry effects and composite like any other.
+    /// </summary>
+    TImage CreateGeneratorFrame(ResolvedGenerator generator, Resolution size, Timecode localTime);
+
+    /// <summary>
     /// Applies one effect to <paramref name="frame"/>, returning the result. Effects are applied in
     /// order so each call's output is the next call's input (the chained shader graph of §7).
     /// </summary>

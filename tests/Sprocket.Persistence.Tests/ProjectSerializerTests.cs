@@ -202,6 +202,63 @@ public class ProjectSerializerTests
     }
 
     [Fact]
+    public void Round_Trips_Generator_And_Adjustment_Clips()
+    {
+        // PLAN.md step 19: a generator clip (with string + keyframed-numeric params) and an adjustment layer.
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var project = new Project(timeline);
+
+        var genTrack = new VideoTrack { Name = "V1" };
+        var spec = new GeneratorSpec(GeneratorTypeIds.Title)
+            .SetString(GeneratorParamNames.Text, "Hello")
+            .SetString(GeneratorParamNames.Color, "#FFEEDDCC")
+            .Set(GeneratorParamNames.FontSize, AnimatableValue.Animated(
+            [
+                new Keyframe(Timecode.Zero, 0.1),
+                new Keyframe(Timecode.FromSeconds(2), 0.2),
+            ]));
+        Clip generator = Clip.CreateGenerator(spec, Timecode.FromSeconds(3), Timecode.FromSeconds(1));
+        generator.SourceIn = Timecode.FromSeconds(0.5); // a trimmed generator: non-zero source in must survive
+        genTrack.Clips.Add(generator);
+
+        var adjTrack = new VideoTrack { Name = "V2" };
+        Clip adjustment = Clip.CreateAdjustment(Timecode.FromSeconds(4), Timecode.Zero);
+        adjustment.Effects.Add(new EffectInstance(EffectTypeIds.Color).Set(EffectParamNames.Saturation, 0.0));
+        adjTrack.Clips.Add(adjustment);
+
+        timeline.Tracks.Add(genTrack);
+        timeline.Tracks.Add(adjTrack);
+
+        Timeline loaded = RoundTrip(project).Timeline;
+        Clip g = loaded.VideoTracks.First().Clips.Single();
+        Assert.Equal(ClipKind.Generator, g.Kind);
+        Assert.NotNull(g.Generator);
+        Assert.Equal(GeneratorTypeIds.Title, g.Generator!.GeneratorTypeId);
+        Assert.Equal("Hello", g.Generator.GetString(GeneratorParamNames.Text));
+        Assert.Equal("#FFEEDDCC", g.Generator.GetString(GeneratorParamNames.Color));
+        Assert.Equal(0.15, g.Generator.Parameters[GeneratorParamNames.FontSize].Evaluate(Timecode.FromSeconds(1)), 6);
+        Assert.Equal(Timecode.FromSeconds(0.5).Ticks, g.SourceIn.Ticks);
+        Assert.Equal(Timecode.FromSeconds(3).Ticks, g.SourceOut.Ticks);
+        Assert.Equal(Timecode.FromSeconds(1).Ticks, g.TimelineStart.Ticks);
+
+        Clip a = loaded.VideoTracks.Last().Clips.Single();
+        Assert.Equal(ClipKind.Adjustment, a.Kind);
+        Assert.Null(a.Generator);
+        Assert.Equal(EffectTypeIds.Color, Assert.Single(a.Effects).EffectTypeId);
+    }
+
+    [Fact]
+    public void Media_Only_Clip_Omits_Kind_And_Generator_In_Json()
+    {
+        // The step-19 clip fields are additive + nullable: a plain media project must not emit them, so pre-19
+        // files stay byte-identical and there is no schema bump. (The two "kind" tokens present are the per-track
+        // TrackKind discriminators; the rich project has two tracks and no generator clips.)
+        string json = ProjectSerializer.Serialize(BuildRichProject());
+        Assert.DoesNotContain("\"generator\"", json);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(json, "\"kind\"").Count);
+    }
+
+    [Fact]
     public void Serialized_Json_Carries_The_Schema_Version()
     {
         string json = ProjectSerializer.Serialize(BuildRichProject());

@@ -64,6 +64,9 @@
             <MenuItem x:Name="SelectAllMenuItem" Header="Select _All" InputGesture="Ctrl+A" IsEnabled="False" />
           </MenuItem>
           <MenuItem x:Name="ClipMenu" Header="_Clip">
+            <!-- Insert generators / adjustment layer at the playhead (PLAN.md step 19); children added at runtime. -->
+            <MenuItem x:Name="ClipInsertMenuItem" Header="_Insert" />
+            <Separator />
             <!-- Per-clip Enable / Speed-Duration aren't modelled yet — visibly disabled. -->
             <MenuItem x:Name="ClipEnableMenuItem" Header="_Enable" IsEnabled="False" />
             <Separator />

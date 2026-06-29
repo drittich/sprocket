@@ -6,6 +6,7 @@ using Avalonia.Skia;
 using Avalonia.Threading;
 using SkiaSharp;
 using Sprocket.Core.Model;
+using Sprocket.Core.Rendering;
 using Sprocket.Playback;
 using Sprocket.Render;
 
@@ -133,6 +134,7 @@ public sealed class PreviewSurface : Control
 
             using ISkiaSharpApiLease lease = feature.Lease();
             SKCanvas canvas = lease.SkCanvas;
+            SKSurface? leaseSurface = lease.SkSurface; // needed to snapshot the lower composite for adjustment layers
             var bounds = SKRect.Create((float)Bounds.Width, (float)Bounds.Height);
 
             // Confine all drawing — crucially the canvas.Clear calls below — to this surface's own bounds. A
@@ -170,9 +172,26 @@ public sealed class PreviewSurface : Control
                     foreach (PresentedVideoLayer l in layers)
                     {
                         SKRect dest = haveFrame ? frameRect : FramePresenter.ComputeFitRect(bounds, l.Width, l.Height);
-                        _pipeline.DrawLayer(
-                            canvas, dest, l.Pixels, l.RowBytes, l.Width, l.Height,
-                            l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                        switch (l.Kind)
+                        {
+                            case LayerKind.Generator when l.Generator is not null:
+                                _pipeline.DrawGenerator(
+                                    canvas, dest, l.Generator, l.Width, l.Height,
+                                    l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                                break;
+
+                            case LayerKind.Adjustment when leaseSurface is not null:
+                                // Grade the composite drawn so far beneath this layer (PLAN.md step 19).
+                                _pipeline.DrawAdjustment(
+                                    leaseSurface, dest, l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                                break;
+
+                            case LayerKind.Media:
+                                _pipeline.DrawLayer(
+                                    canvas, dest, l.Pixels, l.RowBytes, l.Width, l.Height,
+                                    l.Effects, l.Opacity, ToBlendMode(l.BlendMode));
+                                break;
+                        }
                     }
 
                     if (_showGuides && haveFrame)

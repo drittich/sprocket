@@ -97,6 +97,69 @@ public sealed class VideoExporterTests
     }
 
     [Fact]
+    public void Export_GeneratorClip_RendersItsPixels()
+    {
+        // PLAN.md step 19: a generator clip has no source media — its pixels come from the generator. A white
+        // colour matte must export far brighter than a black one, proving the generator drew on the export path.
+        using var white = new TempFile();
+        using var black = new TempFile();
+        VideoExporter.Export(BuildGeneratorProject("#FFFFFFFF"), white.Path);
+        VideoExporter.Export(BuildGeneratorProject("#FF000000"), black.Path);
+
+        double whiteMean = FirstFrameMeanRgb(white.Path);
+        double blackMean = FirstFrameMeanRgb(black.Path);
+        Assert.True(whiteMean > blackMean + 120,
+            $"White matte should export brighter than black: white={whiteMean:0.0}, black={blackMean:0.0}");
+
+        // The generator timeline is a real, correctly-sized, full-length video.
+        using MediaSource decoded = MediaSource.Open(white.Path, HardwareAccelMode.Disabled);
+        Assert.True(decoded.Info.HasVideo);
+        Assert.Equal(ExportFixture.Width, decoded.Info.Width);
+        Assert.InRange(CountVideoFrames(black.Path), 28, 32);
+    }
+
+    [Fact]
+    public void Export_AdjustmentLayer_GradesTheTrackBeneath()
+    {
+        // An adjustment layer on a track above the media must regrade the composite beneath it: a brightness-0.3
+        // adjustment darkens the exported frame relative to the same media with no adjustment.
+        using var graded = new TempFile();
+        using var plain = new TempFile();
+        VideoExporter.Export(BuildAdjustmentProject(brightness: 0.3), graded.Path);
+        VideoExporter.Export(BuildAdjustmentProject(brightness: null), plain.Path);
+
+        double gradedMean = FirstFrameMeanRgb(graded.Path);
+        double plainMean = FirstFrameMeanRgb(plain.Path);
+        Assert.True(gradedMean < plainMean * 0.6,
+            $"Adjustment brightness 0.3 should darken the composite: graded={gradedMean:0.0}, plain={plainMean:0.0}");
+    }
+
+    private static Project BuildGeneratorProject(string colorHex)
+    {
+        var timeline = new Timeline(new Rational(ExportFixture.Fps, 1), new Resolution(ExportFixture.Width, ExportFixture.Height), ExportFixture.SampleRate);
+        var project = new Project(timeline);
+        var track = new VideoTrack { Name = "V1" };
+        var spec = new GeneratorSpec(GeneratorTypeIds.SolidColor).SetString(GeneratorParamNames.Color, colorHex);
+        track.Clips.Add(Clip.CreateGenerator(spec, Timecode.FromSeconds(1), Timecode.Zero));
+        timeline.Tracks.Add(track);
+        return project;
+    }
+
+    private static Project BuildAdjustmentProject(double? brightness)
+    {
+        Project project = ExportFixture.BuildProject(withAudio: false);
+        if (brightness is { } amount)
+        {
+            var adjTrack = new VideoTrack { Name = "V2" };
+            Clip adjustment = Clip.CreateAdjustment(project.Timeline.Duration, Timecode.Zero);
+            adjustment.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, amount));
+            adjTrack.Clips.Add(adjustment);
+            project.Timeline.Tracks.Add(adjTrack); // on top of V1 in z-order
+        }
+        return project;
+    }
+
+    [Fact]
     public void Export_EmptyTimeline_Throws()
     {
         var timeline = new Timeline(new Rational(30, 1), new Resolution(320, 240), 48000);

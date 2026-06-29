@@ -983,6 +983,51 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
     ([ARCHITECTURE §5](ARCHITECTURE.md), [UI.md §3.6](UI.md)). It trims / moves / stacks and carries
     opacity + blend like any clip, and the same adjustment item can be **reused across tracks and
     sequences**. ("Adjustment layer" is unambiguous in this codebase, so the term is kept.)
+    - **✅ DONE (Core model + render graph + Render + Export + Persistence + Playback + App; 25 new tests — Core
+      +10, Render +5, Export +2, Persistence +2, Playback +1, plus the executor seam fake — all green).** Both
+      content kinds land on the existing seams (§17): a generator is a new frame producer fed to the render graph,
+      and an adjustment layer is a new render-graph compositing stage — neither is a rewrite. Delivered:
+      - **Clip kinds (Core, §4):** `Clip.Kind` (`Media` / `Generator` / `Adjustment`) with factories
+        `Clip.CreateGenerator(spec, duration, start)` and `Clip.CreateAdjustment(duration, start)`. Generator/
+        adjustment clips have no source media (`MediaRefId` default); they trim / move / slip / stack and carry an
+        effect stack like any clip (the synthetic source is unbounded). `Clip.CloneContentForSpan` keeps a blade
+        split kind-aware (the right half stays a generator/adjustment), used by `SplitClipCommand`.
+      - **`GeneratorSpec` + `GeneratorCatalog` (Core):** a generator carries a type id, **string** params (text,
+        colour `#AARRGGBB`) and **numeric animatable** params (font size) — reusing `AnimatableValue` so a
+        generator parameter keyframes. `GeneratorCatalog` is the registry the bin/menu list over (built-ins:
+        **Title**, **Color Matte**), mirroring `EffectCatalog`; a plugin generator (step 23) registers here too.
+      - **Render graph (Core, §5):** `PlanVideoFrame` emits a `LayerKind` per layer — `Generator` carries the
+        `ResolvedGenerator` (params evaluated at *t*), `Adjustment` carries only its resolved effect stack. The
+        generic `Render<TImage>` executor draws a generator via a new `IVideoCompositor.CreateGeneratorFrame` seam
+        and realises an **adjustment** by snapshotting the composite drawn so far, folding the layer's effects over
+        it, and blending the graded result back — so at full opacity it replaces, and below it cross-fades original
+        vs. grade (the Premiere semantic). `RenderGraph.ResolveGenerator` is public for the preview.
+      - **Render layer:** `SkiaEffectPipeline` factored its per-layer draw into `DrawImageLayer` (image → effect
+        chain → composite) and added `DrawGenerator` (renders the matte / centred SkSL-free text into an offscreen
+        surface, then runs the same effect chain) and `DrawAdjustment` (snapshots the surface region — mapped
+        through the canvas matrix so a translated preview canvas grabs the right pixels — grades it, draws it back).
+        Unknown generator ids draw nothing (pass-through, like unknown effects).
+      - **Export:** `VideoExporter` switches per `LayerKind` — generators draw at full resolution, adjustment layers
+        grade the composite beneath — on the same deterministic raster path, so both are golden-frame testable.
+      - **Persistence:** `ClipDto` gains additive, nullable `Kind` + `Generator` (a `GeneratorDto` with string +
+        animatable params); a media clip writes neither, so pre-step-19 files load unchanged and media-only projects
+        serialize byte-identically (no schema bump). A trimmed generator's non-zero source-in round-trips.
+      - **Preview + App:** `PlaybackEngine.UseLayers` emits generator/adjustment layers from the active clip's kind
+        — **no decoder needed** for them — and the pump fires `FramePresented` for active synthetic clips (so an
+        animated title/grade repaints on play and on a scrub). `PreviewSurface` draws each kind on the GPU lease
+        (snapshotting `lease.SkSurface` for adjustment). **Clip ▸ Insert** (built from `GeneratorCatalog` + an
+        Adjustment Layer item) inserts at the playhead via the command stack (undoable), stacking on a fresh top
+        track when the topmost is occupied so an adjustment grades — not displaces — the content below; the timeline
+        labels synthetic clips by title text / generator name / "Adjustment Layer".
+      - **Tests:** generator/adjustment plan resolution + executor ordering (Core); clip-kind factories, spec clone
+        independence, catalog, split-preserves-generator (Core); real SkSL **solid-colour fill, title text over a
+        background, unknown-generator no-op, adjustment grades the composite, no-effects no-op** on offscreen raster
+        (Render); **white-vs-black matte brightness + adjustment-darkens-lower-track** encode→decode round-trips
+        (Export); generator/adjustment JSON round-trip + media-only-omits-fields (Persistence); synthetic clips
+        become layers without a decoder (Playback). Full suite: **355 tests green** (Core 122, Media 24, Render 23,
+        Audio 16, Playback 45, Export 8, Persistence 18, App 99). Clean build (0 warnings), smoke launch starts +
+        tears down cleanly. **Note:** the windowed preview rests on manual verification as before; the export +
+        Render-raster paths cover the pixels deterministically.
 19b. **Sequences (nesting / compound clips).** Generalise the project's single `Timeline` to
     **multiple named sequences**, and let a whole sequence be **placed inside another sequence as a
     clip** (Premiere "nested sequence" / Final Cut "compound clip"). To the render graph a

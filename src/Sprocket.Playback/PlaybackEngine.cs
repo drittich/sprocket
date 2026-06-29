@@ -31,6 +31,10 @@ public enum PlaybackState
 /// <param name="Effects">The clip's effect chain, evaluated at the current playhead time (bottom→top).</param>
 /// <param name="Opacity">The track's opacity in [0, 1].</param>
 /// <param name="BlendMode">How the track blends onto the layers beneath it.</param>
+/// <param name="Kind">What produces this layer (media frame / generator / adjustment), PLAN.md step 19.</param>
+/// <param name="Generator">The procedural source for a <see cref="LayerKind.Generator"/> layer; otherwise null.
+/// For generator/adjustment layers <see cref="Pixels"/> is 0 and <see cref="Width"/>/<see cref="Height"/> carry the
+/// sequence resolution.</param>
 public readonly record struct PresentedVideoLayer(
     nint Pixels,
     int RowBytes,
@@ -39,7 +43,9 @@ public readonly record struct PresentedVideoLayer(
     Timecode Pts,
     IReadOnlyList<ResolvedEffect> Effects,
     double Opacity,
-    BlendMode BlendMode);
+    BlendMode BlendMode,
+    LayerKind Kind = LayerKind.Media,
+    ResolvedGenerator? Generator = null);
 
 /// <summary>
 /// A snapshot of the single (top-most) presented frame — the back-compatible view for a one-layer consumer.
@@ -272,23 +278,43 @@ public sealed class PlaybackEngine : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(use);
         Timecode pos = Position;
+        Resolution res = _project.Timeline.Resolution;
         lock (_frameGate)
         {
             var layers = new List<PresentedVideoLayer>(_players.Count);
-            // Bottom→top: iterate video tracks in z-order and emit the matching player's frame if it has one.
+            // Bottom→top: iterate video tracks in z-order and emit each active clip's layer. Media clips contribute
+            // only when their player has a decoded frame; generator/adjustment clips contribute without a decoder
+            // (PLAN.md step 19) — the preview draws their content / applies their effects to the lower composite.
             foreach (VideoTrack track in _project.Timeline.VideoTracks)
             {
                 if (!track.Enabled)
                     continue;
-                VideoTrackPlayer? player = FindPlayer(track);
-                if (player?.Current is not { } frame)
-                    continue;
                 Clip? clip = track.ResolveActiveClip(pos);
                 if (clip is null)
                     continue;
-                layers.Add(new PresentedVideoLayer(
-                    frame.Pixels, frame.RowBytes, frame.Width, frame.Height, frame.Pts,
-                    RenderGraph.ResolveEffects(clip, pos), track.Opacity, track.BlendMode));
+
+                IReadOnlyList<ResolvedEffect> effects = RenderGraph.ResolveEffects(clip, pos);
+                switch (clip.Kind)
+                {
+                    case ClipKind.Generator:
+                        layers.Add(new PresentedVideoLayer(
+                            0, 0, res.Width, res.Height, clip.MapToSource(pos), effects, track.Opacity, track.BlendMode,
+                            LayerKind.Generator, RenderGraph.ResolveGenerator(clip.Generator!, pos)));
+                        break;
+
+                    case ClipKind.Adjustment:
+                        layers.Add(new PresentedVideoLayer(
+                            0, 0, res.Width, res.Height, pos, effects, track.Opacity, track.BlendMode,
+                            LayerKind.Adjustment));
+                        break;
+
+                    default:
+                        if (FindPlayer(track)?.Current is { } frame)
+                            layers.Add(new PresentedVideoLayer(
+                                frame.Pixels, frame.RowBytes, frame.Width, frame.Height, frame.Pts,
+                                effects, track.Opacity, track.BlendMode));
+                        break;
+                }
             }
             use(layers);
         }
@@ -389,11 +415,28 @@ public sealed class PlaybackEngine : IAsyncDisposable
         foreach (VideoTrackPlayer player in _players)
             promoted |= await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
 
-        if (promoted)
+        // Generator / adjustment clips have no decoder to "promote" a frame, so they'd never trigger a repaint.
+        // Repaint for them when playing (their content/effects may animate) or when a seek forces a present
+        // (a scrub onto a title). A static synthetic clip while paused doesn't repaint every idle tick.
+        bool synthetic = (State == PlaybackState.Playing || force) && HasActiveSyntheticVideoClip(pos);
+        if (promoted || synthetic)
             FramePresented?.Invoke();
 
         PositionChanged?.Invoke(pos);
         HandleEnd(pos);
+    }
+
+    /// <summary>Whether any enabled video track has a generator or adjustment clip active at <paramref name="pos"/>.</summary>
+    private bool HasActiveSyntheticVideoClip(Timecode pos)
+    {
+        foreach (VideoTrack track in _project.Timeline.VideoTracks)
+        {
+            if (!track.Enabled)
+                continue;
+            if (track.ResolveActiveClip(pos) is { Kind: ClipKind.Generator or ClipKind.Adjustment })
+                return true;
+        }
+        return false;
     }
 
     /// <summary>Drains the pending source invalidations (from <see cref="InvalidateSource"/>) and asks any player

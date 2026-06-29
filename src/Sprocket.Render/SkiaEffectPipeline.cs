@@ -154,9 +154,34 @@ half4 main(float2 coord) {
         if (pixels == 0 || width <= 0 || height <= 0 || dest.Width <= 0 || dest.Height <= 0)
             return;
 
-        byte alpha = (byte)Math.Clamp(opacity * 255.0, 0, 255);
         var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Opaque);
         using SKImage image = SKImage.FromPixels(info, pixels, rowBytes);
+        DrawImageLayer(canvas, dest, image, effects, opacity, blend);
+    }
+
+    /// <summary>
+    /// Draws an already-built <see cref="SKImage"/> into <paramref name="dest"/> with its <paramref name="effects"/>
+    /// chain, compositing onto the canvas with <paramref name="opacity"/> and <paramref name="blend"/> (no clear).
+    /// The shared per-layer primitive: <see cref="DrawLayer"/> wraps decoded native pixels and calls it, while
+    /// <see cref="DrawGenerator"/> and the adjustment-layer path build their <see cref="SKImage"/> first. The
+    /// image must remain valid for the call.
+    /// </summary>
+    public void DrawImageLayer(
+        SKCanvas canvas,
+        SKRect dest,
+        SKImage image,
+        IReadOnlyList<ResolvedEffect> effects,
+        double opacity = 1.0,
+        SKBlendMode blend = SKBlendMode.SrcOver)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(canvas);
+        ArgumentNullException.ThrowIfNull(image);
+
+        if (image.Width <= 0 || image.Height <= 0 || dest.Width <= 0 || dest.Height <= 0)
+            return;
+
+        byte alpha = (byte)Math.Clamp(opacity * 255.0, 0, 255);
 
         // No effects → a plain image draw (the allocation-clean step-4 path). Track opacity/blend still apply.
         if (effects is null || effects.Count == 0)
@@ -168,11 +193,11 @@ half4 main(float2 coord) {
             return;
         }
 
-        // Root of the chain: the decoded image as a shader, mapped into the destination rectangle so the
-        // runtime effects sample it in canvas space (a uniform fit scale, hence one factor for both axes).
-        // When a Transform is in the chain it can sample outside the frame; Decal tiling makes that read as
-        // transparent (so a shrunk layer reveals the background) — otherwise Clamp keeps the step-7 fit-draw.
-        float scale = dest.Width / width;
+        // Root of the chain: the image as a shader, mapped into the destination rectangle so the runtime effects
+        // sample it in canvas space (a uniform fit scale, hence one factor for both axes). When a Transform is in
+        // the chain it can sample outside the frame; Decal tiling makes that read as transparent (so a shrunk
+        // layer reveals the background) — otherwise Clamp keeps the step-7 fit-draw.
+        float scale = dest.Width / image.Width;
         SKMatrix localMatrix = SKMatrix.CreateScaleTranslation(scale, scale, dest.Left, dest.Top);
         SKShaderTileMode tile = HasTransform(effects) ? SKShaderTileMode.Decal : SKShaderTileMode.Clamp;
 
@@ -196,11 +221,126 @@ half4 main(float2 coord) {
         ResetPaint();
 
         // The draw has consumed the shader graph; release the per-frame shader objects (the image is freed by
-        // the using above). Intermediate child shaders are not auto-disposed by their parents, so dispose all.
+        // the caller). Intermediate child shaders are not auto-disposed by their parents, so dispose all.
         foreach (SKShader s in _scratch)
             s.Dispose();
         _scratch.Clear();
     }
+
+    /// <summary>
+    /// Draws a generator's procedural content (title/text, colour matte — PLAN.md step 19) into
+    /// <paramref name="dest"/>, with its <paramref name="effects"/> chain and track <paramref name="opacity"/>/
+    /// <paramref name="blend"/>. The generator is rendered into a fresh <paramref name="width"/>×<paramref name="height"/>
+    /// surface (the sequence resolution) and then composited through the same per-layer path as a decoded frame, so
+    /// generators carry effects and blend like any other layer. An unknown generator id draws nothing (pass-through).
+    /// </summary>
+    public void DrawGenerator(
+        SKCanvas canvas,
+        SKRect dest,
+        ResolvedGenerator generator,
+        int width,
+        int height,
+        IReadOnlyList<ResolvedEffect> effects,
+        double opacity = 1.0,
+        SKBlendMode blend = SKBlendMode.SrcOver)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(canvas);
+        ArgumentNullException.ThrowIfNull(generator);
+
+        if (width <= 0 || height <= 0 || dest.Width <= 0 || dest.Height <= 0)
+            return;
+
+        var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using SKSurface? offscreen = SKSurface.Create(info);
+        if (offscreen is null)
+            return;
+
+        RenderGeneratorContent(offscreen.Canvas, generator, width, height);
+        offscreen.Canvas.Flush();
+        using SKImage image = offscreen.Snapshot();
+        DrawImageLayer(canvas, dest, image, effects, opacity, blend);
+    }
+
+    /// <summary>
+    /// Applies an adjustment layer's <paramref name="effects"/> to the composite already drawn into
+    /// <paramref name="surface"/> within <paramref name="dest"/>, blending the graded result back with
+    /// <paramref name="opacity"/>/<paramref name="blend"/> (PLAN.md step 19, ARCHITECTURE.md §5). It snapshots the
+    /// region beneath, runs the effect chain over it, and draws it back — so at full opacity it replaces the region
+    /// with the graded version, and below full opacity it cross-fades the original with the grade.
+    /// </summary>
+    public void DrawAdjustment(
+        SKSurface surface,
+        SKRect dest,
+        IReadOnlyList<ResolvedEffect> effects,
+        double opacity = 1.0,
+        SKBlendMode blend = SKBlendMode.SrcOver)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(surface);
+
+        if (effects is null || effects.Count == 0 || dest.Width <= 0 || dest.Height <= 0)
+            return;
+
+        SKCanvas canvas = surface.Canvas;
+        canvas.Flush();
+
+        // Snapshot in surface (device) pixels: map the destination through the canvas's current matrix so a
+        // translated/scaled preview canvas grabs the right region. For the export surface the matrix is identity,
+        // so this is exactly round(dest). Effects then sample `beneath` (the lower composite), so e.g. a Color
+        // grade on the adjustment layer regrades everything underneath it.
+        SKRect deviceDest = canvas.TotalMatrix.MapRect(dest);
+        SKRectI region = SKRectI.Round(deviceDest);
+        using SKImage? beneath = surface.Snapshot(region);
+        if (beneath is null)
+            return;
+
+        DrawImageLayer(canvas, dest, beneath, effects, opacity, blend);
+    }
+
+    /// <summary>Draws one generator's content into a transparent <paramref name="width"/>×<paramref name="height"/>
+    /// canvas. Solid colour fills the frame; a title draws a background fill (often transparent) then centred text.
+    /// Unknown generator ids leave the canvas transparent (a generator plugin with no Render binding is a no-op).</summary>
+    private static void RenderGeneratorContent(SKCanvas canvas, ResolvedGenerator generator, int width, int height)
+    {
+        canvas.Clear(SKColors.Transparent);
+
+        switch (generator.GeneratorTypeId)
+        {
+            case GeneratorTypeIds.SolidColor:
+                canvas.Clear(ParseColor(generator.GetString(GeneratorParamNames.Color), SKColors.Black));
+                break;
+
+            case GeneratorTypeIds.Title:
+            {
+                canvas.Clear(ParseColor(generator.GetString(GeneratorParamNames.BackgroundColor), SKColors.Transparent));
+
+                string text = generator.GetString(GeneratorParamNames.Text);
+                if (string.IsNullOrEmpty(text))
+                    break;
+
+                float fontFraction = (float)generator.Get(GeneratorParamNames.FontSize, 0.12);
+                float textSize = Math.Max(1f, fontFraction * height);
+                using var font = new SKFont(SKTypeface.Default, textSize);
+                using var paint = new SKPaint
+                {
+                    Color = ParseColor(generator.GetString(GeneratorParamNames.Color), SKColors.White),
+                    IsAntialias = true,
+                };
+                // Centre the text: x at the frame centre (Center align), baseline placed so the glyph box is centred.
+                font.MeasureText(text, out SKRect bounds);
+                float baseline = height / 2f - bounds.MidY;
+                canvas.DrawText(text, width / 2f, baseline, SKTextAlign.Center, font, paint);
+                break;
+            }
+
+            // Unknown generator: leave transparent.
+        }
+    }
+
+    /// <summary>Parses a <c>#AARRGGBB</c>/<c>#RRGGBB</c> colour string, falling back to <paramref name="fallback"/>.</summary>
+    private static SKColor ParseColor(string value, SKColor fallback) =>
+        !string.IsNullOrWhiteSpace(value) && SKColor.TryParse(value, out SKColor color) ? color : fallback;
 
     private void ResetPaint()
     {

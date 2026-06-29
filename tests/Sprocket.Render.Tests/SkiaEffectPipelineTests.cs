@@ -143,6 +143,92 @@ public sealed class SkiaEffectPipelineTests
         Assert.InRange(v, 200 - 5, 200 + 5);
     }
 
+    // ── Step 19: Generators ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Generator_SolidColor_FillsFrame()
+    {
+        // #FF3366CC → R=0x33(51), G=0x66(102), B=0xCC(204).
+        SKColor c = RenderGeneratorPixel(SolidColor("#FF3366CC"), 16, 8, 8);
+        Assert.InRange(c.Red, 51 - 2, 51 + 2);
+        Assert.InRange(c.Green, 102 - 2, 102 + 2);
+        Assert.InRange(c.Blue, 204 - 2, 204 + 2);
+    }
+
+    [Fact]
+    public void Generator_Title_DrawsTextOverBackground()
+    {
+        var gen = new ResolvedGenerator(
+            GeneratorTypeIds.Title,
+            new Dictionary<string, string>
+            {
+                [GeneratorParamNames.Text] = "X",
+                [GeneratorParamNames.Color] = "#FFFFFFFF",        // white text
+                [GeneratorParamNames.BackgroundColor] = "#FF101010", // near-black bg (R=16)
+            },
+            new Dictionary<string, double> { [GeneratorParamNames.FontSize] = 0.7 });
+
+        // A corner is background; the centre is covered by the large white glyph.
+        Assert.InRange(RenderGeneratorPixel(gen, 64, 2, 2).Red, 16 - 3, 16 + 3);
+        Assert.True(RenderGeneratorPixel(gen, 64, 32, 32).Red > 180, "Title glyph should brighten the centre.");
+    }
+
+    [Fact]
+    public void Generator_UnknownType_DrawsNothing()
+    {
+        var gen = new ResolvedGenerator("plugin.unknown.gen", new Dictionary<string, string>(), new Dictionary<string, double>());
+        // Over a black surface the unknown generator leaves it black (transparent over black).
+        Assert.InRange(RenderGeneratorPixel(gen, 16, 8, 8).Red, 0, 3);
+    }
+
+    // ── Step 19: Adjustment layers ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Adjustment_AppliesEffectToCompositeBeneath()
+    {
+        // A gray base layer, then an adjustment with brightness 0.5 → centre halved (the adjustment regrades it).
+        byte v = RenderAdjustmentCenter([Brightness(0.5)]);
+        Assert.InRange(v, (int)(Gray * 0.5) - 3, (int)(Gray * 0.5) + 3);
+    }
+
+    [Fact]
+    public void Adjustment_NoEffects_IsNoOp()
+    {
+        byte v = RenderAdjustmentCenter([]);
+        Assert.InRange(v, Gray - 2, Gray + 2);
+    }
+
+    private static ResolvedGenerator SolidColor(string colorHex) =>
+        new(GeneratorTypeIds.SolidColor,
+            new Dictionary<string, string> { [GeneratorParamNames.Color] = colorHex },
+            new Dictionary<string, double>());
+
+    private static SKColor RenderGeneratorPixel(ResolvedGenerator generator, int size, int px, int py)
+    {
+        using var pipeline = new SkiaEffectPipeline();
+        using SKSurface surface = SKSurface.Create(new SKImageInfo(size, size, SKColorType.Rgba8888, SKAlphaType.Premul));
+        surface.Canvas.Clear(SKColors.Black);
+        pipeline.DrawGenerator(surface.Canvas, SKRect.Create(size, size), generator, size, size, []);
+        surface.Canvas.Flush();
+        using SKImage image = surface.Snapshot();
+        using SKBitmap readback = SKBitmap.FromImage(image);
+        return readback.GetPixel(px, py);
+    }
+
+    private static byte RenderAdjustmentCenter(IReadOnlyList<ResolvedEffect> effects)
+    {
+        using var pipeline = new SkiaEffectPipeline();
+        using var src = MakeSource();
+        using SKSurface surface = SKSurface.Create(new SKImageInfo(Size, Size, SKColorType.Rgba8888, SKAlphaType.Premul));
+        surface.Canvas.Clear(SKColors.Black);
+        pipeline.DrawLayer(surface.Canvas, SKRect.Create(Size, Size), src.GetPixels(), src.RowBytes, Size, Size, []);
+        pipeline.DrawAdjustment(surface, SKRect.Create(Size, Size), effects);
+        surface.Canvas.Flush();
+        using SKImage image = surface.Snapshot();
+        using SKBitmap readback = SKBitmap.FromImage(image);
+        return readback.GetPixel(Size / 2, Size / 2).Red;
+    }
+
     private static ResolvedEffect Brightness(double amount) =>
         new(EffectTypeIds.Brightness, new Dictionary<string, double> { [EffectParamNames.Amount] = amount });
 

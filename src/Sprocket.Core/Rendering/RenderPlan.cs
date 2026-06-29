@@ -17,20 +17,61 @@ public sealed record ResolvedEffect(string EffectTypeId, IReadOnlyDictionary<str
 }
 
 /// <summary>
-/// One resolved video layer: the source frame to fetch, the effect chain to apply (bottom→top), and
-/// how to composite it onto the layers beneath.
+/// A generator's parameters already evaluated to concrete values at a specific time (PLAN.md step 19). The
+/// Render layer turns this into drawn pixels; Core never draws.
 /// </summary>
-/// <param name="MediaRefId">Source to fetch from.</param>
-/// <param name="SourceTime">Time within the source for the frame to fetch.</param>
+/// <param name="GeneratorTypeId">The generator type, e.g. <see cref="GeneratorTypeIds.Title"/>.</param>
+/// <param name="Strings">String parameters (text, colour hex).</param>
+/// <param name="Parameters">Numeric parameters, evaluated at the frame's time.</param>
+public sealed record ResolvedGenerator(
+    string GeneratorTypeId,
+    IReadOnlyDictionary<string, string> Strings,
+    IReadOnlyDictionary<string, double> Parameters)
+{
+    /// <summary>Gets a numeric parameter, or <paramref name="fallback"/> if it is not set.</summary>
+    public double Get(string name, double fallback = 0) =>
+        Parameters.TryGetValue(name, out double value) ? value : fallback;
+
+    /// <summary>Gets a string parameter, or <paramref name="fallback"/> if it is not set.</summary>
+    public string GetString(string name, string fallback = "") =>
+        Strings.TryGetValue(name, out string? value) ? value : fallback;
+}
+
+/// <summary>What produces a <see cref="VideoLayer"/>'s pixels (PLAN.md step 19).</summary>
+public enum LayerKind
+{
+    /// <summary>Decoded source media fetched via <see cref="IFrameSource{TImage}"/>.</summary>
+    Media,
+
+    /// <summary>Drawn procedurally from a <see cref="VideoLayer.Generator"/>.</summary>
+    Generator,
+
+    /// <summary>An adjustment layer: its effects apply to the composite of the layers already drawn beneath it.</summary>
+    Adjustment,
+}
+
+/// <summary>
+/// One resolved video layer: how to produce its pixels (<see cref="Kind"/>), the effect chain to apply
+/// (bottom→top), and how to composite it onto the layers beneath. For a <see cref="LayerKind.Media"/> layer
+/// <see cref="MediaRefId"/>/<see cref="SourceTime"/> name the source frame; for a <see cref="LayerKind.Generator"/>
+/// layer <see cref="Generator"/> describes the procedural content (and <see cref="SourceTime"/> is its local time);
+/// a <see cref="LayerKind.Adjustment"/> layer has no content and applies its effects to what is already composited.
+/// </summary>
+/// <param name="MediaRefId">Source to fetch from (media layers).</param>
+/// <param name="SourceTime">Time within the source / generator-local time.</param>
 /// <param name="Effects">Effect chain, evaluated at the frame's time, applied in order.</param>
 /// <param name="Opacity">Track opacity for the composite step.</param>
 /// <param name="BlendMode">Track blend mode for the composite step.</param>
+/// <param name="Kind">What produces this layer's pixels.</param>
+/// <param name="Generator">The procedural source (generator layers only).</param>
 public sealed record VideoLayer(
     MediaRefId MediaRefId,
     Timecode SourceTime,
     IReadOnlyList<ResolvedEffect> Effects,
     double Opacity,
-    BlendMode BlendMode);
+    BlendMode BlendMode,
+    LayerKind Kind = LayerKind.Media,
+    ResolvedGenerator? Generator = null);
 
 /// <summary>
 /// A pure description of how to render one composited frame at a given time: the target size and the

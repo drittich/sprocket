@@ -68,7 +68,18 @@ internal sealed record ClipDto(
     List<EffectDto> Effects,
     // Linked-clip group (PLAN.md step 13). Null/absent = unlinked; additive + nullable, so v1 files without
     // it load as unlinked and a project with no links serializes byte-identically (WhenWritingNull).
-    Guid? LinkGroupId = null);
+    Guid? LinkGroupId = null,
+    // Clip kind + generator (PLAN.md step 19). Additive + nullable: a plain media clip writes neither (Kind null
+    // ⇒ Media on load), so pre-19 files load unchanged and media-only projects serialize byte-identically.
+    ClipKind? Kind = null,
+    GeneratorDto? Generator = null);
+
+/// <summary>A generator clip's procedural source (PLAN.md step 19): a type id, string parameters (text, colour
+/// hex), and numeric animatable parameters. Present only on generator clips.</summary>
+internal sealed record GeneratorDto(
+    string GeneratorTypeId,
+    Dictionary<string, string> Strings,
+    Dictionary<string, AnimatableValueDto> Parameters);
 
 internal sealed record EffectDto(
     string EffectTypeId,

@@ -340,6 +340,52 @@ public sealed class TimelineControl : Control
         Execute(new AddEffectCommand(_selected, instance));
     }
 
+    /// <summary>Inserts a generator clip (title, colour matte) at the playhead (PLAN.md step 19), selecting it.</summary>
+    public void InsertGenerator(GeneratorDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        InsertSyntheticVideoClip(
+            t => descriptor.CreateClip(GeneratorCatalog.DefaultDuration, t), $"Insert {descriptor.DisplayName}");
+    }
+
+    /// <summary>Inserts an adjustment layer at the playhead (PLAN.md step 19): its effects grade the tracks below
+    /// it for its span. Always lands on a track above the content so it doesn't displace it.</summary>
+    public void InsertAdjustmentLayer() =>
+        // Fully qualified: a Control already has a `Clip` property (Geometry), which would shadow the model type here.
+        InsertSyntheticVideoClip(t => Sprocket.Core.Model.Clip.CreateAdjustment(GeneratorCatalog.DefaultDuration, t), "Insert adjustment layer");
+
+    /// <summary>
+    /// Adds a synthetic (generator / adjustment) clip at the playhead. It lands on the topmost video track when that
+    /// track is free at the playhead; otherwise a new video track is created above so the clip stacks over (not
+    /// displaces) existing content — both as one undoable entry. The new clip becomes the selection.
+    /// </summary>
+    private void InsertSyntheticVideoClip(Func<Timecode, Clip> create, string label)
+    {
+        if (_history is null || _project is null)
+            return;
+
+        Clip clip = create(_playhead);
+        VideoTrack? top = _project.Timeline.VideoTracks.LastOrDefault();
+
+        if (top is not null && top.ResolveActiveClip(_playhead) is null && top.ResolveActiveClip(clip.TimelineEnd - new Timecode(1)) is null)
+        {
+            Execute(new AddClipCommand(top, clip));
+        }
+        else
+        {
+            // Stack on a fresh top track so an adjustment grades the tracks beneath and a generator overlays them.
+            var track = new VideoTrack { Name = $"V{_project.Timeline.VideoTracks.Count() + 1}" };
+            Execute(new CompositeCommand(label,
+            [
+                new AddTrackCommand(_project.Timeline, track),
+                new AddClipCommand(track, clip),
+            ]));
+        }
+
+        Select(clip);
+        ClipPlaced?.Invoke();
+    }
+
     private long FrameTicks()
     {
         Rational fps = _project!.Timeline.FrameRate;
@@ -1067,6 +1113,15 @@ public sealed class TimelineControl : Control
 
     private string ClipName(Clip clip)
     {
+        switch (clip.Kind)
+        {
+            case ClipKind.Adjustment:
+                return "Adjustment Layer";
+            case ClipKind.Generator when clip.Generator is not null:
+                // Prefer a title's text, else the generator's display name.
+                string text = clip.Generator.GetString(GeneratorParamNames.Text);
+                return string.IsNullOrEmpty(text) ? GeneratorCatalog.DisplayName(clip.Generator.GeneratorTypeId) : text;
+        }
         MediaRef? media = _project?.MediaPool.Get(clip.MediaRefId);
         return media is null ? "clip" : System.IO.Path.GetFileName(media.AbsolutePath);
     }

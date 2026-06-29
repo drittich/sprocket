@@ -203,10 +203,8 @@ public sealed class SplitClipCommand : EditCommand
         _oldOut = clip.SourceOut;
         _splitSource = clip.MapToSource(at);
 
-        _right = new Clip(clip.MediaRefId, _splitSource, clip.SourceOut, at)
-        {
-            LinkGroupId = rightLinkGroup ?? clip.LinkGroupId,
-        };
+        _right = clip.CloneContentForSpan(_splitSource, clip.SourceOut, at);
+        _right.LinkGroupId = rightLinkGroup ?? clip.LinkGroupId;
         foreach (EffectInstance e in clip.Effects)
             _right.Effects.Add(e.Clone());
     }

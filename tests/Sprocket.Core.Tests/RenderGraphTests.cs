@@ -92,6 +92,49 @@ public class RenderGraphPlanTests
         Assert.Equal(EffectTypeIds.Fade, layer.Effects[1].EffectTypeId);
         Assert.Equal(0.5, layer.Effects[1].Get(EffectParamNames.Opacity), 6);
     }
+
+    [Fact]
+    public void Generator_Clip_Plans_A_Generator_Layer_With_Resolved_Params()
+    {
+        var project = new Project(new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000));
+        var track = new VideoTrack();
+        var spec = new GeneratorSpec(GeneratorTypeIds.Title)
+            .SetString(GeneratorParamNames.Text, "Hello")
+            .Set(GeneratorParamNames.FontSize, AnimatableValue.Animated(
+            [
+                new Keyframe(Timecode.Zero, 0.1),
+                new Keyframe(Timecode.FromSeconds(2), 0.2),
+            ]));
+        track.Clips.Add(Clip.CreateGenerator(spec, Timecode.FromSeconds(2), Timecode.Zero));
+        project.Timeline.Tracks.Add(track);
+
+        // 1s in: font size keyframes 0.1→0.2 over 2s, so 0.15 at the midpoint.
+        VideoFramePlan plan = RenderGraph.PlanVideoFrame(project, Timecode.FromSeconds(1));
+        VideoLayer layer = Assert.Single(plan.Layers);
+        Assert.Equal(LayerKind.Generator, layer.Kind);
+        Assert.NotNull(layer.Generator);
+        Assert.Equal(GeneratorTypeIds.Title, layer.Generator!.GeneratorTypeId);
+        Assert.Equal("Hello", layer.Generator.GetString(GeneratorParamNames.Text));
+        Assert.Equal(0.15, layer.Generator.Get(GeneratorParamNames.FontSize), 6);
+    }
+
+    [Fact]
+    public void Adjustment_Clip_Plans_An_Adjustment_Layer_Carrying_Its_Effects()
+    {
+        var project = new Project(new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000));
+        var track = new VideoTrack { Opacity = 0.8 };
+        Clip adjust = Clip.CreateAdjustment(Timecode.FromSeconds(5), Timecode.Zero);
+        adjust.Effects.Add(new EffectInstance(EffectTypeIds.Color).Set(EffectParamNames.Saturation, 0.0));
+        track.Clips.Add(adjust);
+        project.Timeline.Tracks.Add(track);
+
+        VideoFramePlan plan = RenderGraph.PlanVideoFrame(project, Timecode.FromSeconds(1));
+        VideoLayer layer = Assert.Single(plan.Layers);
+        Assert.Equal(LayerKind.Adjustment, layer.Kind);
+        Assert.Null(layer.Generator);
+        Assert.Equal(0.8, layer.Opacity, 6);
+        Assert.Equal(EffectTypeIds.Color, Assert.Single(layer.Effects).EffectTypeId);
+    }
 }
 
 public class RenderGraphExecutorTests
@@ -105,6 +148,9 @@ public class RenderGraphExecutorTests
         public List<string> CompositeLog { get; } = new();
 
         public string CreateTransparentSurface(Resolution size) => "surface[";
+
+        public string CreateGeneratorFrame(ResolvedGenerator generator, Resolution size, Timecode localTime) =>
+            $"gen({generator.GeneratorTypeId})";
 
         public string ApplyEffect(string frame, ResolvedEffect effect) =>
             $"{frame}+{effect.EffectTypeId}";
@@ -145,6 +191,39 @@ public class RenderGraphExecutorTests
         string result = RenderGraph.Render(plan, new NamedFrameSource(), compositor);
         Assert.Empty(compositor.CompositeLog);
         Assert.Equal("surface[]", result);
+    }
+
+    [Fact]
+    public void Render_Generator_Layer_Draws_Generator_Not_Media()
+    {
+        var gen = new ResolvedGenerator(GeneratorTypeIds.Title,
+            new Dictionary<string, string>(), new Dictionary<string, double>());
+        var layer = new VideoLayer(default, Timecode.Zero, [], 1.0, BlendMode.Normal, LayerKind.Generator, gen);
+        var plan = new VideoFramePlan(new Resolution(640, 480), Timecode.Zero, new[] { layer });
+
+        var compositor = new StringCompositor();
+        RenderGraph.Render(plan, new NamedFrameSource(), compositor);
+
+        // The composited content comes from the generator factory, never from the (media) frame source.
+        Assert.Equal($"gen({GeneratorTypeIds.Title})@1/Normal", Assert.Single(compositor.CompositeLog));
+    }
+
+    [Fact]
+    public void Render_Adjustment_Layer_Applies_Effects_To_The_Composite_Beneath()
+    {
+        var media = new VideoLayer(MediaRefId.New(), new Timecode(100), [], 1.0, BlendMode.Normal);
+        var brightness = new ResolvedEffect(EffectTypeIds.Brightness, new Dictionary<string, double>());
+        var adjust = new VideoLayer(default, Timecode.Zero, new[] { brightness }, 1.0, BlendMode.Normal, LayerKind.Adjustment);
+        var plan = new VideoFramePlan(new Resolution(640, 480), Timecode.Zero, new[] { media, adjust });
+
+        var compositor = new StringCompositor();
+        RenderGraph.Render(plan, new NamedFrameSource(), compositor);
+
+        // Two composites: the media frame, then the adjustment — which takes a snapshot of the surface so far
+        // ("surface[]") and folds its effect over it, rather than fetching any source frame.
+        Assert.Equal(2, compositor.CompositeLog.Count);
+        Assert.Equal("frame(100)@1/Normal", compositor.CompositeLog[0]);
+        Assert.Equal("surface[]+builtin.brightness@1/Normal", compositor.CompositeLog[1]);
     }
 }
 

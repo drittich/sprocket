@@ -164,15 +164,34 @@ public static class VideoExporter
 
         foreach (VideoLayer layer in plan.Layers)
         {
-            ExportFrameProvider? provider = ResolveProvider(project, layer.MediaRefId, providers);
-            VideoFrame? frame = provider?.GetFrame(layer.SourceTime);
-            if (frame is null)
-                continue;
+            switch (layer.Kind)
+            {
+                case LayerKind.Generator:
+                    // A generator fills the sequence frame; render at full resolution then composite (PLAN.md step 19).
+                    pipeline.DrawGenerator(
+                        canvas, fullRect, layer.Generator!, (int)fullRect.Width, (int)fullRect.Height,
+                        layer.Effects, layer.Opacity, ToBlendMode(layer.BlendMode));
+                    break;
 
-            SKRect dest = FramePresenter.ComputeFitRect(fullRect, frame.Width, frame.Height);
-            pipeline.DrawLayer(
-                canvas, dest, frame.Pixels, frame.RowBytes, frame.Width, frame.Height,
-                layer.Effects, layer.Opacity, ToBlendMode(layer.BlendMode));
+                case LayerKind.Adjustment:
+                    // Apply the adjustment's effects to everything composited beneath it (PLAN.md step 19).
+                    pipeline.DrawAdjustment(surface, fullRect, layer.Effects, layer.Opacity, ToBlendMode(layer.BlendMode));
+                    break;
+
+                default:
+                {
+                    ExportFrameProvider? provider = ResolveProvider(project, layer.MediaRefId, providers);
+                    VideoFrame? frame = provider?.GetFrame(layer.SourceTime);
+                    if (frame is null)
+                        continue;
+
+                    SKRect dest = FramePresenter.ComputeFitRect(fullRect, frame.Width, frame.Height);
+                    pipeline.DrawLayer(
+                        canvas, dest, frame.Pixels, frame.RowBytes, frame.Width, frame.Height,
+                        layer.Effects, layer.Opacity, ToBlendMode(layer.BlendMode));
+                    break;
+                }
+            }
         }
 
         canvas.Flush();

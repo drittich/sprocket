@@ -131,6 +131,41 @@ public class MultiTrackPlaybackTests
     }
 
     [Fact]
+    public async Task Generator_And_Adjustment_Clips_Become_Layers_Without_A_Decoder()
+    {
+        // PLAN.md step 19: generator / adjustment clips have no source media, so they contribute layers even
+        // though the feed factory never yields a feed for them. The preview draws / grades them directly.
+        using var cts = new CancellationTokenSource(Timeout);
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var project = new Project(timeline);
+
+        var v1 = new VideoTrack { Name = "V1" };
+        var spec = new GeneratorSpec(GeneratorTypeIds.SolidColor).SetString(GeneratorParamNames.Color, "#FF202020");
+        v1.Clips.Add(Clip.CreateGenerator(spec, Timecode.FromSeconds(5), Timecode.Zero));
+        var v2 = new VideoTrack { Name = "V2" };
+        Clip adjust = Clip.CreateAdjustment(Timecode.FromSeconds(5), Timecode.Zero);
+        adjust.Effects.Add(new EffectInstance(EffectTypeIds.Color).Set(EffectParamNames.Saturation, 0.0));
+        v2.Clips.Add(adjust);
+        timeline.Tracks.Add(v1);
+        timeline.Tracks.Add(v2);
+
+        // No media anywhere — the factory can only ever return null.
+        await using var engine = new PlaybackEngine(project, _ => null, new SoftwareClock(() => TimeSpan.Zero));
+        engine.SeekTo(Timecode.Zero);
+        await engine.PumpOnceAsync(forcePresent: true, cts.Token);
+
+        IReadOnlyList<PresentedVideoLayer> captured = [];
+        engine.UseLayers(layers => captured = layers.ToList());
+
+        Assert.Equal(2, captured.Count);
+        Assert.Equal(Sprocket.Core.Rendering.LayerKind.Generator, captured[0].Kind);
+        Assert.NotNull(captured[0].Generator);
+        Assert.Equal(GeneratorTypeIds.SolidColor, captured[0].Generator!.GeneratorTypeId);
+        Assert.Equal(Sprocket.Core.Rendering.LayerKind.Adjustment, captured[1].Kind);
+        Assert.Equal(EffectTypeIds.Color, Assert.Single(captured[1].Effects).EffectTypeId);
+    }
+
+    [Fact]
     public async Task InvalidateSource_Rebuilds_The_Feed_On_The_Next_Pump()
     {
         // Step 18: when a source's best-available file changes (a proxy became ready), InvalidateSource makes the

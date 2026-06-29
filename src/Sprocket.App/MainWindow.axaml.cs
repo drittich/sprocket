@@ -252,6 +252,20 @@ public partial class MainWindow : Window
         _nudgeRightMenuItem.Click += (_, _) => _timeline?.NudgeSelected(+1);
         this.FindControl<MenuItem>("ClipMenu")!.SubmenuOpened += (_, _) => RefreshClipMenu();
 
+        // ── Clip ▸ Insert (generators + adjustment layer, PLAN.md step 19) ──
+        var insertItems = new System.Collections.Generic.List<MenuItem>();
+        foreach (GeneratorDescriptor generator in GeneratorCatalog.BuiltIns)
+        {
+            GeneratorDescriptor g = generator; // capture per iteration
+            var item = new MenuItem { Header = g.DisplayName };
+            item.Click += (_, _) => _timeline?.InsertGenerator(g);
+            insertItems.Add(item);
+        }
+        var adjustmentItem = new MenuItem { Header = "Adjustment Layer" };
+        adjustmentItem.Click += (_, _) => _timeline?.InsertAdjustmentLayer();
+        insertItems.Add(adjustmentItem);
+        this.FindControl<MenuItem>("ClipInsertMenuItem")!.ItemsSource = insertItems;
+
         // ── Effects (populated from the registry, PLAN.md steps 15–16) ──
         var effectsMenu = this.FindControl<MenuItem>("EffectsMenu")!;
         var effectItems = new System.Collections.Generic.List<MenuItem>();

@@ -123,8 +123,20 @@ public static class ProjectSerializer
         var effects = new List<EffectDto>();
         foreach (EffectInstance e in c.Effects)
             effects.Add(ToDto(e));
+        // Media clips leave Kind/Generator null so the wire format is byte-identical to pre-step-19 files.
+        ClipKind? kind = c.Kind == ClipKind.Media ? null : c.Kind;
+        GeneratorDto? generator = c.Generator is null ? null : ToDto(c.Generator);
         return new ClipDto(
-            c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects, c.LinkGroupId);
+            c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects,
+            c.LinkGroupId, kind, generator);
+    }
+
+    private static GeneratorDto ToDto(GeneratorSpec g)
+    {
+        var parameters = new Dictionary<string, AnimatableValueDto>(g.Parameters.Count);
+        foreach ((string name, AnimatableValue value) in g.Parameters)
+            parameters[name] = ToDto(value);
+        return new GeneratorDto(g.GeneratorTypeId, new Dictionary<string, string>(g.Strings), parameters);
     }
 
     private static EffectDto ToDto(EffectInstance e)
@@ -209,14 +221,42 @@ public static class ProjectSerializer
 
     private static Clip FromDto(ClipDto c)
     {
-        var clip = new Clip(
-            new MediaRefId(c.MediaRefId), new Timecode(c.SourceInTicks), new Timecode(c.SourceOutTicks), new Timecode(c.TimelineStartTicks))
+        Timecode sourceIn = new(c.SourceInTicks);
+        Timecode sourceOut = new(c.SourceOutTicks);
+        Timecode start = new(c.TimelineStartTicks);
+
+        // Kind absent ⇒ Media (pre-step-19 files / plain media clips).
+        Clip clip = (c.Kind ?? ClipKind.Media) switch
         {
-            LinkGroupId = c.LinkGroupId,
+            ClipKind.Generator => RestoreSpan(
+                Clip.CreateGenerator(FromDto(c.Generator!), sourceOut, start), sourceIn, sourceOut),
+            ClipKind.Adjustment => RestoreSpan(
+                Clip.CreateAdjustment(sourceOut, start), sourceIn, sourceOut),
+            _ => new Clip(new MediaRefId(c.MediaRefId), sourceIn, sourceOut, start),
         };
+        clip.LinkGroupId = c.LinkGroupId;
         foreach (EffectDto e in c.Effects)
             clip.Effects.Add(FromDto(e));
         return clip;
+    }
+
+    /// <summary>Restores a synthetic (generator/adjustment) clip's exact trim — its factory starts the source at
+    /// zero, but a trimmed/slipped clip may have a non-zero source in-point.</summary>
+    private static Clip RestoreSpan(Clip clip, Timecode sourceIn, Timecode sourceOut)
+    {
+        clip.SourceIn = sourceIn;
+        clip.SourceOut = sourceOut;
+        return clip;
+    }
+
+    private static GeneratorSpec FromDto(GeneratorDto g)
+    {
+        var spec = new GeneratorSpec(g.GeneratorTypeId);
+        foreach ((string name, string value) in g.Strings)
+            spec.SetString(name, value);
+        foreach ((string name, AnimatableValueDto value) in g.Parameters)
+            spec.Set(name, FromDto(value));
+        return spec;
     }
 
     private static EffectInstance FromDto(EffectDto e)

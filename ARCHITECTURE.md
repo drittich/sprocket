@@ -534,6 +534,26 @@ the render graph addresses sources through `IFrameSource` and clips reference a 
 no change to `Sprocket.Core`. Determinism (§1.6) still holds — the *active* source for a given
 render mode is a pure input to `RenderFrame`.
 
+**Default-on without interrupting flow.** Proxies are an *optimization layer, never a gate*: the
+per-`MediaRef` source resolver returns the **best source available for the current mode** — preview
+takes a Ready proxy if one exists, otherwise the original; export always takes the original. So "use
+proxies" defaults **on**, yet a just-imported clip previews from its original immediately and
+**transparently** switches to the proxy once a background service finishes encoding it (per-`MediaRef`
+state `None → Queued → Building → Ready/Failed`). That service runs a **bounded** worker pool off the
+hot path with hardware / all-intra / OS-specific encoders (§11 "Preview vs. delivery codecs"), a
+**priority queue** (timeline / playhead / active-sequence media first), and a **local, regenerable**
+proxy store (the cache-dir family of §20 and the per-user sidecar of the collaboration split) that
+survives restarts. Proxy **resolution is a fixed tier, not the live preview window** — sizing to a
+constantly-resizing window would thrash an expensive, persisted artifact — defaulting to
+`min(½ source, 1080p)` (the 1080p preview ceiling) and **skipping sources already light enough to
+preview in real time**; the tier is a preference for weaker machines, and a >proxy-resolution view
+(zoom 100/200 %, PLAN step 17) falls back to the original. A **draft-first two-tier** scheme (a fast
+low-res proxy before the quality one) is deferred and conditional: since the original is the interim
+fallback it only helps *heavy* sources, and it slots into the same best-available order
+(quality > draft > original) as another `IFrameSource` with no redesign. Proxying a **composited
+sequence** rather than a source clip is the render cache (§20), sharing this same background-encode +
+fast-codec machinery.
+
 **Later capabilities land the same way** — each is an addition on an existing seam, detailed in its
 own section but noted here so the "additive, not a rewrite" invariant stays canonical:
 

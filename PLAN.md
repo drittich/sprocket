@@ -766,12 +766,37 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
         Render 18, Audio 16, Playback 40, Export 6, Persistence 12, App 68).
       - **Note:** the Source monitor previews video only — source-audio scrub and an independent in/out-marker
         overlay (to mark a source span before placing it) are small follow-ons behind the same `IMonitor` seam.
-18. **Proxy media (render performance).** Generate lower-resolution proxies and edit/preview
-    against them via an alternate `IFrameSource`, with a "use proxies" toggle; **export still
-    pulls full-resolution originals** ([ARCHITECTURE §17](ARCHITECTURE.md)). Committed feature
-    per [BRIEF.md](BRIEF.md). Proxies are encoded with a **fast, hardware/all-intra, possibly
-    OS-specific** codec (speed over size, like the render-cache intermediates of step 23c;
-    [ARCHITECTURE §11](ARCHITECTURE.md) "Preview vs. delivery codecs").
+18. **Proxy media (render performance) — default-on, background, transparent.** Generate
+    lower-resolution proxies and preview against them via an alternate `IFrameSource`; **export always
+    pulls full-resolution originals** ([ARCHITECTURE §17](ARCHITECTURE.md)). Committed feature per
+    [BRIEF.md](BRIEF.md). Designed so it never interrupts flow:
+    - **Best-available source selection (default-on).** "Use proxies" is **on by default**, but *on*
+      means *use a proxy when one is ready, else the original* — so a freshly imported clip starts
+      previewing on the original immediately and **transparently switches** to its proxy once built.
+      Per-`MediaRef` state None → Queued → Building → Ready/Failed; the preview source resolver prefers a
+      Ready proxy, while export ignores proxies entirely (determinism unaffected, §1.6).
+    - **Background generation.** A **bounded**-worker proxy service encodes off the hot path (leaves
+      cores for decode/render/audio), using **hardware / all-intra / OS-specific** codecs (step 23c,
+      [ARCHITECTURE §11](ARCHITECTURE.md) "Preview vs. delivery codecs"). A **priority queue** builds
+      media on the timeline / near the playhead / in the active sequence first, then the rest of the bin.
+      Proxies persist in the local, regenerable cache dir (same store family as the render cache §20 /
+      the per-user sidecar of step 19c), survive restarts, and cancel/resume cleanly.
+    - **Resolution = a fixed tier, not the live window.** The preview window resizes constantly and
+      proxies are expensive + persisted, so key them to a **stable target**: default
+      **`min(½ source, 1080p)`** (1080p is the locked preview ceiling — higher is wasted), and **skip
+      proxy generation for sources already light enough** to preview in real time (≤ 1080p 8-bit H.264
+      etc., decided from the probe). The tier is a project/preference setting (¼ / ½ / 1080p) for weak
+      machines. Zoom-to-100/200% (step 17) or a >1080p preview that out-resolves the proxy falls back to
+      the original for that view.
+    - **Tiered "draft-first" — deferred, conditional.** Because the original is the interim fallback,
+      preview is usable immediately, so a fast low-res *draft* tier only helps **heavy** sources
+      (4K / HEVC / 10-bit / ProRes, or many layers) whose original can't scrub before the quality proxy
+      lands. Ship the **single 1080p tier first**; add a draft tier later **only if profiling shows
+      heavy-source jank** — it slots into the same best-available order (quality > draft > original) as
+      just another `IFrameSource`, with no redesign.
+    Note: this is **source-clip** proxying; proxying a whole **nested sequence / composited output** is
+    the render cache / pre-render (§20, step 23c) — same background-encode + fast-codec infrastructure,
+    different unit.
 19. **Generators & adjustment layers.** Title/text **generator clips** (a generator `IFrameSource`
     feeding the render graph). **Adjustment layers**, modelled like Premiere: a synthetic Project-bin
     item with no source media, placed on a track as an ordinary clip, whose **effect stack applies to

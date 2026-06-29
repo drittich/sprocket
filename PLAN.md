@@ -693,6 +693,34 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
         `WinExe`). Clean build (0 warnings); a `SPROCKET_APP_SECONDS=5` smoke launch starts the shell and tears down
         cleanly (exit 0). Full suite: **258 tests green** (Core 85, Media 24, Render 16, Audio 16, Playback 31,
         Export 6, Persistence 12, App 68).
+16c. **Wire up the menu / command surface (make the menus actually work).** Step 11 built the inline
+    menu bar (`File · Edit · Clip · Sequence · Effects · View · Window · Help`) but most items are inert
+    — e.g. **File ▸ Save / Save As / Open** don't run today even though `ProjectSerializer` (step 9) and
+    the action-bar Save button already exist. Bind every menu item to its command and add the standard
+    keyboard accelerators: **File** (New / Open / Save / **Save As — write the current project to a new
+    file as an independent copy** so the original is left untouched / Import Media [step 16b] / Export
+    [step 8] / Exit), **Edit** (Undo / Redo [step 10] / Cut / Copy / Paste / Delete / Select All),
+    **Clip** (Enable, Link/Unlink [step 13], Speed/Duration, Nudge), **Effects** (apply from the catalog
+    [steps 15–16]), **View** (timeline zoom, Snapping, Guides [step 17], panel toggles), **Window**
+    (layout), **Help** (About — no framework/runtime text, [UI.md §3.7](UI.md)). Every editing action
+    routes through the step-10 `EditHistory` so it stays undoable; items are context-enabled (greyed out
+    when they don't apply), and an item whose feature lands later (e.g. **Sequence ▸ New / Settings /
+    Nest** → step 19b) stays visibly disabled rather than silently dead. A smoke pass confirms Save /
+    Open / Export run from the menus, not just the toolbar buttons.
+16d. **Premiere-parity keyframes.** The keyframe foundation exists — the model's `AnimatableValue`
+    (constant or keyframed, with per-keyframe `Interpolation`), the step-16 ◇/◆ inspector affordances,
+    and the step-16b keyframe-lane editor (add / move / delete, Hold↔Linear). Bring it to Adobe-Premiere
+    parity: **temporal interpolation beyond Hold/Linear** — Bezier / Ease In / Ease Out / Auto Bezier
+    with an editable **velocity (value) graph**; **spatial interpolation** for positional params
+    (Transform position/anchor) so keyframes define a **motion path** with linear or curved (spatial
+    Bezier) segments edited as on-canvas handles in the Program monitor (step 17); plus keyframe
+    **copy / paste**, multi-select, nudge, and playhead **jump-to-previous/next-keyframe** navigation.
+    Lands on the existing `AnimatableValue` + `SetEffectParameterCommand` + `AnimatableEditing` seam —
+    the per-keyframe `Interpolation` enum just gains the new modes (additive, no redesign),
+    [ARCHITECTURE §9](ARCHITECTURE.md). **Terminology:** keep "keyframe" for animation (the
+    Premiere/After Effects convention, and already the model term); to remove the only clash, refer to
+    the unrelated **codec** sense (the GOP I-frame `MediaSource` seeks to, step 3) as **"I-frame"** in
+    code and docs from here on — no rename of the animation concept is needed.
 17. **Monitors.** Dual **Source / Program** monitors (same render graph, second surface),
     safe-area / framing-grid overlay, **Fit** zoom, and full transport (jump-to-start/end,
     frame-step, play/pause).
@@ -742,9 +770,45 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
     against them via an alternate `IFrameSource`, with a "use proxies" toggle; **export still
     pulls full-resolution originals** ([ARCHITECTURE §17](ARCHITECTURE.md)). Committed feature
     per [BRIEF.md](BRIEF.md).
-19. **Generators & adjustment layers.** Title/text **generator clips** (a generator
-    `IFrameSource` feeding the render graph) and **adjustment layers** (a clip/track kind whose
-    effect stack applies to all tracks beneath it — a render-graph stage, [ARCHITECTURE §5](ARCHITECTURE.md)).
+19. **Generators & adjustment layers.** Title/text **generator clips** (a generator `IFrameSource`
+    feeding the render graph). **Adjustment layers**, modelled like Premiere: a synthetic Project-bin
+    item with no source media, placed on a track as an ordinary clip, whose **effect stack applies to
+    every track beneath it for the clip's time span** — a render-graph stage that composites the lower
+    tracks, then runs the adjustment layer's effects over that result before the tracks above
+    ([ARCHITECTURE §5](ARCHITECTURE.md), [UI.md §3.6](UI.md)). It trims / moves / stacks and carries
+    opacity + blend like any clip, and the same adjustment item can be **reused across tracks and
+    sequences**. ("Adjustment layer" is unambiguous in this codebase, so the term is kept.)
+19b. **Sequences (nesting / compound clips).** Generalise the project's single `Timeline` to
+    **multiple named sequences**, and let a whole sequence be **placed inside another sequence as a
+    clip** (Premiere "nested sequence" / Final Cut "compound clip"). To the render graph a
+    nested-sequence clip is just another `IFrameSource` / `IPcmReader` that renders the child sequence's
+    timeline at the requested time — the graph already turns a (timeline, t) into a frame
+    ([ARCHITECTURE §5](ARCHITECTURE.md), [§17](ARCHITECTURE.md)) — so **edit operations apply to the
+    whole nested sequence as one unit** (trim, effects, opacity/blend, audio gain/fade). Reuse is
+    first-class: the **same sequence can be referenced by many sequences**, and (already true) the
+    **same source clip can appear in more than one sequence** — these are references, not copies, so
+    editing a child updates everywhere it is used. Model: `Project` gains `Sequences : Sequence[]`
+    (today's `Timeline` becomes the active sequence) and a `Clip` may reference a `SequenceId` as its
+    source alongside `MediaRefId`; render-graph recursion needs **cycle detection** (a sequence can't
+    contain itself, directly or transitively) and a depth guard. The **Sequence** menu and the sequence
+    badge / settings (placeholders from step 11, [UI.md §2](UI.md)) drive create / nest / open /
+    settings. Sequences serialize as part of the project JSON (additive, schema-versioned, §12).
+    Depends only on the done model + render graph — grouped here with the other non-raw-media building
+    blocks (generators, adjustment layers), but can be pulled earlier. Heavy nests can be **pre-rendered**
+    so they don't recompute each playback pass (step 23c, [ARCHITECTURE §20](ARCHITECTURE.md)).
+19c. **Collaboration-ready project format & multi-user groundwork.** Keep all project data in a
+    **diff/merge-friendly text format** — JSON since step 9; extend the discipline so one logical edit
+    is a small, localized diff (stable key/array ordering, no volatile fields) and project files
+    version-control and merge cleanly between users. **Separate asset paths from the project file:** the
+    shared, diffable project file references each source by stable `MediaRef` **Id** only, while the
+    **absolute/local path to each asset lives in a separate per-user sidecar** (a "media link" / asset
+    map, not normally committed or merged) — so pulling a collaborator's project-file change never forces
+    you to relocate your own clips, because your local link file still resolves the Ids. This refactors
+    step 9's "relative + absolute path stored in the project file" into **Id-in-project +
+    path-in-sidecar**, staying offline-tolerant ([ARCHITECTURE §12](ARCHITECTURE.md), [§15](ARCHITECTURE.md)).
+    Full multi-user editing (presence, locking, or CRDT / operational-transform merge) is a larger later
+    effort this format enables; the actionable deliverable here is the **format split**, which is additive
+    and worth doing early so the project file stays a clean shared artifact.
 20. **Alpha-channel media compositing.** Premultiplied-alpha path through the render graph (e.g.
     `Logo_Anim.mov` flagged `Alpha`).
 21. **Transitions.** Transition library (Project panel **Transitions** tab) + overlapping-clip
@@ -752,9 +816,62 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
 22. **Export presets & status-bar telemetry.** Export dropdown with presets; status bar
     surfacing engine state, GPU / hardware-accel status, live fps, resolution, and duration
     ([ARCHITECTURE §15](ARCHITECTURE.md)) — **no framework/runtime text** in the UI ([UI.md §3.7](UI.md)).
-23. **Plugins & advanced color.** Plugin host (collectible `AssemblyLoadContext`,
-    [ARCHITECTURE §13](ARCHITECTURE.md)), then OpenColorIO/OFX and color grading beyond the
-    basics.
+23. **Plugins & advanced color management.** Plugin host (collectible `AssemblyLoadContext`,
+    [ARCHITECTURE §13](ARCHITECTURE.md)), then OpenColorIO / ACES / OFX scene-linear color management.
+    (The creative color-grading toolset — wheels, curves, qualifiers, scopes — is its own step, 23d.)
+23b. **Audio effects & plugin hosting (VST3 / AU).** Give audio an effect chain mirroring video's
+    `IVideoEffect` stack: a new Core **`IAudioEffect`** seam and an audio effect chain on audio **clips,
+    tracks, sequences, and the master bus**, run by the `AudioMixer` as a per-buffer DSP pass in the
+    [ARCHITECTURE §6](ARCHITECTURE.md) audio path (allocation-free on the audio thread, processing blocks
+    of float32 at the project rate/layout). Ship a few **built-in managed effects** first (parametric EQ,
+    compressor, reverb, gain/pan) so the chain is useful with no native deps, then **host native
+    plugins** behind the same seam: **VST3** (cross-platform — Win/Linux/macOS) and **Audio Units**
+    (macOS-only). Per the **no-C++/CLI** rule ([ARCHITECTURE §1](ARCHITECTURE.md), [§13](ARCHITECTURE.md))
+    each format is reached through a thin **native C-ABI bridge shim** (the VST3 SDK is C++/COM-style and
+    AU is Obj-C — each wrapped to a flat C ABI the way the FFmpeg/Skia natives are), one bridge per
+    format, bundled per RID alongside the other natives (steps 24–25). Plugins are scanned and
+    instantiated **off** the audio thread; the host can open a plugin's own editor GUI in a window.
+    **Parameter automation** rides the existing `AnimatableValue` / keyframe mechanism (step 16d), so
+    plugin parameters keyframe like any other effect. **Persistence:** an audio effect serializes as
+    plugin id + an opaque **state blob** (e.g. VST3 component/controller state) + its automation —
+    additive and schema-versioned (§12); a missing plugin loads **offline** (the chain bypasses it)
+    rather than failing the load (§15). Builds on the audio mixer (steps 5/7) and the plugin host
+    (step 23). **Licensing:** the VST3 SDK is GPLv3-or-Steinberg-dual-licensed — choose the license
+    deliberately before distribution (cf. the FFmpeg LGPL/GPL note). A track or chain can also be
+    **frozen** (pre-rendered) via the render cache (step 23c) so heavy or non-deterministic plugins
+    aren't recomputed every playback pass.
+23c. **Preview render cache (pre-render / "freeze").** Expensive subgraphs — nested sequences
+    (step 19b), adjustment-layer spans (step 19), deep effect chains, and audio plugin chains
+    (step 23b) — shouldn't be recomputed every playback pass. Because the render graph is a **pure,
+    deterministic function of (project, t)** with no hidden state ([ARCHITECTURE §5](ARCHITECTURE.md),
+    [§6](ARCHITECTURE.md), §1.6), a computed range can be cached and replayed, then invalidated when the
+    edit that produced it changes. The cache reuses the existing seams: a rendered range is exposed back
+    to the parent graph as **just another `IFrameSource`** (video — rendered to a fast all-intra
+    intermediate via `MediaEncoder`, or a short GPU texture ring) / **`IPcmReader`** (audio — cached PCM,
+    i.e. "freezing" a track, valuable for non-deterministic native plugins), the same seam media, proxies
+    (§17) and nested sequences already use — so **no new render-graph machinery**. Cache entries are keyed
+    by a **content hash of the cached subtree's serializable state** (the persist DTO, §12) + range +
+    render settings; any model edit (always via the command stack, §4) re-hashes and marks the affected
+    range **dirty** (exact invalidation, no stale frames). A **render bar** over the ruler shows rendered
+    vs. needs-render ranges (green/yellow/red), with *Render In to Out* / *Render Selection* /
+    *Render Audio* / *Delete Render Files* commands. The cache is a **local derived artifact** kept in a
+    cache dir beside the project (not in the diffable project file, not merged — cf. step 19c) and is
+    always **safely discardable**. **Export ignores the preview cache by default** and re-renders full-res
+    originals (§17) so output stays deterministic; reusing a full-quality cache is an opt-in. Lands on the
+    done render graph + the `IFrameSource` / `IPcmReader` seams; full value comes once sequences (19b) and
+    audio effects (23b) exist, hence its place here, but the video side can ship with 19b.
+    [ARCHITECTURE §20](ARCHITECTURE.md).
+23d. **Color grading.** A professional grading toolset on top of the step-16 `Color` effect, all as
+    SkSL effect-chain stages (§7) so preview and export stay identical and GPU-resident (§1, §5):
+    **lift / gamma / gain color wheels** (shadows / mids / highlights), **RGB + per-channel curves**,
+    **HSL secondaries / qualifiers** (key a hue/sat/luma range and grade only that), **white balance**
+    (temp / tint), and saturation / vibrance — each a new built-in `IVideoEffect` registered in
+    `EffectCatalog`, keyframeable via `AnimatableValue` (step 16d) and edited in the type-driven Inspector
+    (step 16). Reference **scopes** — waveform / vectorscope / RGB parade / histogram — computed from the
+    rendered frame (extending the step-17 monitor scopes) to grade against. Composes with the input color
+    transform / log handling (step 26) and the advanced OCIO / ACES color management (step 23). Lands
+    entirely on the existing effect seam ([ARCHITECTURE §7](ARCHITECTURE.md), [§17](ARCHITECTURE.md)) — no
+    render-graph redesign; builds on the done effect pipeline, so it can be pulled earlier if prioritized.
 24. **Cross-platform native-lib bundling.** Make the build self-contained per RID: copy the FFmpeg 7
     `.dll`/`.so`/`.dylib` set and `SkiaSharp.NativeAssets.{Win32,Linux,macOS}` + OpenAL Soft natives
     into the publish output for `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64` so the app runs with no

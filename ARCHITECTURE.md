@@ -509,6 +509,29 @@ the render graph addresses sources through `IFrameSource` and clips reference a 
 no change to `Sprocket.Core`. Determinism (§1.6) still holds — the *active* source for a given
 render mode is a pure input to `RenderFrame`.
 
+**Later capabilities land the same way** — each is an addition on an existing seam, detailed in its
+own section but noted here so the "additive, not a rewrite" invariant stays canonical:
+
+- **Nested sequences / compound clips** — a sequence rendered as a clip is **another `IFrameSource` /
+  `IPcmReader`** to the parent graph (the graph already turns a (timeline, t) into a frame, §5); Core
+  gains `Project.Sequences[]` and a `Clip.SequenceId` source alongside `MediaRefId`, plus cycle
+  detection. No render-graph redesign (PLAN step 19b).
+- **Audio effects & VST3/AU plugins** — the audio analogue of the video effect chain: a new
+  `IAudioEffect` seam reusing the pure-data `EffectInstance`/`AnimatableValue` model, executed in the
+  mixer (§6); native VST3/AU hosting is reached through a **flat C-ABI bridge** per the no-C++/CLI rule
+  (§1.4), exactly like the FFmpeg/Skia natives (§19, PLAN step 23b).
+- **Render cache / pre-render ("freeze")** — **not new graph machinery** but memoization of the pure
+  render function (§1.6), surfaced back through the same `IFrameSource`/`IPcmReader` source seams and
+  invalidated by the existing command/model state; export still pulls full-res originals (§20, PLAN
+  step 23c).
+- **Color grading** — wheels / curves / qualifiers are further `IVideoEffect` effect-chain stages
+  (§7); scopes read the rendered frame. Another effect-chain addition, like log media (§18, PLAN
+  step 23d).
+- **Collaboration-ready format & asset-link split** — persistence-layer only (§12): the diffable
+  project file references sources by stable `MediaRef` **Id**, while each user's absolute asset paths
+  move to a separate local sidecar, so a pulled project-file change never forces a relink. The Core
+  model is untouched (PLAN step 19c).
+
 ---
 
 ## 18. Log media & color management (D-Log)
@@ -567,3 +590,110 @@ so colorists can read either space.
 OpenColorIO/ACES color-managed pipeline remains the later upgrade (PLAN step 23); OCIO would slot
 in as another effect-chain stage via a C-ABI P/Invoke wrapper — no C++/CLI — exactly as §7's color
 note and §17 anticipate. Nothing here forecloses it.
+
+---
+
+## 19. Audio effects & plugin hosting (Sprocket.Audio)
+
+The audio analogue of the §7 video effect chain. Today audio carries only per-clip gain + fade in
+the mixer (§6); real audio work (EQ, compression, reverb) needs a chain, and Sprocket targets
+third-party **VST3** and **Audio Unit** plugins as well as built-ins.
+
+**The seam: `IAudioEffect` (Core), mirroring `IVideoEffect`.** The pure-data `EffectInstance`
+(`EffectTypeId` + `AnimatableValue` parameters, §4/§9) is reused unchanged for audio — an audio
+effect chain is an ordered `EffectInstance[]`. Chains attach at four scopes, processed in order:
+**clip → track → sequence/bus → master**. Core stays FFmpeg-free and DSP-free; it only describes
+*which* effects in *what* order with *what* (possibly keyframed) parameters.
+
+**Execution in the mixer (§6).** After the mixer pulls and sums a track's PCM for the current
+buffer, it runs each chain as an **in-place block DSP pass** over the per-buffer native float32
+accumulator — block-based and **allocation-free on the audio thread** (§1). Each effect sees
+`(sampleRate, channelLayout, frameCount)` and a deadline. Plugins that report **processing latency**
+are compensated (plugin delay compensation) so effected tracks stay aligned — important because
+audio is the **master clock** (§6/§8), so an uncompensated latency would skew A/V sync.
+
+**Built-in managed effects first.** Parametric EQ (biquads), compressor, reverb, and gain/pan as
+pure C# DSP (`System.Numerics` SIMD where it helps) — no native dependency, cross-platform, and
+**deterministic** (golden-PCM testable like the render graph).
+
+**Native plugin hosting (VST3 + AU) — via a C-ABI bridge, no C++/CLI.** The VST3 SDK is C++/COM-style
+and Audio Units are Objective-C; both violate the managed-only rule if bound directly. Per §1.4 each
+format is reached through a thin **native bridge shared library** (`sprocket_vst3host` /
+`sprocket_auhost`) that wraps the vendor SDK and exposes a **flat C ABI** — `scan`, `instantiate`,
+`setActive`, `process(float** in, float** out, int frames)`, `get/setParameter`, `get/setState`,
+`openEditor(nativeWindowHandle)` — exactly the way the FFmpeg/Skia natives are consumed. C# P/Invokes
+that ABI; one managed build serves all OSes, only the per-RID bridge libs differ (VST3 on all three,
+AU on macOS only; bundled with the natives in PLAN steps 24–25).
+
+**Threading.** Plugin **scan / instantiate / setState** run **off** the audio thread (a background
+plugin service); only `process` and parameter ramps touch the audio thread. A plugin's **own editor
+GUI** runs on the UI thread, embedded via the OS window handle the bridge accepts
+(HWND / NSView / X11 window); parameter edits from the GUI are marshalled to the audio thread
+lock-free.
+
+**Automation.** Effect/plugin parameters are `AnimatableValue`s (§9), so they **keyframe like any
+effect** (PLAN step 16d). The mixer evaluates them per block (sample-accurate ramp within a block)
+and pushes them to the plugin via `setParameter` before `process`.
+
+**Persistence (§12).** An audio `EffectInstance` serializes as plugin id (format + vendor UID) + its
+automation + an **opaque state blob** (VST3 component+controller state / AU `ClassInfo`, base64).
+The blob is opaque to Core — bytes in, bytes out. A plugin that isn't installed loads **offline**:
+the chain **bypasses** it (passthrough) and flags it for relink rather than failing the load (§15).
+
+**Determinism caveat.** Built-in effects are deterministic and unit-tested. **Native plugins are not
+guaranteed** bit-identical across versions/hosts, so they are excluded from golden-audio tests — and
+this is a second reason to **pre-render** their output (§20). **Licensing:** the VST3 SDK is
+GPLv3-or-Steinberg-dual-licensed; decide the build/product license before distribution, as with
+FFmpeg (§11/§16).
+
+---
+
+## 20. Render cache / pre-render ("freeze" & render in-to-out)
+
+Nested sequences (§5 + PLAN step 19b), adjustment-layer spans (PLAN step 19), deep effect chains,
+and audio plugin chains (§19) can make a frame or buffer expensive to compute on **every** playback
+pass. NLEs solve this with **preview render files**: compute a range once, replay the cache,
+invalidate on edit. Sprocket can do the same with **no new render-graph machinery**, because of one
+property it already has.
+
+**Why it is sound: the graph is a pure function.** `RenderFrame`/the audio graph are **deterministic
+functions of (project, t) with no hidden state** (§5, §6, §1.6). A cached output is therefore valid
+*exactly while the inputs that produced it are unchanged*. The same determinism that makes
+golden-frame testing possible makes caching safe.
+
+**The mechanism reuses the existing source seams (the elegant part).** A pre-rendered range is
+exposed back to the parent graph as **just another `IFrameSource` (video) / `IPcmReader` (audio)** —
+the identical seam used by media, **proxies** (§17), and nested sequences. The render graph never
+learns about caching; it asks a source for frames/PCM at `t`, and that source happens to be a
+rendered intermediate.
+
+- **Video:** render the subgraph once to a **fast all-intra intermediate** on disk (via the existing
+  `MediaEncoder`, §11) for longer ranges, or a **bounded GPU/host texture ring** for short scrub
+  ranges, and read it back through a cache `IFrameSource`. Pixels stay native/GPU (§1) — the
+  intermediate decodes through the normal native path, never a managed per-frame array.
+- **Audio:** render a clip/track/sequence/bus chain once to **cached PCM** (disk or memory) and read
+  it back through a cache `IPcmReader`. This is **"freezing"** a track — especially valuable for the
+  CPU-heavy and non-deterministic native plugins of §19.
+
+**Keying & invalidation.** A cache entry is keyed by a **content hash of the cached subtree's
+serializable state** (the same DTO that persists, §12) + time range + render settings (resolution,
+sample rate). Every mutation goes through the command stack against pure-data model (§4), so any edit
+re-hashes the affected subtree and marks its range **dirty**; invalidation is **exact** (no stale
+frames survive an edit).
+
+**Surface & storage.** A **render bar** over the timeline ruler shows ranges as rendered (cached &
+valid) vs. needs-render (dirty) — the familiar green/yellow/red model — with *Render In to Out*,
+*Render Selection*, *Render Audio*, and *Delete Render Files* commands; rendering runs in the
+background (cancellable, §15). The cache is a **local, derived artifact** in a cache directory beside
+the project — **not** in the diffable project file and **not** shared or merged (it belongs with the
+per-user sidecar split, PLAN step 19c). It is always **safely discardable**: deleting it only forces
+recompute; correctness never depends on it existing.
+
+**Export stays authoritative.** Export **ignores the preview cache by default** and re-renders from
+**full-resolution originals** (§17) so output is deterministic and full-quality — the same rule
+proxies follow (preview accelerates; export is full-res). Reusing a cache produced at full quality
+with matching settings is an opt-in optimization, never the default.
+
+Net: pre-render is **memoization of a pure function**, surfaced through the existing `IFrameSource` /
+`IPcmReader` seams and invalidated by the existing command/model state. It composes with proxies
+(§17), nested sequences (§5), adjustment layers, and audio plugins (§19) with no redesign.

@@ -767,6 +767,12 @@ public partial class MainWindow : Window
         _saveStateText!.Text = dirty ? "• unsaved changes" : "• all changes saved";
         UpdateTimelineHeader();
         RefreshKeyframeNav(); // a keyframe just added/removed on the selection toggles the jump buttons
+
+        // A timeline edit (placement, trim, delete) can change the overall duration, so re-point the scrubber
+        // range / duration readout. Only the Program monitor reflects the timeline; the Source monitor spans
+        // its own media. (_active is non-null only once the transport is wired.)
+        if (_active is not null && ReferenceEquals(_active, _program))
+            RefreshTransportForActive();
     }
 
     // ── Import ──────────────────────────────────────────────────────────────────────────────────────

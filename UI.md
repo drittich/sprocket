@@ -168,6 +168,12 @@ Shows the selected clip's identity (`Interview_A.mp4 · Video Clip · 3840×2160
   - `A1` / `A2`: audio clips `Interview_A.wav`, `Ambient_Score.aif` with **waveform** fills.
   - Each track has **`M` (Mute) / `S` (Solo)** toggles → already in the model
     (`AudioTrack.Muted/Solo`; video `Enabled`), [ARCHITECTURE §4/§6](ARCHITECTURE.md).
+  - **Track header column** is **horizontally resizable** — drag its right edge (the cursor turns
+    into a horizontal resize arrow); width is session-only (resets to the default on restart).
+  - **Rename a track** by **double-clicking its name** — an inline editor opens over the name
+    (Enter / click-away commits, Esc cancels); the rename is undoable (one `SetPropertyCommand`).
+  - A track whose name is too long for the current column width **truncates with a tooltip** showing
+    the full name on hover.
 - **Implies**: a custom-drawn timeline control (clip thumbnails, audio waveforms, ruler,
   playhead, drag/trim handles, snapping guides) — the most involved bespoke control in
   `Sprocket.App`.

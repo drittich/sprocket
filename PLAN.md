@@ -475,6 +475,13 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
         waveforms (step 15)**; **Hand/Zoom** tool buttons + the Source monitor stay placeholders. Full suite:
         **170 tests green** (Core 64, Media 24, Render 8, Audio 16, Playback 27, Export 6, Persistence 11,
         App 14).
+      - **✅ Track-header follow-ups.** The track-header column is now **horizontally resizable** (drag its
+        right edge — `HeaderWidth` became a clamped instance field `_headerWidth`, 72–360 px, session-only; the
+        edge shows a resize cursor). A track can be **renamed by double-clicking its name**: `TimelineControl`
+        raises `TrackRenameRequested(track, rect)` and the shell overlays a `TextBox` (the custom-drawn control
+        can't host children) positioned over the name — Enter / lost-focus commit via `CommitTrackRename`
+        (one undoable `SetPropertyCommand<string>`, mirroring the M/S/enable toggles), Esc cancels. Over-long
+        names are **clipped and show the full name as a hover tooltip** ([UI.md §3.6](UI.md)).
 13. **Editing tools.** **Select / Blade (razor split) / Slip** tools and **Linked A/V** (move a
     clip and its companion audio together) — a clip-link relation in the model.
     - **✅ DONE (`Sprocket.Core/Model` + `Sprocket.Core/Commands` + `Sprocket.App/Timeline` + persistence; 16 new

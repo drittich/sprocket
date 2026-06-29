@@ -286,7 +286,14 @@
                       VerticalAlignment="Center" />
             </Grid>
           </Border>
-          <local:TimelineControl x:Name="Timeline" />
+          <!-- The timeline is custom-drawn and can't host children, so the inline track-rename editor is
+               overlaid here, sharing the timeline's (0,0) origin; it is positioned/shown from code-behind. -->
+          <Panel>
+            <local:TimelineControl x:Name="Timeline" />
+            <TextBox x:Name="TrackRenameEditor" IsVisible="False"
+                     HorizontalAlignment="Left" VerticalAlignment="Top"
+                     FontSize="11.5" Padding="2,1" MinHeight="0" />
+          </Panel>
         </DockPanel>
       </Border>
     </Grid>

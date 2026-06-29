@@ -44,6 +44,10 @@ public partial class MainWindow : Window
     private TimelineControl? _timeline;
     private Clip? _selectedClip; // the timeline selection (keyframe navigation targets its keyframes, step 16d)
 
+    // Inline track-rename editor (overlaid on the timeline): the TextBox and the track being renamed.
+    private TextBox? _trackRenameEditor;
+    private Sprocket.Core.Model.Track? _renameTarget;
+
     // Dual monitors (PLAN.md step 17): the Program monitor wraps the main engine; the Source monitor previews
     // the selected clip's source. The transport bar drives whichever is active.
     private ProgramMonitor? _program;
@@ -633,6 +637,7 @@ public partial class MainWindow : Window
         _timeline = timeline;
         timeline.Attach(_project!, _history, _engine);
         timeline.ClipPlaced += UpdateTimelineHeader; // a media-bin drop / paste may extend the timeline
+        WireTrackRename(timeline);
 
         this.FindControl<Button>("ZoomInButton")!.Click += (_, _) => timeline.ZoomIn();
         this.FindControl<Button>("ZoomOutButton")!.Click += (_, _) => timeline.ZoomOut();
@@ -670,6 +675,67 @@ public partial class MainWindow : Window
             string? name = media is null ? null : Path.GetFileName(media.AbsolutePath ?? "clip");
             SetStatus(name is null ? "" : $"Selected: {name}");
         };
+    }
+
+    /// <summary>
+    /// Wires the inline track-rename editor: the timeline raises <see cref="TimelineControl.TrackRenameRequested"/>
+    /// on a name double-click; we position the overlaid <c>TrackRenameEditor</c> over the name and focus it.
+    /// Enter / lost-focus commit through the edit history (undoable); Escape cancels.
+    /// </summary>
+    private void WireTrackRename(TimelineControl timeline)
+    {
+        _trackRenameEditor = this.FindControl<TextBox>("TrackRenameEditor")!;
+
+        timeline.TrackRenameRequested += (track, rect) =>
+        {
+            _renameTarget = track;
+            _trackRenameEditor.Margin = new Thickness(rect.X, rect.Y, 0, 0);
+            _trackRenameEditor.Width = rect.Width;
+            _trackRenameEditor.Height = rect.Height;
+            _trackRenameEditor.Text = track.Name;
+            _trackRenameEditor.IsVisible = true;
+            // Focus after layout so the freshly-shown box takes focus and selects its text.
+            Dispatcher.UIThread.Post(() =>
+            {
+                _trackRenameEditor.Focus();
+                _trackRenameEditor.SelectAll();
+            });
+        };
+
+        _trackRenameEditor.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter || e.Key == Key.Return)
+            {
+                CommitTrackRename();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                CancelTrackRename();
+                e.Handled = true;
+            }
+        };
+        _trackRenameEditor.LostFocus += (_, _) => CommitTrackRename();
+    }
+
+    // Commits the inline rename (no-op if the editor is hidden / nothing targeted). Clearing the target and
+    // hiding before delegating means the LostFocus that hiding triggers re-enters as a no-op.
+    private void CommitTrackRename()
+    {
+        if (_renameTarget is null || _trackRenameEditor is null || !_trackRenameEditor.IsVisible)
+            return;
+        Sprocket.Core.Model.Track target = _renameTarget;
+        string text = _trackRenameEditor.Text ?? string.Empty;
+        _renameTarget = null;
+        _trackRenameEditor.IsVisible = false;
+        _timeline?.CommitTrackRename(target, text);
+    }
+
+    private void CancelTrackRename()
+    {
+        _renameTarget = null;
+        if (_trackRenameEditor is not null)
+            _trackRenameEditor.IsVisible = false;
     }
 
     /// <summary>Binds a tool-palette radio button to its <see cref="EditTool"/> on the timeline.</summary>

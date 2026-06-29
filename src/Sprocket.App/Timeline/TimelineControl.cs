@@ -25,11 +25,14 @@ namespace Sprocket.App;
 public sealed class TimelineControl : Control
 {
     // Layout constants (px).
-    private const double HeaderWidth = 132;
+    private const double DefaultHeaderWidth = 132;
+    private const double MinHeaderWidth = 72;
+    private const double MaxHeaderWidth = 360;
     private const double RulerHeight = 26;
     private const double TrackHeight = 46;
     private const double TrackGap = 4;
     private const double EdgeGrip = 7;
+    private const double NameLeft = 10;
     private const double MinPxPerSecond = 8;
     private const double MaxPxPerSecond = 600;
     private const double SnapTolerancePx = 8;
@@ -62,6 +65,10 @@ public sealed class TimelineControl : Control
     private double _scrollX;
     private Timecode _playhead = Timecode.Zero;
 
+    // Width of the left track-header column. Resizable by dragging its right edge (session-only).
+    private double _headerWidth = DefaultHeaderWidth;
+    private bool _resizingHeader;
+
     private Clip? _selected;
     private bool _scrubbing;
 
@@ -89,6 +96,13 @@ public sealed class TimelineControl : Control
     /// <summary>Raised when the selected clip changes (for the Inspector / header). Null = nothing selected.</summary>
     public event Action<Clip?>? SelectedClipChanged;
 
+    /// <summary>
+    /// Raised when a track name is double-clicked, requesting an inline rename. The <see cref="Rect"/> is the
+    /// name area in control-local coordinates so the shell can position an editor over it (the timeline is
+    /// custom-drawn and cannot host a child <c>TextBox</c> itself).
+    /// </summary>
+    public event Action<Track, Rect>? TrackRenameRequested;
+
     /// <summary>Whether edge/playhead snapping is active during drags.</summary>
     public bool Snapping { get; set; } = true;
 
@@ -102,18 +116,21 @@ public sealed class TimelineControl : Control
         set
         {
             _activeTool = value;
-            Cursor = value switch
-            {
-                EditTool.Blade => new Cursor(StandardCursorType.Cross),
-                EditTool.Hand => new Cursor(StandardCursorType.SizeAll),
-                EditTool.Zoom => new Cursor(StandardCursorType.Hand),
-                EditTool.Slip => new Cursor(StandardCursorType.SizeWestEast),
-                _ => Cursor.Default,
-            };
+            Cursor = ToolCursor(value);
         }
     }
 
     private EditTool _activeTool = EditTool.Select;
+
+    /// <summary>The cursor for a tool — shared by the <see cref="ActiveTool"/> setter and idle-hover restore.</summary>
+    private static Cursor ToolCursor(EditTool tool) => tool switch
+    {
+        EditTool.Blade => new Cursor(StandardCursorType.Cross),
+        EditTool.Hand => new Cursor(StandardCursorType.SizeAll),
+        EditTool.Zoom => new Cursor(StandardCursorType.Hand),
+        EditTool.Slip => new Cursor(StandardCursorType.SizeWestEast),
+        _ => Cursor.Default,
+    };
 
     /// <summary>The currently selected clip, or null.</summary>
     public Clip? SelectedClip => _selected;
@@ -174,7 +191,7 @@ public sealed class TimelineControl : Control
         if (_project is null)
             return;
         long durTicks = _project.Timeline.Duration.Ticks;
-        double view = Bounds.Width - HeaderWidth - 24; // small right inset so the tail isn't flush to the edge
+        double view = Bounds.Width - _headerWidth - 24; // small right inset so the tail isn't flush to the edge
         if (durTicks <= 0 || view <= 0)
             return;
         double seconds = (double)durTicks / Timecode.TicksPerSecond;
@@ -184,7 +201,7 @@ public sealed class TimelineControl : Control
         InvalidateVisual();
     }
 
-    private double AnchorX() => TimelineMath.XAtTicks(_playhead.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
+    private double AnchorX() => TimelineMath.XAtTicks(_playhead.Ticks, _pxPerSecond, _scrollX, _headerWidth);
 
     private void OnHistoryChanged()
     {
@@ -448,7 +465,7 @@ public sealed class TimelineControl : Control
     // A dashed accent line where a dragged bin tile would place a clip (PLAN.md step 16b).
     private void DrawDropPreview(DrawingContext ctx, Size size)
     {
-        if (_dropPreviewX is not { } x || x < HeaderWidth || x > size.Width)
+        if (_dropPreviewX is not { } x || x < _headerWidth || x > size.Width)
             return;
         var pen = new Pen(Accent, 1.5) { DashStyle = new DashStyle([3, 3], 0) };
         ctx.DrawLine(pen, new Point(x, RulerHeight), new Point(x, size.Height));
@@ -460,16 +477,16 @@ public sealed class TimelineControl : Control
         ctx.DrawLine(EdgePen, new Point(0, RulerHeight), new Point(size.Width, RulerHeight));
 
         long interval = TimelineMath.RulerIntervalTicks(_pxPerSecond, 90);
-        long firstTicks = TimelineMath.ClampNonNegative(TimelineMath.TicksAtX(HeaderWidth, _pxPerSecond, _scrollX, HeaderWidth));
+        long firstTicks = TimelineMath.ClampNonNegative(TimelineMath.TicksAtX(_headerWidth, _pxPerSecond, _scrollX, _headerWidth));
         long t = firstTicks - (firstTicks % interval);
-        using (ctx.PushClip(new Rect(HeaderWidth, 0, size.Width - HeaderWidth, RulerHeight)))
+        using (ctx.PushClip(new Rect(_headerWidth, 0, size.Width - _headerWidth, RulerHeight)))
         {
             for (; ; t += interval)
             {
-                double x = TimelineMath.XAtTicks(t, _pxPerSecond, _scrollX, HeaderWidth);
+                double x = TimelineMath.XAtTicks(t, _pxPerSecond, _scrollX, _headerWidth);
                 if (x > size.Width)
                     break;
-                if (x < HeaderWidth - 1)
+                if (x < _headerWidth - 1)
                     continue;
                 ctx.DrawLine(GridPen, new Point(x, RulerHeight - 7), new Point(x, RulerHeight));
                 ctx.DrawText(Label(TimeLabel(t), 10.5, MutedText), new Point(x + 4, 5));
@@ -479,7 +496,7 @@ public sealed class TimelineControl : Control
 
     private void DrawClips(DrawingContext ctx, Size size, List<(Track track, bool isVideo)> lanes)
     {
-        using var _ = ctx.PushClip(new Rect(HeaderWidth, RulerHeight, size.Width - HeaderWidth, size.Height - RulerHeight));
+        using var _ = ctx.PushClip(new Rect(_headerWidth, RulerHeight, size.Width - _headerWidth, size.Height - RulerHeight));
         for (int i = 0; i < lanes.Count; i++)
         {
             (Track track, bool isVideo) = lanes[i];
@@ -488,9 +505,9 @@ public sealed class TimelineControl : Control
 
             foreach (Clip clip in track.Clips)
             {
-                double x0 = TimelineMath.XAtTicks(clip.TimelineStart.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
-                double x1 = TimelineMath.XAtTicks(clip.TimelineEnd.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
-                if (x1 < HeaderWidth || x0 > size.Width)
+                double x0 = TimelineMath.XAtTicks(clip.TimelineStart.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+                double x1 = TimelineMath.XAtTicks(clip.TimelineEnd.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+                if (x1 < _headerWidth || x0 > size.Width)
                     continue;
 
                 var rect = new Rect(x0, top, Math.Max(2, x1 - x0), h);
@@ -534,14 +551,17 @@ public sealed class TimelineControl : Control
 
     private void DrawHeaders(DrawingContext ctx, List<(Track track, bool isVideo)> lanes)
     {
-        ctx.FillRectangle(HeaderBg, new Rect(0, 0, HeaderWidth, Bounds.Height));
-        ctx.DrawLine(EdgePen, new Point(HeaderWidth, 0), new Point(HeaderWidth, Bounds.Height));
+        ctx.FillRectangle(HeaderBg, new Rect(0, 0, _headerWidth, Bounds.Height));
+        ctx.DrawLine(EdgePen, new Point(_headerWidth, 0), new Point(_headerWidth, Bounds.Height));
 
         for (int i = 0; i < lanes.Count; i++)
         {
             (Track track, bool isVideo) = lanes[i];
             double top = LaneTop(i);
-            ctx.DrawText(Label(TrackName(track, isVideo), 11.5, Text), new Point(10, top + 7));
+            // Clip the name to the area left of the toggles so a long name can't bleed over them or past
+            // the (now resizable) column edge.
+            using (ctx.PushClip(new Rect(NameLeft, top, NameAreaWidth(isVideo), TrackHeight)))
+                ctx.DrawText(Label(TrackName(track, isVideo), 11.5, Text), new Point(NameLeft, top + 7));
 
             if (isVideo)
             {
@@ -567,14 +587,18 @@ public sealed class TimelineControl : Control
             box.Y + (box.Height - text.Height) / 2));
     }
 
-    private static Rect MuteBox(double laneTop) => new(HeaderWidth - 56, laneTop + TrackHeight - 24, 22, 17);
-    private static Rect SoloBox(double laneTop) => new(HeaderWidth - 30, laneTop + TrackHeight - 24, 22, 17);
-    private static Rect EnableBox(double laneTop) => new(HeaderWidth - 30, laneTop + TrackHeight - 24, 22, 17);
+    private Rect MuteBox(double laneTop) => new(_headerWidth - 56, laneTop + TrackHeight - 24, 22, 17);
+    private Rect SoloBox(double laneTop) => new(_headerWidth - 30, laneTop + TrackHeight - 24, 22, 17);
+    private Rect EnableBox(double laneTop) => new(_headerWidth - 30, laneTop + TrackHeight - 24, 22, 17);
+
+    // Width available for the track-name text on a lane: from NameLeft to just left of that kind's toggles.
+    private double NameAreaWidth(bool isVideo) =>
+        Math.Max(0, (isVideo ? _headerWidth - 30 : _headerWidth - 56) - 6 - NameLeft);
 
     private void DrawPlayhead(DrawingContext ctx, Size size)
     {
-        double x = TimelineMath.XAtTicks(_playhead.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
-        if (x < HeaderWidth || x > size.Width)
+        double x = TimelineMath.XAtTicks(_playhead.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+        if (x < _headerWidth || x > size.Width)
             return;
         ctx.DrawLine(PlayheadPen, new Point(x, 0), new Point(x, size.Height));
         // A small downward triangle handle at the top.
@@ -600,21 +624,33 @@ public sealed class TimelineControl : Control
         Point p = e.GetPosition(this);
         Focus();
 
-        // Track-header toggles.
-        if (p.X < HeaderWidth)
+        // Drag the column's right edge to resize the header (checked before the header branch, since the
+        // grip band straddles the boundary).
+        if (p.Y > RulerHeight && Math.Abs(p.X - _headerWidth) <= EdgeGrip)
         {
-            HandleHeaderClick(p);
+            _resizingHeader = true;
+            e.Pointer.Capture(this);
+            return;
+        }
+
+        // Track-header column: double-click a name to rename; single-click hits the toggles.
+        if (p.X < _headerWidth)
+        {
+            if (e.ClickCount == 2)
+                TryBeginRename(p);
+            else
+                HandleHeaderClick(p);
             return;
         }
 
         // View tools act anywhere in the lane/ruler area.
-        if (_activeTool == EditTool.Zoom && p.X >= HeaderWidth)
+        if (_activeTool == EditTool.Zoom && p.X >= _headerWidth)
         {
             bool zoomOut = e.KeyModifiers.HasFlag(KeyModifiers.Alt) || e.GetCurrentPoint(this).Properties.IsRightButtonPressed;
             SetZoom(_pxPerSecond * (zoomOut ? 0.8 : 1.25), p.X);
             return;
         }
-        if (_activeTool == EditTool.Hand && p.X >= HeaderWidth)
+        if (_activeTool == EditTool.Hand && p.X >= _headerWidth)
         {
             _panning = true;
             _panPressX = p.X;
@@ -660,6 +696,13 @@ public sealed class TimelineControl : Control
         base.OnPointerMoved(e);
         Point p = e.GetPosition(this);
 
+        if (_resizingHeader)
+        {
+            _headerWidth = Math.Clamp(p.X, MinHeaderWidth, MaxHeaderWidth);
+            ClampScroll();
+            InvalidateVisual();
+            return;
+        }
         if (_scrubbing)
         {
             SeekToX(p.X);
@@ -673,7 +716,38 @@ public sealed class TimelineControl : Control
             return;
         }
         if (_dragClip is not null)
+        {
             UpdateClipDrag(p);
+            return;
+        }
+
+        // Idle hover: show a resize cursor over the column edge, and the full track name as a tooltip when
+        // the name is too long to fit the current column width.
+        bool overGrip = p.Y > RulerHeight && Math.Abs(p.X - _headerWidth) <= EdgeGrip;
+        Cursor = overGrip ? new Cursor(StandardCursorType.SizeWestEast) : ToolCursor(_activeTool);
+        UpdateHeaderTooltip(p, overGrip);
+    }
+
+    // Sets the control tooltip to the full track name while hovering a truncated name in the header column;
+    // clears it otherwise so no redundant tooltip shows for names that already fit.
+    private void UpdateHeaderTooltip(Point p, bool overGrip)
+    {
+        string? tip = null;
+        if (!overGrip && p.X < _headerWidth && p.Y > RulerHeight)
+        {
+            List<(Track track, bool isVideo)> lanes = Lanes();
+            int i = LaneAtY(p.Y);
+            if (i >= 0 && i < lanes.Count)
+            {
+                (Track track, bool isVideo) = lanes[i];
+                string name = TrackName(track, isVideo);
+                if (Label(name, 11.5, Text).Width > NameAreaWidth(isVideo))
+                    tip = name;
+            }
+        }
+
+        if (!Equals(ToolTip.GetTip(this), tip))
+            ToolTip.SetTip(this, tip);
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
@@ -681,6 +755,7 @@ public sealed class TimelineControl : Control
         base.OnPointerReleased(e);
         _scrubbing = false;
         _panning = false;
+        _resizingHeader = false;
         if (_dragClip is not null)
         {
             _coalesce?.Dispose(); // seal the gesture as one undo entry
@@ -736,6 +811,41 @@ public sealed class TimelineControl : Control
         }
     }
 
+    // A double-click on a track name (not on its toggle buttons) requests an inline rename: raises
+    // TrackRenameRequested with the name area's rect so the shell can position an editor over it.
+    private void TryBeginRename(Point p)
+    {
+        List<(Track track, bool isVideo)> lanes = Lanes();
+        int i = LaneAtY(p.Y);
+        if (i < 0 || i >= lanes.Count)
+            return;
+        (Track track, bool isVideo) = lanes[i];
+        double top = LaneTop(i);
+
+        // Ignore double-clicks that land on the toggles — they keep their single-click behaviour.
+        if (EnableBox(top).Contains(p) || MuteBox(top).Contains(p) || SoloBox(top).Contains(p))
+            return;
+
+        var rect = new Rect(NameLeft - 2, top + 4, NameAreaWidth(isVideo) + 2, 20);
+        TrackRenameRequested?.Invoke(track, rect);
+    }
+
+    /// <summary>
+    /// Commits an inline track rename through the edit history (one undoable <see cref="SetPropertyCommand{T}"/>),
+    /// mirroring the track toggles. No-op when the trimmed name is unchanged. Called by the shell's editor.
+    /// </summary>
+    public void CommitTrackRename(Track track, string newName)
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        if (_history is null)
+            return;
+        string trimmed = (newName ?? string.Empty).Trim();
+        if (trimmed == track.Name)
+            return;
+        Execute(SetPropertyCommand<string>.Create(
+            "Rename track", () => track.Name, v => track.Name = v, trimmed));
+    }
+
     private bool TryHitClip(Point p, out Clip? clip, out ClipDragMode mode)
     {
         clip = null;
@@ -749,8 +859,8 @@ public sealed class TimelineControl : Control
         // Last clip wins so a clip drawn on top (later in the list) is hit first.
         foreach (Clip c in track.Clips)
         {
-            double x0 = TimelineMath.XAtTicks(c.TimelineStart.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
-            double x1 = TimelineMath.XAtTicks(c.TimelineEnd.Ticks, _pxPerSecond, _scrollX, HeaderWidth);
+            double x0 = TimelineMath.XAtTicks(c.TimelineStart.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+            double x1 = TimelineMath.XAtTicks(c.TimelineEnd.Ticks, _pxPerSecond, _scrollX, _headerWidth);
             ClipDragMode m = TimelineMath.HitMode(p.X, x0, x1, EdgeGrip);
             if (m != ClipDragMode.None)
             {
@@ -765,7 +875,7 @@ public sealed class TimelineControl : Control
     {
         _dragClip = clip;
         _dragMode = mode;
-        _dragPressTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
+        _dragPressTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         _dragOrigIn = clip.SourceIn;
         _dragOrigOut = clip.SourceOut;
         _dragOrigStart = clip.TimelineStart;
@@ -783,7 +893,7 @@ public sealed class TimelineControl : Control
 
     private void UpdateClipDrag(Point p)
     {
-        long pointerTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
+        long pointerTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         long delta = pointerTicks - _dragPressTicks;
 
         // Slip tool: shift the source window, keep the clip's timeline position and duration fixed.
@@ -882,7 +992,7 @@ public sealed class TimelineControl : Control
         if (track is null)
             return;
 
-        long atTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
+        long atTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         if (Snapping)
             atTicks = TimelineMath.Snap(atTicks, [_playhead.Ticks], SnapTolerancePx, _pxPerSecond);
         var at = new Timecode(atTicks);
@@ -972,7 +1082,7 @@ public sealed class TimelineControl : Control
         e.DragEffects = DragDropEffects.Copy;
         // Show the indicator at the snapped drop start (media) or just the cursor (effect lands on a clip).
         double x = e.GetPosition(this).X;
-        _dropPreviewX = x < HeaderWidth ? null : x;
+        _dropPreviewX = x < _headerWidth ? null : x;
         InvalidateVisual();
     }
 
@@ -983,7 +1093,7 @@ public sealed class TimelineControl : Control
             return;
 
         Point p = e.GetPosition(this);
-        if (p.X < HeaderWidth)
+        if (p.X < _headerWidth)
             return;
 
         if (e.DataTransfer.Contains(DragFormats.MediaRefId))
@@ -1015,7 +1125,7 @@ public sealed class TimelineControl : Control
         AudioTrack? audioTarget = dropped as AudioTrack ?? _project.Timeline.AudioTracks.FirstOrDefault();
         bool primaryIsVideo = dropped is VideoTrack || (dropped is null && media.Info.HasVideo);
 
-        long dropTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, HeaderWidth);
+        long dropTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         long durationTicks = media.Info.Duration.Ticks;
         long start = ClipPlacement.SnapStart(
             dropTicks, durationTicks, DropSnapPoints(), Snapping, SnapTolerancePx, _pxPerSecond);
@@ -1078,7 +1188,7 @@ public sealed class TimelineControl : Control
 
     private void SeekToX(double x)
     {
-        long ticks = TimelineMath.ClampNonNegative(TimelineMath.TicksAtX(x, _pxPerSecond, _scrollX, HeaderWidth));
+        long ticks = TimelineMath.ClampNonNegative(TimelineMath.TicksAtX(x, _pxPerSecond, _scrollX, _headerWidth));
         Timecode t = new(ticks);
         if (_engine is not null)
             _engine.SeekTo(t); // engine echoes PositionChanged → playhead + redraw
@@ -1095,9 +1205,9 @@ public sealed class TimelineControl : Control
         if (Math.Abs(clamped - _pxPerSecond) < 1e-6)
             return;
         // Keep the tick under anchorX fixed across the zoom.
-        long anchorTicks = TimelineMath.TicksAtX(anchorX, _pxPerSecond, _scrollX, HeaderWidth);
+        long anchorTicks = TimelineMath.TicksAtX(anchorX, _pxPerSecond, _scrollX, _headerWidth);
         _pxPerSecond = clamped;
-        _scrollX = Math.Max(0, HeaderWidth - anchorX + TimelineMath.WidthOfTicks(anchorTicks, _pxPerSecond));
+        _scrollX = Math.Max(0, _headerWidth - anchorX + TimelineMath.WidthOfTicks(anchorTicks, _pxPerSecond));
         ClampScroll();
         InvalidateVisual();
     }
@@ -1107,7 +1217,7 @@ public sealed class TimelineControl : Control
         if (_project is null)
             return;
         double content = TimelineMath.WidthOfTicks(_project.Timeline.Duration.Ticks, _pxPerSecond) + 200;
-        double view = Math.Max(0, Bounds.Width - HeaderWidth);
+        double view = Math.Max(0, Bounds.Width - _headerWidth);
         _scrollX = Math.Clamp(_scrollX, 0, Math.Max(0, content - view));
     }
 

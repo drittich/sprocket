@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Compiles the whole solution on every target OS. The managed assemblies are
+  # identical per OS; this proves the cross-platform build stays green.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build Sprocket.slnx --configuration Release
+
+  # Runs the xUnit suite. Restricted to Windows for now: the FFmpeg native libs
+  # the decode tests need come from the win-x64 Sdcb runtime NuGet, and there is
+  # no equivalent runtime package on Linux/macOS yet (those natives are bundled
+  # by the release script, not NuGet). Cross-platform test runs are a roadmap
+  # item alongside per-OS native bundling.
+  test:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The media/audio tests shell out to the ffmpeg CLI to generate a
+      # deterministic fixture clip (see TestVideo.cs).
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Test
+        run: dotnet test Sprocket.slnx --configuration Release

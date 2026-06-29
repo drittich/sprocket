@@ -476,6 +476,10 @@ public partial class MainWindow : Window
         WireMonitorReadouts(_source, isProgram: false);
         RefreshTransportForActive();
 
+        // A pump iteration can fault (e.g. the audio device hiccupping during the end-of-timeline stop); the
+        // engine keeps the transport alive rather than dying, so surface the reason instead of swallowing it.
+        _engine!.PumpError += ex => Dispatcher.UIThread.Post(() => SetStatus($"Playback recovered from an error: {ex.Message}"));
+
         // Optional timed auto-exit for unattended profiling runs: SPROCKET_APP_SECONDS=12
         if (int.TryParse(Environment.GetEnvironmentVariable("SPROCKET_APP_SECONDS"), out int seconds) && seconds > 0)
             DispatcherTimer.RunOnce(Close, TimeSpan.FromSeconds(seconds));

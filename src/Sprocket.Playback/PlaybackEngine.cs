@@ -154,6 +154,10 @@ public sealed class PlaybackEngine : IAsyncDisposable
     /// <summary>Raised once when playback reaches the end of the timeline. Fires on the pump thread.</summary>
     public event Action? PlaybackEnded;
 
+    /// <summary>Raised when a pump iteration throws (a decode/clock/device hiccup). The pump swallows the error
+    /// and keeps running so the transport stays responsive; subscribers may surface it. Fires on the pump thread.</summary>
+    public event Action<Exception>? PumpError;
+
     /// <summary>The current transport state.</summary>
     public PlaybackState State
     {
@@ -310,18 +314,36 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
     private async Task PumpLoopAsync(CancellationToken ct)
     {
-        try
+        while (!ct.IsCancellationRequested)
         {
-            while (!ct.IsCancellationRequested)
+            try
             {
                 await PumpOnceAsync(forcePresent: false, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break; // cancellation is teardown — leave the loop
+            }
+            catch (Exception ex)
+            {
+                // One pump iteration failed — e.g. a decode hiccup, or the audio device faulting while the
+                // master clock is paused/sought during the end-of-timeline stop. This must NOT kill the pump:
+                // a dead pump stops raising PositionChanged, which freezes the playhead and leaves the transport
+                // permanently unresponsive (a click on the timeline, and the rewind / go-to-start buttons, would
+                // no longer move the position indicator). Surface it and keep pumping so the next tick — and any
+                // seek the user issues — recovers.
+                PumpError?.Invoke(ex);
+            }
+
+            try
+            {
                 int pace = State == PlaybackState.Playing ? _paceMsPlaying : 16;
                 await Task.Delay(pace, ct).ConfigureAwait(false);
             }
-        }
-        catch (OperationCanceledException)
-        {
-            // Stopping.
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
     }
 
@@ -392,9 +414,12 @@ public sealed class PlaybackEngine : IAsyncDisposable
         if (!fire)
             return;
 
+        // Park the transport at the end. Transition to Stopped first: that can't throw, so even if pausing/seeking
+        // the clock faults (the pump loop catches it), the engine can never get wedged in Playing — which would
+        // otherwise keep re-entering this path and re-throwing every tick.
+        SetState(PlaybackState.Stopped);
         _clock.Pause();
         _clock.Seek(Duration);
-        SetState(PlaybackState.Stopped);
         PlaybackEnded?.Invoke();
     }
 

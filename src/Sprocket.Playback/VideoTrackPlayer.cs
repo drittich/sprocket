@@ -25,6 +25,7 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
     private MediaRefId? _feedSource;   // which source _feed currently decodes (factory mode)
     private bool _feedStarted;
     private bool _needsSeek = true;    // a fresh player (or one after a seek) must seek before presenting
+    private bool _atEof;               // the feed reached end-of-stream; hold (don't re-read) until a seek resumes it
 
     private VideoFrame? _current;      // presented frame; guarded by _frameGate
     private VideoFrame? _next;         // pump-thread-only prefetch
@@ -94,8 +95,17 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
             _feed!.RequestSeek(target);
             _next?.Dispose();
             _next = null;
+            _atEof = false; // a seek resumes the feed from the new target
             _needsSeek = false;
         }
+
+        // The feed has been drained to end-of-stream. The decode worker parks at EOF and only resumes on a seek,
+        // so reading again here would block forever. Hold the last presented frame instead. Without this, once the
+        // source is exhausted while the playhead is still inside the clip's timeline span (the audio master clock
+        // keeps the position just short of the end), the pump would hang on the read — freezing the playhead and
+        // never reaching the end-of-timeline stop, while the independent audio clock kept running.
+        if (_atEof)
+            return false;
 
         bool promoted = false;
         _next ??= await _feed!.ReadAsync(ct).ConfigureAwait(false);
@@ -115,6 +125,11 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
             promoted = true;
             _next = await _feed!.ReadAsync(ct).ConfigureAwait(false);
         }
+
+        // A null prefetch is end-of-stream: latch it so the next pump holds rather than blocking on a read the
+        // parked worker can't satisfy until a seek. A seek (above) clears the latch and resumes decoding.
+        if (_next is null)
+            _atEof = true;
 
         return promoted;
     }

@@ -36,9 +36,9 @@ public sealed class MediaBrowserPanel : UserControl
     private static readonly IBrush Accent = Hex("#6C5CE7");
     private static readonly IBrush BadgeBg = Hex("#2E2E38");
 
-    private const double TileWidth = 142;
-    private const int PosterW = 130;
-    private const int PosterH = 74;
+    private const double TileWidth = 116;
+    private const int PosterW = 104;
+    private const int PosterH = 58;
 
     private Project? _project;
     private EditHistory? _history;

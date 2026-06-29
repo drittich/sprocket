@@ -27,7 +27,7 @@ public sealed class TimelineControl : Control
     // Layout constants (px).
     private const double HeaderWidth = 132;
     private const double RulerHeight = 26;
-    private const double TrackHeight = 54;
+    private const double TrackHeight = 46;
     private const double TrackGap = 4;
     private const double EdgeGrip = 7;
     private const double MinPxPerSecond = 8;
@@ -513,7 +513,12 @@ public sealed class TimelineControl : Control
     private static void DrawToggle(DrawingContext ctx, Rect box, string glyph, bool on)
     {
         ctx.DrawRectangle(on ? ToggleOn : ToggleOff, null, new RoundedRect(box, 3));
-        ctx.DrawText(Label(glyph, 10, on ? Brushes.White : MutedText), new Point(box.X + 5, box.Y + 1));
+        // Center the glyph in the box rather than a fixed left offset — narrower glyphs (S, the eye)
+        // otherwise sit left with extra space on their right.
+        var text = Label(glyph, 10, on ? Brushes.White : MutedText);
+        ctx.DrawText(text, new Point(
+            box.X + (box.Width - text.Width) / 2,
+            box.Y + (box.Height - text.Height) / 2));
     }
 
     private static Rect MuteBox(double laneTop) => new(HeaderWidth - 56, laneTop + TrackHeight - 24, 22, 17);

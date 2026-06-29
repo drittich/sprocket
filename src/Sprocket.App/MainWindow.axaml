@@ -22,7 +22,7 @@
   <DockPanel x:Name="Root">
 
     <!-- ── Title bar: logo · menu · project title/save-state · window controls ─────────────────── -->
-    <Border x:Name="TitleBar" DockPanel.Dock="Top" Background="{DynamicResource PanelBg}" Height="40"
+    <Border x:Name="TitleBar" DockPanel.Dock="Top" Background="{DynamicResource PanelBg}" Height="34"
             BorderBrush="{DynamicResource Edge}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="Auto,Auto,*,Auto">
 
@@ -124,7 +124,7 @@
     </Border>
 
     <!-- ── Tool + action bar ───────────────────────────────────────────────────────────────────── -->
-    <Border DockPanel.Dock="Top" Background="{DynamicResource WindowBg}" Padding="10,6"
+    <Border DockPanel.Dock="Top" Background="{DynamicResource WindowBg}" Padding="10,4"
             BorderBrush="{DynamicResource Edge}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto">
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="2">
@@ -212,7 +212,7 @@
             </Border>
 
             <!-- Transport (under the monitor, UI.md §3.4). -->
-            <Border DockPanel.Dock="Bottom" Background="{DynamicResource PanelBg}" Padding="10,8"
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource PanelBg}" Padding="10,5"
                     BorderBrush="{DynamicResource Edge}" BorderThickness="0,1,0,0">
               <!-- Full transport (UI.md §3.4): ⏮ ◀◀ ▶ ▶▶ ⏭ — jump-to-start, frame-step back, play/pause,
                    frame-step forward, jump-to-end — plus jump-to-previous/next-keyframe (◆◀ ▶◆, PLAN.md
@@ -220,7 +220,7 @@
               <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto" VerticalAlignment="Center">
                 <Button x:Name="JumpStartButton" Grid.Column="0" Classes="transport" Content="⏮" />
                 <Button x:Name="StepBackButton" Grid.Column="1" Classes="transport" Content="◀◀" Margin="4,0,0,0" />
-                <Button x:Name="PlayPauseButton" Grid.Column="2" Classes="transport" Content="▶" Margin="4,0,0,0" />
+                <Button x:Name="PlayPauseButton" Grid.Column="2" Classes="transport play" Content="▶" Margin="4,0,0,0" />
                 <Button x:Name="StepForwardButton" Grid.Column="3" Classes="transport" Content="▶▶" Margin="4,0,0,0" />
                 <Button x:Name="JumpEndButton" Grid.Column="4" Classes="transport" Content="⏭" Margin="4,0,0,0" />
                 <Button x:Name="PrevKeyframeButton" Grid.Column="5" Classes="transport" Content="◆◀" Margin="12,0,0,0"

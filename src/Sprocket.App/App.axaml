@@ -10,8 +10,18 @@
     <SolidColorBrush x:Key="Edge" Color="#2A2A33" />
     <SolidColorBrush x:Key="Text" Color="#D5DBE6" />
     <SolidColorBrush x:Key="MutedText" Color="#9AA4B2" />
-    <SolidColorBrush x:Key="FaintText" Color="#6A7180" />
+    <SolidColorBrush x:Key="FaintText" Color="#8A93A3" />
     <SolidColorBrush x:Key="Accent" Color="#4227a3" />
+
+    <!-- Compact Fluent control metrics (space-at-a-premium density): smaller radio bullets and slider
+         thumb than the Fluent defaults (20px). All RadioButtons in the shell are the tool/monitor palette. -->
+    <x:Double x:Key="RadioButtonMinHeight">22</x:Double>
+    <x:Double x:Key="SliderHorizontalThumbWidth">14</x:Double>
+    <x:Double x:Key="SliderHorizontalThumbHeight">14</x:Double>
+    <CornerRadius x:Key="SliderThumbCornerRadius">7</CornerRadius>
+
+    <!-- Placeholder text must clear WCAG AA (≥4.5:1) on the dark input surface — Fluent's default is too dim. -->
+    <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#8A93A3" />
   </Application.Resources>
 
   <Application.Styles>
@@ -30,7 +40,7 @@
     <!-- Pane title strip. -->
     <Style Selector="Border.paneHeader">
       <Setter Property="Background" Value="{DynamicResource RaisedBg}" />
-      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="Padding" Value="10,5" />
       <Setter Property="BorderBrush" Value="{DynamicResource Edge}" />
       <Setter Property="BorderThickness" Value="0,0,0,1" />
     </Style>
@@ -54,7 +64,7 @@
     <!-- Window caption buttons (min / max / close). -->
     <Style Selector="Button.caption">
       <Setter Property="Width" Value="44" />
-      <Setter Property="Height" Value="40" />
+      <Setter Property="Height" Value="34" />
       <Setter Property="Padding" Value="0" />
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{DynamicResource MutedText}" />
@@ -78,7 +88,7 @@
       <Setter Property="Foreground" Value="White" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Padding" Value="14,0" />
-      <Setter Property="Height" Value="30" />
+      <Setter Property="Height" Value="26" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="CornerRadius" Value="5" />
     </Style>
@@ -96,18 +106,44 @@
     <Style Selector="RadioButton.tool:checked">
       <Setter Property="Foreground" Value="White" />
     </Style>
+    <!-- Shrink the Fluent radio bullet (default 20px) to suit the compact toolbar. -->
+    <Style Selector="RadioButton.tool /template/ Ellipse#OuterEllipse">
+      <Setter Property="Width" Value="15" />
+      <Setter Property="Height" Value="15" />
+    </Style>
+    <Style Selector="RadioButton.tool /template/ Ellipse#CheckOuterEllipse">
+      <Setter Property="Width" Value="15" />
+      <Setter Property="Height" Value="15" />
+    </Style>
+    <Style Selector="RadioButton.tool /template/ Ellipse#CheckGlyph">
+      <Setter Property="Width" Value="6" />
+      <Setter Property="Height" Value="6" />
+    </Style>
 
     <!-- Transport buttons under the program monitor. -->
     <Style Selector="Button.transport">
-      <Setter Property="Width" Value="38" />
-      <Setter Property="Height" Value="32" />
+      <Setter Property="Width" Value="32" />
+      <Setter Property="Height" Value="28" />
       <Setter Property="Padding" Value="0" />
       <Setter Property="Background" Value="{DynamicResource RaisedBg}" />
       <Setter Property="Foreground" Value="{DynamicResource Text}" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="CornerRadius" Value="5" />
-      <Setter Property="FontSize" Value="14" />
+      <Setter Property="FontSize" Value="13" />
+    </Style>
+    <!-- Play/Pause is the primary transport control — carry the accent so it reads as primary. -->
+    <Style Selector="Button.transport.play">
+      <Setter Property="Background" Value="{DynamicResource Accent}" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.transport.play:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#7D6FF0" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.transport.play:pressed /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource Accent}" />
+      <Setter Property="Foreground" Value="White" />
     </Style>
   </Application.Styles>
 </Application>

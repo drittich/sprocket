@@ -185,6 +185,148 @@ public sealed class TimelineControl : Control
         Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
     }
 
+    // ── Clip editing (Edit / Clip menus, PLAN.md step 16c) ──────────────────────────────────────────
+
+    // A single-clip clipboard for cut/copy/paste; the flag records whether it was copied from a video lane so a
+    // paste lands on a track of the matching kind.
+    private (Clip clip, bool isVideo)? _clipboard;
+
+    /// <summary>Whether a clip is selected (drives Edit ▸ Cut/Copy/Delete and Clip ▸ Nudge enablement).</summary>
+    public bool HasSelection => _selected is not null;
+
+    /// <summary>Whether there is a clip on the clipboard to paste (drives Edit ▸ Paste enablement).</summary>
+    public bool CanPaste => _clipboard is not null;
+
+    /// <summary>Whether the selected clip is part of a linked A/V group (drives Clip ▸ Unlink enablement).</summary>
+    public bool SelectedIsLinked => _selected?.LinkGroupId is not null;
+
+    /// <summary>Copies the selected clip to the clipboard (a detached deep copy, link cleared — steps 13/16c).</summary>
+    public void CopySelected()
+    {
+        if (_selected is null)
+            return;
+        _clipboard = (ClipboardOps.Copy(_selected), TrackOf(_selected) is VideoTrack);
+    }
+
+    /// <summary>Copies then deletes the selected clip (and its linked companions when Linked is on).</summary>
+    public void CutSelected()
+    {
+        if (_selected is null)
+            return;
+        CopySelected();
+        DeleteSelected();
+    }
+
+    /// <summary>
+    /// Pastes the clipboard clip at the playhead, onto the first track of the matching kind. The pasted clip is
+    /// independent (no link) and becomes the selection — one undoable <see cref="AddClipCommand"/> (step 10).
+    /// </summary>
+    public void PasteAtPlayhead()
+    {
+        if (_clipboard is not { } cb || _history is null || _project is null)
+            return;
+        Track? target = cb.isVideo
+            ? (Track?)_project.Timeline.VideoTracks.FirstOrDefault()
+            : _project.Timeline.AudioTracks.FirstOrDefault();
+        if (target is null)
+            return;
+
+        Clip pasted = ClipboardOps.Paste(cb.clip, _playhead);
+        Execute(new AddClipCommand(target, pasted));
+        Select(pasted);
+        ClipPlaced?.Invoke();
+    }
+
+    /// <summary>
+    /// Deletes the selected clip (and, when Linked is on, its companion A/V clips) as one undo entry, then clears
+    /// the selection.
+    /// </summary>
+    public void DeleteSelected()
+    {
+        if (_selected is null || _history is null || _project is null)
+            return;
+        Track? track = TrackOf(_selected);
+        if (track is null)
+            return;
+
+        var removals = new List<IEditCommand> { new RemoveClipCommand(track, _selected) };
+        if (Linked)
+            foreach ((Track ctrack, Clip cclip) in _project.Timeline.ClipsLinkedTo(_selected))
+                removals.Add(new RemoveClipCommand(ctrack, cclip));
+
+        Execute(removals.Count == 1 ? removals[0] : new CompositeCommand("Delete clips", removals));
+        Select(null);
+    }
+
+    /// <summary>
+    /// Nudges the selected clip by <paramref name="frames"/> frames along the timeline (Clip ▸ Nudge Left/Right).
+    /// With Linked on the whole group shifts together; the move is clamped so no member crosses the origin. Each
+    /// press is its own undo entry.
+    /// </summary>
+    public void NudgeSelected(int frames)
+    {
+        if (_selected is null || _history is null || _project is null || frames == 0)
+            return;
+        long frameTicks = FrameTicks();
+        if (frameTicks <= 0)
+            return;
+
+        List<Clip> linked = (Linked ? _project.Timeline.ClipsLinkedTo(_selected).Select(l => l.Clip) : [])
+            .ToList();
+        long groupMin = _selected.TimelineStart.Ticks;
+        foreach (Clip c in linked)
+            groupMin = Math.Min(groupMin, c.TimelineStart.Ticks);
+
+        long delta = ClipboardOps.ClampGroupNudge((long)frames * frameTicks, groupMin);
+        if (delta == 0)
+            return;
+
+        if (linked.Count > 0)
+        {
+            var commands = new List<IEditCommand> { Shift(_selected, delta) };
+            foreach (Clip c in linked)
+                commands.Add(Shift(c, delta));
+            Execute(new CompositeCommand("Nudge clips", commands));
+        }
+        else
+        {
+            Execute(Shift(_selected, delta));
+        }
+
+        static SetClipPlacementCommand Shift(Clip c, long delta) =>
+            new(c, c.SourceIn, c.SourceOut, new Timecode(c.TimelineStart.Ticks + delta), "Nudge clip");
+    }
+
+    /// <summary>Unlinks the selected clip and its companions (clears their link group) as one undo entry (step 13).</summary>
+    public void UnlinkSelected()
+    {
+        if (_selected is null || _selected.LinkGroupId is null || _history is null || _project is null)
+            return;
+        var members = new List<Clip> { _selected };
+        members.AddRange(_project.Timeline.ClipsLinkedTo(_selected).Select(l => l.Clip));
+
+        var commands = members
+            .Select(c => (IEditCommand)SetPropertyCommand<Guid?>.Create(
+                "Unlink", () => c.LinkGroupId, v => c.LinkGroupId = v, null))
+            .ToList();
+        Execute(commands.Count == 1 ? commands[0] : new CompositeCommand("Unlink clips", commands));
+    }
+
+    /// <summary>Appends an effect (by catalog id) to the selected clip via <see cref="AddEffectCommand"/> (steps 15–16).</summary>
+    public void ApplyEffectToSelected(string effectTypeId)
+    {
+        if (_selected is null || _history is null || string.IsNullOrEmpty(effectTypeId))
+            return;
+        EffectInstance instance = EffectCatalog.Find(effectTypeId)?.CreateInstance() ?? new EffectInstance(effectTypeId);
+        Execute(new AddEffectCommand(_selected, instance));
+    }
+
+    private long FrameTicks()
+    {
+        Rational fps = _project!.Timeline.FrameRate;
+        return fps.Num > 0 ? Timecode.FromFrames(1, fps).Ticks : 0;
+    }
+
     // ── Lane layout ─────────────────────────────────────────────────────────────────────────────────
 
     private List<(Track track, bool isVideo)> Lanes()

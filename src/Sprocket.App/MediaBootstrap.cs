@@ -108,6 +108,53 @@ internal static class MediaBootstrap
     }
 
     /// <summary>
+    /// Builds a playable session over an <em>already-constructed</em> project — a project freshly loaded from
+    /// disk (File ▸ Open) or a new empty one (File ▸ New), PLAN.md step 16c. Unlike <see cref="CreateWithMedia"/>
+    /// it never mutates the project (no tracks/clips/effects are added) — it just opens decoders for whatever
+    /// the project already references and an audio master clock when an audio-bearing source is present.
+    /// </summary>
+    public static Result CreateForProject(Project project, string status)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+
+        (IMasterClock? clock, _) = TryCreateAudioClockForProject(project);
+        var engine = new PlaybackEngine(project, id => OpenVideoFeed(project, id), clock); // engine owns + disposes the clock
+        engine.Start();
+        return new Result(engine, project, status);
+    }
+
+    /// <summary>
+    /// Builds an audio master clock over an existing project's audio tracks (used by <see cref="CreateForProject"/>
+    /// for New/Open), or returns <c>(null, false)</c> so the engine falls back to its software clock — when no
+    /// audio track references an audio-bearing source, or no audio device is available. The mixer resolves a PCM
+    /// reader per source on demand, so it already mixes N audio tracks; offline sources mix as silence (§15).
+    /// </summary>
+    private static (IMasterClock? clock, bool audioWired) TryCreateAudioClockForProject(Project project)
+    {
+        int sampleRate = project.Timeline.SampleRate > 0 ? project.Timeline.SampleRate : 48000;
+        const int channels = 2; // stereo output; sources are up/downmixed at decode
+
+        bool hasAudio = project.Timeline.AudioTracks.Any(
+            t => t.Clips.Any(c => project.MediaPool.Get(c.MediaRefId) is { Info.HasAudio: true }));
+        if (!hasAudio)
+            return (null, false);
+
+        OpenAlAudioOutput? output = null;
+        try
+        {
+            var mixer = new AudioMixer(sampleRate, channels, id => OpenPcmReader(project, id, sampleRate, channels));
+            output = new OpenAlAudioOutput();
+            output.Configure(sampleRate, channels);
+            return (new AudioEngine(output, mixer, project), true); // the engine takes ownership
+        }
+        catch
+        {
+            output?.Dispose();
+            return (null, false); // degrade to the software clock; video still plays
+        }
+    }
+
+    /// <summary>
     /// Builds the companion audio track + audio master clock for the source, or returns <c>(null, false)</c> so
     /// the engine falls back to its default <c>SoftwareClock</c> — when the source has no audio, or no audio
     /// device is available. Failures degrade gracefully (ARCHITECTURE.md §15): a missing device must not stop

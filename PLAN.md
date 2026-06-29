@@ -707,6 +707,53 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
     when they don't apply), and an item whose feature lands later (e.g. **Sequence ▸ New / Settings /
     Nest** → step 19b) stays visibly disabled rather than silently dead. A smoke pass confirms Save /
     Open / Export run from the menus, not just the toolbar buttons.
+    - **✅ DONE (`src/Sprocket.App`: `MainWindow.axaml`/`.cs`, `App.axaml.cs`, `MediaBootstrap.cs`,
+      `Timeline/TimelineControl.cs`, new `ClipboardOps.cs` + `Dialogs.cs`; 9 new tests in
+      `tests/Sprocket.App.Tests/ClipboardOpsTests.cs`).** The whole inline menu bar is now live — every item is
+      bound to its command, routed through the step-10 `EditHistory`, and context-enabled on submenu-open. This is
+      an **App-layer step**: every operation lands on an existing Core command (`AddClip`/`RemoveClip`/
+      `SetClipPlacement`/`CompositeCommand`/`SetProperty<Guid?>`/`AddEffect`) or `ProjectSerializer`, so **no Core
+      change was needed**. Delivered:
+      - **File — New / Open / Save / Save As / Import / Export / Exit.** **New** (empty 1V+1A project) and **Open**
+        (a project JSON via `ProjectSerializer.Load`, offline-tolerant §15) hand a fully-built project to the
+        composition root through a new `MainWindow.SessionRequested` event; `App` builds a fresh engine over it
+        (`MediaBootstrap.CreateForProject`, which opens decoders + an audio master clock for an *existing* project
+        without mutating it) and **swaps the shell window** (new shown before old closed so the
+        last-window-closes shutdown never trips, then the old engine is disposed). **Save** writes to the tracked
+        file or falls back to **Save As**; **Save As** writes the project to a newly chosen file as an
+        **independent copy** (the original file is untouched) and re-points the document + title at it. The
+        document tracks its file path and the dirty indicator resets on save/load.
+      - **Edit — Undo / Redo + Cut / Copy / Paste / Delete.** A single-clip clipboard (a detached deep copy with
+        the effect stack cloned and the link cleared — a paste is independent): **Copy** snapshots the selected
+        clip, **Cut** = copy + delete, **Paste** drops the snapshot at the playhead onto the first track of the
+        matching kind and selects it, **Delete** removes the selection (and, with **Linked** on, its companion
+        A/V clips) as one undo entry. **Select All** stays disabled (multi-clip selection isn't modelled yet).
+      - **Clip — Unlink + Nudge.** **Unlink** clears the link group on the selected clip and its companions (one
+        undo entry, step 13); **Nudge Left/Right** shifts the clip (and its linked group, group-clamped so none
+        crosses the origin) by one frame. **Enable / Link / Speed-Duration** stay disabled (per-clip enable + a
+        retime model don't exist yet; Link needs a multi-clip selection).
+      - **Effects** — the menu is populated from `EffectCatalog` at runtime and each item appends that effect to
+        the selected clip via `AddEffectCommand`, complementing the step-15 browser double-click / step-16b drag.
+      - **View** — **Zoom In/Out** (the timeline control), **Snapping** + **Guides** as checkbox items that mirror
+        and drive the existing toolbar toggles (single source of truth), and **Project / Inspector panel** show /
+        hide (collapsing the pane's grid column + splitter). **Window — Reset Layout** restores the pane splitters
+        to their defaults. **Help — About** opens a small dialog with the product name + the app's own version +
+        a one-line description (**no framework/runtime text**, [UI.md §3.7](UI.md)).
+      - **Accelerators + context-enabling.** All accelerators are handled in `OnKeyDown` (Ctrl+N/O, Ctrl+Shift+S,
+        Ctrl+X/C/V, Delete, Alt+←/→, plus the existing save/export/import/undo/redo + Space), with a **focused
+        text-field guard** so editing/transport keys don't steal input from the bin search box or the Inspector
+        numeric fields (the `InputGesture` text on each menu item is the display label). Edit/Clip/Effects/View
+        menus refresh their item enable/checked state on **submenu-open**, so they reflect the live selection /
+        clipboard / toggle state without per-edit bookkeeping. **Sequence** stays wholly disabled until step 19b.
+      - **Pure, tested helper + manual/smoke verification (the project's established split).** `ClipboardOps`
+        (clip deep-copy, paste placement, and the group-nudge origin clamp) is Avalonia-free and covered by **9
+        headless tests** (copy clones effects + clears link + is insulated from later edits, paste places/clamps +
+        clones, repeated pastes independent, the nudge clamp); the session-reload / window-swap, dialogs, and
+        menu wiring rest on these + manual verification (the App is a UI-bound `WinExe`). Clean build (0 warnings);
+        a `SPROCKET_APP_SECONDS=6` smoke launch starts the shell with the full menu wired and tears down cleanly
+        (exit 0) — confirming the expanded menu XAML parses and Save / Open / Export run from the menus. Full
+        suite: **278 tests green** (Core 85, Media 24, Render 18, Audio 16, Playback 40, Export 6, Persistence 12,
+        App 77).
 16d. **Premiere-parity keyframes.** The keyframe foundation exists — the model's `AnimatableValue`
     (constant or keyframed, with per-keyframe `Interpolation`), the step-16 ◇/◆ inspector affordances,
     and the step-16b keyframe-lane editor (add / move / delete, Hold↔Linear). Bring it to Adobe-Premiere

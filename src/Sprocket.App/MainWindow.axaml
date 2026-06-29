@@ -33,28 +33,69 @@
                      FontSize="13" VerticalAlignment="Center" />
         </StackPanel>
 
+        <!-- Inline menu bar (UI.md §2): every item bound to its command in MainWindow.WireMenu / WireCommandMenus
+             (PLAN.md step 16c). Items whose feature lands in a later step (Sequence, Clip ▸ Enable/Speed,
+             Select All) stay visibly disabled rather than silently dead. Accelerators are also handled in
+             OnKeyDown (the InputGesture text here is the display label). -->
         <Menu Grid.Column="1" VerticalAlignment="Center" Background="Transparent" Margin="6,0,0,0">
           <MenuItem Header="_File">
-            <MenuItem x:Name="ImportMenuItem" Header="_Import Media…" InputGesture="Ctrl+I" />
+            <MenuItem x:Name="NewMenuItem" Header="_New Project" InputGesture="Ctrl+N" />
+            <MenuItem x:Name="OpenMenuItem" Header="_Open Project…" InputGesture="Ctrl+O" />
             <Separator />
             <MenuItem x:Name="SaveMenuItem" Header="_Save Project" InputGesture="Ctrl+S" />
+            <MenuItem x:Name="SaveAsMenuItem" Header="Save Project _As…" InputGesture="Ctrl+Shift+S" />
+            <Separator />
+            <MenuItem x:Name="ImportMenuItem" Header="_Import Media…" InputGesture="Ctrl+I" />
             <MenuItem x:Name="ExportMenuItem" Header="_Export…" InputGesture="Ctrl+E" />
             <Separator />
             <MenuItem x:Name="ExitMenuItem" Header="E_xit" InputGesture="Alt+F4" />
           </MenuItem>
-          <MenuItem Header="_Edit">
+          <MenuItem x:Name="EditMenu" Header="_Edit">
             <MenuItem x:Name="UndoMenuItem" Header="_Undo" InputGesture="Ctrl+Z" IsEnabled="False" />
             <MenuItem x:Name="RedoMenuItem" Header="_Redo" InputGesture="Ctrl+Shift+Z" IsEnabled="False" />
             <Separator />
-            <MenuItem Header="Cu_t" IsEnabled="False" />
-            <MenuItem Header="_Copy" IsEnabled="False" />
-            <MenuItem Header="_Paste" IsEnabled="False" />
+            <MenuItem x:Name="CutMenuItem" Header="Cu_t" InputGesture="Ctrl+X" IsEnabled="False" />
+            <MenuItem x:Name="CopyMenuItem" Header="_Copy" InputGesture="Ctrl+C" IsEnabled="False" />
+            <MenuItem x:Name="PasteMenuItem" Header="_Paste" InputGesture="Ctrl+V" IsEnabled="False" />
+            <MenuItem x:Name="DeleteMenuItem" Header="_Delete" InputGesture="Delete" IsEnabled="False" />
+            <Separator />
+            <!-- Select All needs multi-clip selection (not yet modelled) — stays disabled. -->
+            <MenuItem x:Name="SelectAllMenuItem" Header="Select _All" InputGesture="Ctrl+A" IsEnabled="False" />
           </MenuItem>
-          <MenuItem Header="_Clip" IsEnabled="False" />
-          <MenuItem Header="_Sequence" IsEnabled="False" />
-          <MenuItem Header="Effe_cts" IsEnabled="False" />
-          <MenuItem Header="_View" IsEnabled="False" />
-          <MenuItem Header="_Window" IsEnabled="False" />
+          <MenuItem x:Name="ClipMenu" Header="_Clip">
+            <!-- Per-clip Enable / Speed-Duration aren't modelled yet — visibly disabled. -->
+            <MenuItem x:Name="ClipEnableMenuItem" Header="_Enable" IsEnabled="False" />
+            <Separator />
+            <!-- Link needs a multi-clip selection to group; Unlink works on the selected linked clip. -->
+            <MenuItem x:Name="ClipLinkMenuItem" Header="_Link" IsEnabled="False" />
+            <MenuItem x:Name="ClipUnlinkMenuItem" Header="_Unlink" IsEnabled="False" />
+            <Separator />
+            <MenuItem x:Name="ClipSpeedMenuItem" Header="_Speed / Duration…" IsEnabled="False" />
+            <Separator />
+            <MenuItem x:Name="NudgeLeftMenuItem" Header="Nudge _Left" InputGesture="Alt+Left" IsEnabled="False" />
+            <MenuItem x:Name="NudgeRightMenuItem" Header="Nudge _Right" InputGesture="Alt+Right" IsEnabled="False" />
+          </MenuItem>
+          <!-- Sequences (multiple/nested) land in step 19b — the whole menu stays disabled until then. -->
+          <MenuItem x:Name="SequenceMenu" Header="_Sequence" IsEnabled="False">
+            <MenuItem Header="_New Sequence…" IsEnabled="False" />
+            <MenuItem Header="Sequence _Settings…" IsEnabled="False" />
+            <MenuItem Header="_Nest…" IsEnabled="False" />
+          </MenuItem>
+          <!-- Effects menu is populated from EffectCatalog at runtime (WireCommandMenus). -->
+          <MenuItem x:Name="EffectsMenu" Header="Effe_cts" />
+          <MenuItem x:Name="ViewMenu" Header="_View">
+            <MenuItem x:Name="ZoomInMenuItem" Header="Zoom _In" />
+            <MenuItem x:Name="ZoomOutMenuItem" Header="Zoom _Out" />
+            <Separator />
+            <MenuItem x:Name="SnappingMenuItem" Header="_Snapping" ToggleType="CheckBox" />
+            <MenuItem x:Name="GuidesMenuItem" Header="_Guides" ToggleType="CheckBox" />
+            <Separator />
+            <MenuItem x:Name="ShowProjectMenuItem" Header="_Project Panel" ToggleType="CheckBox" IsChecked="True" />
+            <MenuItem x:Name="ShowInspectorMenuItem" Header="I_nspector Panel" ToggleType="CheckBox" IsChecked="True" />
+          </MenuItem>
+          <MenuItem x:Name="WindowMenu" Header="_Window">
+            <MenuItem x:Name="ResetLayoutMenuItem" Header="_Reset Layout" />
+          </MenuItem>
           <MenuItem Header="_Help">
             <MenuItem x:Name="AboutMenuItem" Header="_About Sprocket" />
           </MenuItem>
@@ -120,12 +161,12 @@
     </Border>
 
     <!-- ── Workspace: Project | Program | Inspector  over  Timeline (all splitter-resizable) ─────── -->
-    <Grid Margin="6" RowDefinitions="*,6,240">
+    <Grid x:Name="OuterGrid" Margin="6" RowDefinitions="*,6,240">
 
-      <Grid Grid.Row="0" ColumnDefinitions="240,6,*,6,300">
+      <Grid x:Name="WorkspaceGrid" Grid.Row="0" ColumnDefinitions="240,6,*,6,300">
 
         <!-- Project panel: tabbed media bin / effects / transitions / audio browser (PLAN.md step 15). -->
-        <Border Grid.Column="0" Classes="pane">
+        <Border x:Name="ProjectPane" Grid.Column="0" Classes="pane">
           <DockPanel>
             <Border DockPanel.Dock="Top" Classes="paneHeader">
               <Grid ColumnDefinitions="Auto,*">
@@ -139,7 +180,7 @@
           </DockPanel>
         </Border>
 
-        <GridSplitter Grid.Column="1" Width="6" Background="Transparent" ResizeDirection="Columns"
+        <GridSplitter x:Name="ProjectSplitter" Grid.Column="1" Width="6" Background="Transparent" ResizeDirection="Columns"
                       HorizontalAlignment="Stretch" />
 
         <!-- Program monitor: the live preview + transport. -->
@@ -192,11 +233,11 @@
           </DockPanel>
         </Border>
 
-        <GridSplitter Grid.Column="3" Width="6" Background="Transparent" ResizeDirection="Columns"
+        <GridSplitter x:Name="InspectorSplitter" Grid.Column="3" Width="6" Background="Transparent" ResizeDirection="Columns"
                       HorizontalAlignment="Stretch" />
 
         <!-- Inspector: type-driven, collapsible property sections for the selected clip (PLAN.md step 16). -->
-        <Border Grid.Column="4" Classes="pane">
+        <Border x:Name="InspectorPane" Grid.Column="4" Classes="pane">
           <DockPanel>
             <Border DockPanel.Dock="Top" Classes="paneHeader">
               <TextBlock Classes="title" Text="Inspector" />

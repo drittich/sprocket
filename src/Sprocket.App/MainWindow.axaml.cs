@@ -24,9 +24,11 @@ namespace Sprocket.App;
 /// <summary>
 /// The editor shell (PLAN.md step 11, UI.md §1/§2): a frameless window with custom chrome + inline menu bar,
 /// splitter-resizable Project / Program / Inspector panes over a full-width Timeline, and a status bar with
-/// live telemetry. The Program monitor + transport, Export, Save, and Edit ▸ Undo/Redo are fully wired; the
-/// pane *contents* (media bin, timeline control, inspector) arrive in steps 12–16. Every model mutation runs
-/// through <see cref="EditHistory"/>, so the dirty indicator and undo/redo are correct by construction.
+/// live telemetry. The full menu / command surface is wired in step 16c — File (New / Open / Save / Save As /
+/// Import / Export / Exit), Edit (undo/redo + clip cut/copy/paste/delete), Clip (unlink / nudge), Effects
+/// (apply from the catalog), View (zoom / snapping / guides / panel toggles), Window (reset layout) and Help
+/// (About) — every editing action routing through <see cref="EditHistory"/> so it stays undoable. Items whose
+/// feature lands in a later step (Sequence, per-clip Enable/Speed, Select All, Link) stay visibly disabled.
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -37,6 +39,7 @@ public partial class MainWindow : Window
     private ThumbnailService? _thumbnails;
     private MediaBrowserPanel? _mediaBrowser;
     private InspectorPanel? _inspector;
+    private TimelineControl? _timeline;
 
     // Dual monitors (PLAN.md step 17): the Program monitor wraps the main engine; the Source monitor previews
     // the selected clip's source. The transport bar drives whichever is active.
@@ -52,6 +55,7 @@ public partial class MainWindow : Window
     private bool _exporting;
     private int _savedUndoCount;       // history depth at the last save; document is clean while it matches
     private string _projectName = "Untitled";
+    private string? _currentProjectPath; // the file this project was loaded from / last saved to (null = untitled)
 
     // Controls captured for later updates.
     private TextBlock? _statusText, _telemetryText, _engineStateText, _saveStateText, _timelineHeader;
@@ -59,14 +63,39 @@ public partial class MainWindow : Window
     private Button? _exportButton, _maxButton;
     private Control? _root;
 
-    // Parameterless ctor for the XAML designer / tooling.
-    public MainWindow() : this(null, null, string.Empty) { }
+    // Command-menu items refreshed on submenu open (context-enabling) + the View toggles / panes.
+    private MenuItem? _cutMenuItem, _copyMenuItem, _pasteMenuItem, _deleteMenuItem;
+    private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem;
+    private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem;
+    private System.Collections.Generic.IReadOnlyList<MenuItem> _effectsMenuItems = [];
+    private ToggleButton? _snappingToggle, _guidesToggle;
+    private Grid? _workspaceGrid, _outerGrid;
+    private Border? _projectPane, _inspectorPane;
+    private GridSplitter? _projectSplitter, _inspectorSplitter;
 
-    public MainWindow(PlaybackEngine? engine, Project? project, string status)
+    /// <summary>The Sprocket project file type (a JSON sidecar) for the open / save-as pickers.</summary>
+    private static readonly FilePickerFileType SprocketProjectFileType =
+        new("Sprocket project") { Patterns = ["*.sprocket.json", "*.json"] };
+
+    /// <summary>Raised when File ▸ New / Open wants the composition root to swap to a freshly built session over
+    /// <see cref="SessionRequest.Project"/> (PLAN.md step 16c). Handled by <see cref="App"/>.</summary>
+    public event Action<SessionRequest>? SessionRequested;
+
+    /// <summary>A request to start a new editing session over an already-built project.</summary>
+    /// <param name="Project">The new (empty) or freshly loaded project.</param>
+    /// <param name="Status">A status line describing the session.</param>
+    /// <param name="ProjectPath">The file it was loaded from, or <see langword="null"/> for an untitled project.</param>
+    public readonly record struct SessionRequest(Project Project, string Status, string? ProjectPath);
+
+    // Parameterless ctor for the XAML designer / tooling.
+    public MainWindow() : this(null, null, string.Empty, null) { }
+
+    public MainWindow(PlaybackEngine? engine, Project? project, string status, string? projectPath = null)
     {
         AvaloniaXamlLoader.Load(this);
         _engine = engine;
         _project = project;
+        _currentProjectPath = projectPath;
 
         _root = this.FindControl<Control>("Root");
         _statusText = this.FindControl<TextBlock>("StatusText")!;
@@ -81,6 +110,7 @@ public partial class MainWindow : Window
 
         WireWindowChrome();
         WireMenu();
+        WireCommandMenus();
         PopulateProjectChrome(status);
         WireMediaBrowser();
         WireInspector();
@@ -142,59 +172,131 @@ public partial class MainWindow : Window
 
     private void WireMenu()
     {
-        this.FindControl<MenuItem>("ImportMenuItem")!.Click += (_, _) => _ = ImportDialogAsync();
+        // File
+        this.FindControl<MenuItem>("NewMenuItem")!.Click += (_, _) => NewProject();
+        this.FindControl<MenuItem>("OpenMenuItem")!.Click += (_, _) => _ = OpenProjectAsync();
         this.FindControl<MenuItem>("SaveMenuItem")!.Click += (_, _) => Save();
+        this.FindControl<MenuItem>("SaveAsMenuItem")!.Click += (_, _) => _ = SaveAsAsync();
+        this.FindControl<MenuItem>("ImportMenuItem")!.Click += (_, _) => _ = ImportDialogAsync();
         this.FindControl<MenuItem>("ExportMenuItem")!.Click += (_, _) => _ = ExportAsync();
         this.FindControl<MenuItem>("ExitMenuItem")!.Click += (_, _) => Close();
-        this.FindControl<MenuItem>("AboutMenuItem")!.Click += (_, _) =>
-            SetStatus("Sprocket — a non-destructive, cross-platform video editor.");
+
+        // Edit
         _undoMenuItem!.Click += (_, _) => _history.Undo();
         _redoMenuItem!.Click += (_, _) => _history.Redo();
 
+        // Help
+        this.FindControl<MenuItem>("AboutMenuItem")!.Click += (_, _) => _ = AboutDialog.Show(this);
+
         KeyDown += OnKeyDown;
+    }
+
+    /// <summary>
+    /// Wires the editing menus that act on the selection (Edit ▸ Cut/Copy/Paste/Delete, Clip ▸ Unlink/Nudge),
+    /// builds the Effects menu from <see cref="EffectCatalog"/>, and connects the View / Window menus
+    /// (PLAN.md step 16c). The handlers read <see cref="_timeline"/> lazily, so this can run before the timeline
+    /// is attached. Context-enabling happens on submenu-open so the items reflect the current selection /
+    /// clipboard without per-edit bookkeeping.
+    /// </summary>
+    private void WireCommandMenus()
+    {
+        // Toolbar toggles are the source of truth for Snapping / Guides; the View menu mirrors them.
+        _snappingToggle = this.FindControl<ToggleButton>("SnappingToggle");
+        _guidesToggle = this.FindControl<ToggleButton>("GuidesToggle");
+
+        // Panes / grids for the View panel toggles + Window ▸ Reset Layout.
+        _workspaceGrid = this.FindControl<Grid>("WorkspaceGrid");
+        _outerGrid = this.FindControl<Grid>("OuterGrid");
+        _projectPane = this.FindControl<Border>("ProjectPane");
+        _projectSplitter = this.FindControl<GridSplitter>("ProjectSplitter");
+        _inspectorPane = this.FindControl<Border>("InspectorPane");
+        _inspectorSplitter = this.FindControl<GridSplitter>("InspectorSplitter");
+
+        // ── Edit ──
+        _cutMenuItem = this.FindControl<MenuItem>("CutMenuItem")!;
+        _copyMenuItem = this.FindControl<MenuItem>("CopyMenuItem")!;
+        _pasteMenuItem = this.FindControl<MenuItem>("PasteMenuItem")!;
+        _deleteMenuItem = this.FindControl<MenuItem>("DeleteMenuItem")!;
+        _cutMenuItem.Click += (_, _) => _timeline?.CutSelected();
+        _copyMenuItem.Click += (_, _) => _timeline?.CopySelected();
+        _pasteMenuItem.Click += (_, _) => _timeline?.PasteAtPlayhead();
+        _deleteMenuItem.Click += (_, _) => _timeline?.DeleteSelected();
+        this.FindControl<MenuItem>("EditMenu")!.SubmenuOpened += (_, _) => RefreshEditMenu();
+
+        // ── Clip ──
+        _unlinkMenuItem = this.FindControl<MenuItem>("ClipUnlinkMenuItem")!;
+        _nudgeLeftMenuItem = this.FindControl<MenuItem>("NudgeLeftMenuItem")!;
+        _nudgeRightMenuItem = this.FindControl<MenuItem>("NudgeRightMenuItem")!;
+        _unlinkMenuItem.Click += (_, _) => _timeline?.UnlinkSelected();
+        _nudgeLeftMenuItem.Click += (_, _) => _timeline?.NudgeSelected(-1);
+        _nudgeRightMenuItem.Click += (_, _) => _timeline?.NudgeSelected(+1);
+        this.FindControl<MenuItem>("ClipMenu")!.SubmenuOpened += (_, _) => RefreshClipMenu();
+
+        // ── Effects (populated from the registry, PLAN.md steps 15–16) ──
+        var effectsMenu = this.FindControl<MenuItem>("EffectsMenu")!;
+        var effectItems = new System.Collections.Generic.List<MenuItem>();
+        foreach (EffectDescriptor descriptor in EffectCatalog.BuiltIns)
+        {
+            string id = descriptor.Id; // capture per iteration
+            var item = new MenuItem { Header = descriptor.DisplayName };
+            item.Click += (_, _) => _timeline?.ApplyEffectToSelected(id);
+            effectItems.Add(item);
+        }
+        effectsMenu.ItemsSource = effectItems;
+        _effectsMenuItems = effectItems;
+        effectsMenu.SubmenuOpened += (_, _) => RefreshEffectsMenu();
+
+        // ── View ──
+        this.FindControl<MenuItem>("ZoomInMenuItem")!.Click += (_, _) => _timeline?.ZoomIn();
+        this.FindControl<MenuItem>("ZoomOutMenuItem")!.Click += (_, _) => _timeline?.ZoomOut();
+        _snappingMenuItem = this.FindControl<MenuItem>("SnappingMenuItem")!;
+        _guidesMenuItem = this.FindControl<MenuItem>("GuidesMenuItem")!;
+        _showProjectMenuItem = this.FindControl<MenuItem>("ShowProjectMenuItem")!;
+        _showInspectorMenuItem = this.FindControl<MenuItem>("ShowInspectorMenuItem")!;
+        // Drive the toolbar toggle (the single source of truth) from the menu checkbox's new state.
+        _snappingMenuItem.Click += (_, _) => { if (_snappingToggle is not null) _snappingToggle.IsChecked = _snappingMenuItem.IsChecked; };
+        _guidesMenuItem.Click += (_, _) => { if (_guidesToggle is not null) _guidesToggle.IsChecked = _guidesMenuItem.IsChecked; };
+        _showProjectMenuItem.Click += (_, _) => SetPanelVisible(project: true, _showProjectMenuItem.IsChecked == true);
+        _showInspectorMenuItem.Click += (_, _) => SetPanelVisible(project: false, _showInspectorMenuItem.IsChecked == true);
+        this.FindControl<MenuItem>("ViewMenu")!.SubmenuOpened += (_, _) => RefreshViewMenu();
+
+        // ── Window ──
+        this.FindControl<MenuItem>("ResetLayoutMenuItem")!.Click += (_, _) => ResetLayout();
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
         bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        bool alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
 
-        if (e.Key == Key.Space)
-        {
-            _engine?.TogglePlayPause();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.S)
-        {
-            Save();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.E)
-        {
-            _ = ExportAsync();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.I)
-        {
-            _ = ImportDialogAsync();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.Z && shift) // Ctrl+Shift+Z = redo
-        {
-            _history.Redo();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.Z) // Ctrl+Z = undo
-        {
-            _history.Undo();
-            e.Handled = true;
-        }
-        else if (ctrl && e.Key == Key.Y) // Ctrl+Y = redo
-        {
-            _history.Redo();
-            e.Handled = true;
-        }
+        // ── Global accelerators (work regardless of focus) ──
+        if (ctrl && e.Key == Key.N) { NewProject(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.O) { _ = OpenProjectAsync(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == Key.S) { _ = SaveAsAsync(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.S) { Save(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.E) { _ = ExportAsync(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.I) { _ = ImportDialogAsync(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == Key.Z) { _history.Redo(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.Z) { _history.Undo(); e.Handled = true; return; }
+        if (ctrl && e.Key == Key.Y) { _history.Redo(); e.Handled = true; return; }
+
+        // Below here are transport / editing keys that must not steal input from a focused text field
+        // (the media-bin search box, the Inspector numeric boxes).
+        if (IsTypingInTextBox())
+            return;
+
+        if (ctrl && e.Key == Key.X) { _timeline?.CutSelected(); e.Handled = true; }
+        else if (ctrl && e.Key == Key.C) { _timeline?.CopySelected(); e.Handled = true; }
+        else if (ctrl && e.Key == Key.V) { _timeline?.PasteAtPlayhead(); e.Handled = true; }
+        else if (e.Key == Key.Delete || e.Key == Key.Back) { _timeline?.DeleteSelected(); e.Handled = true; }
+        else if (alt && e.Key == Key.Left) { _timeline?.NudgeSelected(-1); e.Handled = true; }
+        else if (alt && e.Key == Key.Right) { _timeline?.NudgeSelected(+1); e.Handled = true; }
+        else if (e.Key == Key.Space) { _active?.TogglePlayPause(); e.Handled = true; }
     }
+
+    private bool IsTypingInTextBox() =>
+        TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox;
 
     // ── Project chrome: title, media bin, sequence badge, telemetry ─────────────────────────────────
 
@@ -205,9 +307,14 @@ public partial class MainWindow : Window
         if (_project is null)
             return;
 
-        string? mediaPath = _project.MediaPool.Items.FirstOrDefault()?.AbsolutePath;
-        _projectName = mediaPath is null ? "Untitled" : Path.GetFileNameWithoutExtension(mediaPath);
-        this.FindControl<TextBlock>("ProjectTitleText")!.Text = _projectName;
+        if (_currentProjectPath is not null)
+            _projectName = ProjectDisplayName(_currentProjectPath);
+        else
+        {
+            string? mediaPath = _project.MediaPool.Items.FirstOrDefault()?.AbsolutePath;
+            _projectName = mediaPath is null ? "Untitled" : Path.GetFileNameWithoutExtension(mediaPath);
+        }
+        UpdateProjectTitle();
 
         Timeline timeline = _project.Timeline;
         double fps = Fps(timeline.FrameRate);
@@ -220,6 +327,8 @@ public partial class MainWindow : Window
 
         UpdateTimelineHeader();
     }
+
+    private void UpdateProjectTitle() => this.FindControl<TextBlock>("ProjectTitleText")!.Text = _projectName;
 
     private void UpdateTimelineHeader()
     {
@@ -403,8 +512,8 @@ public partial class MainWindow : Window
             };
         };
 
-        var guides = this.FindControl<ToggleButton>("GuidesToggle")!;
-        guides.IsCheckedChanged += (_, _) => _preview!.ShowGuides = guides.IsChecked == true;
+        if (_guidesToggle is not null)
+            _guidesToggle.IsCheckedChanged += (_, _) => _preview!.ShowGuides = _guidesToggle.IsChecked == true;
     }
 
     /// <summary>Re-points the transport readouts (scrubber range, position/duration text, play glyph, state) at
@@ -429,15 +538,18 @@ public partial class MainWindow : Window
     private void WireTimeline()
     {
         var timeline = this.FindControl<TimelineControl>("Timeline")!;
+        _timeline = timeline;
         timeline.Attach(_project!, _history, _engine);
-        timeline.ClipPlaced += UpdateTimelineHeader; // a media-bin drop may extend the timeline
+        timeline.ClipPlaced += UpdateTimelineHeader; // a media-bin drop / paste may extend the timeline
 
         this.FindControl<Button>("ZoomInButton")!.Click += (_, _) => timeline.ZoomIn();
         this.FindControl<Button>("ZoomOutButton")!.Click += (_, _) => timeline.ZoomOut();
 
-        var snapping = this.FindControl<ToggleButton>("SnappingToggle")!;
-        timeline.Snapping = snapping.IsChecked == true;
-        snapping.IsCheckedChanged += (_, _) => timeline.Snapping = snapping.IsChecked == true;
+        if (_snappingToggle is not null)
+        {
+            timeline.Snapping = _snappingToggle.IsChecked == true;
+            _snappingToggle.IsCheckedChanged += (_, _) => timeline.Snapping = _snappingToggle.IsChecked == true;
+        }
 
         var linked = this.FindControl<ToggleButton>("LinkedToggle")!;
         timeline.Linked = linked.IsChecked == true;
@@ -506,6 +618,81 @@ public partial class MainWindow : Window
             ? new VideoTrack { Name = $"V{_project.Timeline.VideoTracks.Count() + 1}" }
             : new AudioTrack { Name = $"A{_project.Timeline.AudioTracks.Count() + 1}" };
         _history.Execute(new AddTrackCommand(_project.Timeline, track));
+    }
+
+    // ── Context-enabling: refresh menu items on submenu open ────────────────────────────────────────
+
+    private void RefreshEditMenu()
+    {
+        bool sel = _timeline?.HasSelection == true;
+        if (_cutMenuItem is not null) _cutMenuItem.IsEnabled = sel;
+        if (_copyMenuItem is not null) _copyMenuItem.IsEnabled = sel;
+        if (_pasteMenuItem is not null) _pasteMenuItem.IsEnabled = _timeline?.CanPaste == true;
+        if (_deleteMenuItem is not null) _deleteMenuItem.IsEnabled = sel;
+    }
+
+    private void RefreshClipMenu()
+    {
+        bool sel = _timeline?.HasSelection == true;
+        if (_unlinkMenuItem is not null) _unlinkMenuItem.IsEnabled = _timeline?.SelectedIsLinked == true;
+        if (_nudgeLeftMenuItem is not null) _nudgeLeftMenuItem.IsEnabled = sel;
+        if (_nudgeRightMenuItem is not null) _nudgeRightMenuItem.IsEnabled = sel;
+    }
+
+    private void RefreshEffectsMenu()
+    {
+        bool sel = _timeline?.HasSelection == true;
+        foreach (MenuItem item in _effectsMenuItems)
+            item.IsEnabled = sel;
+    }
+
+    private void RefreshViewMenu()
+    {
+        if (_snappingMenuItem is not null) _snappingMenuItem.IsChecked = _snappingToggle?.IsChecked == true;
+        if (_guidesMenuItem is not null) _guidesMenuItem.IsChecked = _guidesToggle?.IsChecked == true;
+        if (_showProjectMenuItem is not null) _showProjectMenuItem.IsChecked = _projectPane?.IsVisible != false;
+        if (_showInspectorMenuItem is not null) _showInspectorMenuItem.IsChecked = _inspectorPane?.IsVisible != false;
+    }
+
+    // ── View / Window: panel visibility + layout ────────────────────────────────────────────────────
+
+    /// <summary>Shows or hides the Project (left) or Inspector (right) pane by collapsing its column + splitter.</summary>
+    private void SetPanelVisible(bool project, bool visible)
+    {
+        if (_workspaceGrid is null)
+            return;
+        if (project)
+        {
+            if (_projectPane is not null) _projectPane.IsVisible = visible;
+            if (_projectSplitter is not null) _projectSplitter.IsVisible = visible;
+            _workspaceGrid.ColumnDefinitions[0].Width = visible ? new GridLength(240) : new GridLength(0);
+            _workspaceGrid.ColumnDefinitions[1].Width = visible ? new GridLength(6) : new GridLength(0);
+        }
+        else
+        {
+            if (_inspectorPane is not null) _inspectorPane.IsVisible = visible;
+            if (_inspectorSplitter is not null) _inspectorSplitter.IsVisible = visible;
+            _workspaceGrid.ColumnDefinitions[4].Width = visible ? new GridLength(300) : new GridLength(0);
+            _workspaceGrid.ColumnDefinitions[3].Width = visible ? new GridLength(6) : new GridLength(0);
+        }
+    }
+
+    /// <summary>Window ▸ Reset Layout: restore the pane splitters to their default sizes and show all panes.</summary>
+    private void ResetLayout()
+    {
+        if (_workspaceGrid is not null)
+        {
+            _workspaceGrid.ColumnDefinitions[0].Width = new GridLength(240);
+            _workspaceGrid.ColumnDefinitions[1].Width = new GridLength(6);
+            _workspaceGrid.ColumnDefinitions[2].Width = new GridLength(1, GridUnitType.Star);
+            _workspaceGrid.ColumnDefinitions[3].Width = new GridLength(6);
+            _workspaceGrid.ColumnDefinitions[4].Width = new GridLength(300);
+        }
+        if (_outerGrid is not null)
+            _outerGrid.RowDefinitions[2].Height = new GridLength(240);
+        SetPanelVisible(project: true, true);
+        SetPanelVisible(project: false, true);
+        SetStatus("Layout reset.");
     }
 
     // ── Edit-history reactions: menu enable + dirty indicator ───────────────────────────────────────
@@ -588,29 +775,125 @@ public partial class MainWindow : Window
         }
     }
 
-    // ── File ops ────────────────────────────────────────────────────────────────────────────────────
+    // ── File ops (New / Open / Save / Save As) ──────────────────────────────────────────────────────
+
+    /// <summary>File ▸ New: after confirming any unsaved changes, requests a fresh empty project (one video +
+    /// one audio track) from the composition root (PLAN.md step 16c).</summary>
+    private async void NewProject()
+    {
+        if (!await ConfirmDiscardIfDirty())
+            return;
+
+        var project = new Project();
+        project.Timeline.Tracks.Add(new VideoTrack { Name = "V1" });
+        project.Timeline.Tracks.Add(new AudioTrack { Name = "A1" });
+        SessionRequested?.Invoke(new SessionRequest(project, "New project", null));
+    }
+
+    /// <summary>File ▸ Open: after confirming unsaved changes, loads a project JSON and requests a session over
+    /// it. Load is offline-tolerant (§15); a parse/schema error is surfaced rather than thrown at the user.</summary>
+    private async Task OpenProjectAsync()
+    {
+        if (!await ConfirmDiscardIfDirty())
+            return;
+
+        IReadOnlyList<IStorageFile> files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Open Project",
+            AllowMultiple = false,
+            FileTypeFilter = [SprocketProjectFileType, FilePickerFileTypes.All],
+        });
+        if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path)
+            return;
+
+        try
+        {
+            Project project = ProjectSerializer.Load(path);
+            SessionRequested?.Invoke(new SessionRequest(project, $"Opened {Path.GetFileName(path)}", path));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Open failed: {ex.Message}");
+        }
+    }
 
     /// <summary>
-    /// Saves the project to <c>project.sprocket.json</c> next to the app output (PLAN.md step 9, slice DoD #8)
-    /// and marks the document clean. A File-menu open/save-as dialog arrives with the full File menu surface.
+    /// File ▸ Save: writes to the project's current file, or prompts (Save As) when it has never been saved.
+    /// The actual serialization lives in <see cref="ProjectSerializer"/> (PLAN.md step 9).
     /// </summary>
     private void Save()
     {
         if (_project is null)
             return;
+        if (_currentProjectPath is null)
+        {
+            _ = SaveAsAsync();
+            return;
+        }
+        SaveTo(_currentProjectPath);
+    }
 
-        string outputPath = Path.Combine(AppContext.BaseDirectory, "project.sprocket.json");
+    /// <summary>
+    /// File ▸ Save As: writes the current project to a newly chosen file as an independent copy — the original
+    /// file (if any) is left untouched — and re-points the document at the new file.
+    /// </summary>
+    private async Task SaveAsAsync()
+    {
+        if (_project is null)
+            return;
+
+        string suggested = (_currentProjectPath is null ? _projectName : ProjectDisplayName(_currentProjectPath)) + ".sprocket.json";
+        IStorageFile? file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Save Project As",
+            SuggestedFileName = suggested,
+            DefaultExtension = "json",
+            FileTypeChoices = [SprocketProjectFileType],
+        });
+        if (file?.TryGetLocalPath() is not { } path)
+            return;
+
+        _currentProjectPath = path;
+        _projectName = ProjectDisplayName(path);
+        UpdateProjectTitle();
+        SaveTo(path);
+    }
+
+    private void SaveTo(string path)
+    {
         try
         {
-            ProjectSerializer.Save(_project, outputPath);
+            ProjectSerializer.Save(_project!, path);
             _savedUndoCount = _history.UndoCount;
             OnHistoryChanged(); // refresh the dirty indicator
-            SetStatus($"Saved → {outputPath}");
+            SetStatus($"Saved → {path}");
         }
         catch (Exception ex)
         {
             SetStatus($"Save failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Asks the user to confirm discarding unsaved changes; returns <c>true</c> to proceed. A clean
+    /// document proceeds without prompting.</summary>
+    private async Task<bool> ConfirmDiscardIfDirty()
+    {
+        if (_history.UndoCount == _savedUndoCount)
+            return true;
+        return await ConfirmDialog.Show(
+            this, "Unsaved changes",
+            "This project has unsaved changes that will be lost. Discard them and continue?",
+            "Discard", "Cancel");
+    }
+
+    /// <summary>The display name for a project file (drops the <c>.sprocket.json</c> / <c>.json</c> suffix).</summary>
+    private static string ProjectDisplayName(string path)
+    {
+        string name = Path.GetFileName(path);
+        const string sprocketExt = ".sprocket.json";
+        if (name.EndsWith(sprocketExt, StringComparison.OrdinalIgnoreCase))
+            return name[..^sprocketExt.Length];
+        return Path.GetFileNameWithoutExtension(name);
     }
 
     /// <summary>

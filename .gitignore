@@ -6,3 +6,6 @@
 **/obj/
 dist/
 _imports/
+
+# Persistent FFmpeg download cache for scripts/release.ps1 (kept outside the wiped dist/).
+.ffmpeg-cache/

@@ -13,6 +13,7 @@
 #   pwsh scripts/release.ps1 -Version 0.3.0        # publish an exact version (no bump / rewrite)
 #   pwsh scripts/release.ps1 -NoZip                # leave the publish folders, skip archiving
 #   pwsh scripts/release.ps1 -NoFFmpeg             # publish only, skip FFmpeg native bundling
+#   pwsh scripts/release.ps1 -FFmpegCacheDir <dir> # override the FFmpeg download cache (default ./.ffmpeg-cache)
 #
 # Versioning: the X.Y.Z version lives in Directory.Build.props (<VersionPrefix>) as the single source
 # of truth. Each release bumps the patch (third) number there and writes it back; the version is
@@ -33,6 +34,13 @@
 #                                -OsxArm64FFmpegUrl to have them bundled; the script then rewrites their
 #                                install names to @loader_path (when run on macOS) so the bundle is
 #                                self-contained. Otherwise the macOS bundle ships without FFmpeg and warns.
+#
+# FFmpeg download cache — the fetched archives are cached in -FFmpegCacheDir (default ./.ffmpeg-cache,
+# git-ignored, kept OUTSIDE the wiped dist/) and persist across runs, so a release re-downloads FFmpeg only
+# when upstream actually changed. A cached archive is reused only while its recorded version signature still
+# matches the remote's — the GitHub asset id/updated_at/size for Windows+Linux (already in the releases API
+# response, no extra request), or a HEAD ETag/Last-Modified/Content-Length for the caller-supplied macOS
+# URLs. A signature mismatch (new upstream build) re-downloads automatically.
 
 [CmdletBinding()]
 param(
@@ -67,14 +75,21 @@ param(
 
     # Optional archive URLs (.tar.xz / .zip) of FFmpeg 8 macOS .dylib files to bundle.
     [string] $OsxX64FFmpegUrl,
-    [string] $OsxArm64FFmpegUrl
+    [string] $OsxArm64FFmpegUrl,
+
+    # Where to cache downloaded FFmpeg archives between runs. Defaults to ./.ffmpeg-cache at the repo
+    # root (git-ignored) — deliberately OUTSIDE the dist output, which is wiped on every run. Override
+    # to share one cache across checkouts (e.g. a CI cache mount).
+    [string] $FFmpegCacheDir
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $appProject = Join-Path $repoRoot 'src/Sprocket.App/Sprocket.App.csproj'
 $distRoot = Join-Path $repoRoot $OutDir
-$ffCache = Join-Path $distRoot '.ffmpeg-cache'
+# The FFmpeg download cache must live OUTSIDE $distRoot, which is wiped on every run; keeping it here is
+# what makes it persist between releases.
+$ffCache = if ($FFmpegCacheDir) { $FFmpegCacheDir } else { Join-Path $repoRoot '.ffmpeg-cache' }
 $propsFile = Join-Path $repoRoot 'Directory.Build.props'
 
 # Read the X.Y.Z version from Directory.Build.props (<VersionPrefix>).
@@ -122,10 +137,12 @@ $btbnPlatform = @{
     'linux-arm64' = 'linuxarm64'
 }
 
-# Resolve (once) the BtbN download URL for a platform token from the rolling "latest" release,
-# matching the FFmpeg 7 gpl-shared asset — the same selection scripts/linux-check.sh makes.
+# Resolve (once) the BtbN release asset for a platform token from the rolling "latest" release,
+# matching the FFmpeg 8 gpl-shared asset — the same selection scripts/linux-check.sh makes. Returns the
+# full asset object (its id/updated_at/size feed the cache version signature; .browser_download_url is
+# the download URL).
 $script:btbnAssets = $null
-function Get-BtbnUrl([string] $platform) {
+function Get-BtbnAsset([string] $platform) {
     if ($null -eq $script:btbnAssets) {
         $headers = @{ 'User-Agent' = 'sprocket-release' }
         if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
@@ -137,19 +154,73 @@ function Get-BtbnUrl([string] $platform) {
         Where-Object { $_.name -match "$platform-gpl-shared" -and $_.name -match 'n8\.' -and $_.name -notmatch '\.sha256$' } |
         Select-Object -First 1
     if (-not $asset) { throw "No BtbN FFmpeg 8 gpl-shared asset found for platform '$platform'." }
-    return $asset.browser_download_url
+    return $asset
 }
 
-# Download (cached) and extract an archive, returning the extraction directory.
-function Expand-RemoteArchive([string] $url, [string] $tag) {
+# Compute a stable "version signature" for a remote archive, so a cached copy can be reused only while
+# upstream is unchanged. For a BtbN GitHub asset the releases API already handed us rich metadata (no
+# extra request); for a caller-supplied macOS URL we probe with a single HEAD request. Returns $null when
+# the remote version can't be determined — in that case a present cache is trusted as-is.
+function Get-RemoteSignature([string] $url, $apiAsset) {
+    if ($apiAsset) {
+        return "gh:id=$($apiAsset.id);updated=$($apiAsset.updated_at);size=$($apiAsset.size)"
+    }
+    try {
+        $resp = Invoke-WebRequest -Method Head -Uri $url -MaximumRedirection 5 `
+            -Headers @{ 'User-Agent' = 'sprocket-release' }
+        $etag = ($resp.Headers['ETag'] -join ',')
+        $lm = ($resp.Headers['Last-Modified'] -join ',')
+        $len = ($resp.Headers['Content-Length'] -join ',')
+        if (-not ($etag -or $lm -or $len)) { return $null }
+        return "head:etag=$etag;lm=$lm;len=$len"
+    }
+    catch {
+        Write-Host "    [warn] HEAD probe failed for $url — trusting the cached copy if present." -ForegroundColor Yellow
+        return $null
+    }
+}
+
+# Download (persistently cached) and extract an archive, returning the extraction directory. The cache
+# lives in $ffCache (outside the wiped dist/) and is keyed by the version signature above: a cached
+# archive is reused only when its stored .sig still matches the remote's, so a new upstream build is
+# picked up automatically. The extracted tree is likewise reused when the archive was a cache hit.
+function Expand-RemoteArchive([string] $url, [string] $tag, $apiAsset) {
     New-Item -ItemType Directory -Path $ffCache -Force | Out-Null
     $fileName = Split-Path -Leaf ($url -split '\?')[0]
     $archive = Join-Path $ffCache $fileName
-    if (-not (Test-Path $archive)) {
+    $sigFile = "$archive.sig"
+
+    $signature = Get-RemoteSignature $url $apiAsset
+    $cacheHit = $false
+    if (Test-Path $archive) {
+        if ($null -eq $signature) {
+            $cacheHit = $true  # remote version unknown — trust the cached file
+        }
+        elseif ((Test-Path $sigFile) -and ((Get-Content $sigFile -Raw).Trim() -eq $signature)) {
+            $cacheHit = $true
+        }
+    }
+
+    if ($cacheHit) {
+        Write-Host "    using cached FFmpeg ($tag): $fileName"
+    }
+    else {
         Write-Host "    downloading FFmpeg ($tag): $fileName"
         Invoke-WebRequest -Uri $url -OutFile $archive -Headers @{ 'User-Agent' = 'sprocket-release' }
+        if ($signature) { Set-Content -Path $sigFile -Value $signature -NoNewline }
+        elseif (Test-Path $sigFile) { Remove-Item $sigFile -Force }
     }
+
     $dest = Join-Path $ffCache "extract-$tag"
+    # Reuse the extracted tree only on a cache hit AND when it actually holds files (guards against a
+    # half-finished extraction from an interrupted run).
+    $extractValid = $cacheHit -and (Test-Path $dest) -and
+        ($null -ne (Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+    if ($extractValid) {
+        Write-Host "    using cached FFmpeg extraction ($tag)"
+        return $dest
+    }
+
     if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     if ($fileName -match '\.zip$') {
@@ -194,10 +265,13 @@ function Repair-MacosInstallNames([string] $publishDir, [string[]] $libNames) {
 
 # Bundle FFmpeg natives into a freshly published RID folder. Returns $true if libs were placed.
 function Add-FFmpegNatives([string] $rid, [string] $publishDir) {
-    # Resolve the download URL: BtbN for every Windows/Linux RID, caller-supplied for macOS.
+    # Resolve the download source: BtbN for every Windows/Linux RID, caller-supplied for macOS. The BtbN
+    # path also yields the release asset, whose metadata drives the cache version signature.
     $url = $null
+    $asset = $null
     if ($btbnPlatform.ContainsKey($rid)) {
-        $url = Get-BtbnUrl $btbnPlatform[$rid]
+        $asset = Get-BtbnAsset $btbnPlatform[$rid]
+        $url = $asset.browser_download_url
     }
     elseif ($rid -eq 'osx-x64' -and $OsxX64FFmpegUrl) { $url = $OsxX64FFmpegUrl }
     elseif ($rid -eq 'osx-arm64' -and $OsxArm64FFmpegUrl) { $url = $OsxArm64FFmpegUrl }
@@ -206,7 +280,7 @@ function Add-FFmpegNatives([string] $rid, [string] $publishDir) {
         return $false  # no source available (macOS without a URL)
     }
 
-    $extract = Expand-RemoteArchive $url $rid
+    $extract = Expand-RemoteArchive $url $rid $asset
     # Shared libs live in lib/ (Linux .so*, macOS .dylib) or bin/ (Windows .dll); recurse to be safe.
     $libs = Get-ChildItem -Path $extract -Recurse -File |
         Where-Object { $_.Name -match '\.(so[\.\d]*|dylib|dll)$' -and $_.Name -notmatch '^lib(x264|x265)' } |
@@ -289,11 +363,12 @@ foreach ($rid in $Rids) {
     $results += [pscustomobject]@{ Rid = $rid; Artifact = $zipPath; FFmpeg = $hasFFmpeg }
 }
 
-# Drop the download cache so it never lands in the shipped output.
-if (Test-Path $ffCache) { Remove-Item $ffCache -Recurse -Force }
+# The download cache ($ffCache) is deliberately kept between runs and never lands in the shipped output:
+# it lives outside $distRoot and only the extracted .dll/.so/.dylib files are copied into each bundle.
 
 Write-Host ""
 Write-Host "Done. Artifacts in $distRoot" -ForegroundColor Cyan
+Write-Host "  ffmpeg cache:  $ffCache (persisted; re-downloaded only when upstream changes)"
 $results | ForEach-Object {
     $size = if (Test-Path $_.Artifact) { '{0:N1} MB' -f ((Get-Item $_.Artifact).Length / 1MB) } else { 'dir' }
     $ff = if ($_.FFmpeg) { 'ffmpeg ok' } else { 'NO ffmpeg' }

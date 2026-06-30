@@ -42,6 +42,7 @@ internal struct AvFormatContext
     [FieldOffset(44)] public uint nb_streams;
     [FieldOffset(48)] public IntPtr streams;   // AVStream**
     [FieldOffset(104)] public long duration;   // AV_TIME_BASE units
+    [FieldOffset(192)] public IntPtr metadata; // AVDictionary*
 }
 
 [StructLayout(LayoutKind.Explicit)]

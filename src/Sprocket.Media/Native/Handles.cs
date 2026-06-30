@@ -78,6 +78,15 @@ internal sealed unsafe class FormatContextHandle : IDisposable
         F->pb = pb;
     }
 
+    /// <summary>Sets (or overwrites) a container-level metadata tag. Call before <see cref="WriteHeader"/> — the
+    /// muxer writes the metadata dictionary out as part of the header. The dictionary is freed with the context.</summary>
+    public void SetMetadata(string key, string value)
+    {
+        IntPtr dict = F->metadata;
+        FFmpegError.Check(LibAv.av_dict_set(ref dict, key, value, 0), "av_dict_set");
+        F->metadata = dict;   // av_dict_set may allocate/relocate the dictionary on first insert
+    }
+
     public void WriteHeader() => FFmpegError.Check(LibAv.avformat_write_header(_p, IntPtr.Zero), "avformat_write_header");
     public void InterleavedWriteFrame(AvPacketHandle pkt) => FFmpegError.Check(LibAv.av_interleaved_write_frame(_p, pkt.Ptr), "av_interleaved_write_frame");
     public void WriteTrailer() => FFmpegError.Check(LibAv.av_write_trailer(_p), "av_write_trailer");

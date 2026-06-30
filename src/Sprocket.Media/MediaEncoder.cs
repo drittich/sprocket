@@ -1,3 +1,4 @@
+using System.Reflection;
 using Sprocket.Core.Timing;
 using Sprocket.Media.Native;
 
@@ -133,6 +134,10 @@ public sealed unsafe class MediaEncoder : IDisposable
                 channels = a.Channels;
             }
 
+            // Tag the file as Sprocket's output so players / ffprobe surface its provenance. Must be set
+            // before WriteHeader — the muxer serializes the metadata dictionary as part of the header.
+            WriteCreationMetadata(format);
+
             // Open the output file (unless the muxer is file-less) and write the container header. NOTE:
             // avformat_write_header may rewrite each stream's time_base (the MP4 muxer picks its own
             // timescale), so packet timestamps must be rescaled to the LIVE stream time_base read after
@@ -153,6 +158,29 @@ public sealed unsafe class MediaEncoder : IDisposable
             format.Dispose();
             throw;
         }
+    }
+
+    /// <summary>The "encoded with" tag value, e.g. <c>"Sprocket 0.1.27"</c> — built once from the assembly version.</summary>
+    private static readonly string EncoderTag = BuildEncoderTag();
+
+    /// <summary>Writes container-level provenance metadata identifying Sprocket as the producing application.</summary>
+    private static void WriteCreationMetadata(FormatContextHandle format)
+    {
+        // `encoder` is the conventional "creating software" tag (MP4 ©too atom; FFmpeg would otherwise
+        // stamp its own "Lavf…"); `comment` carries a human-readable note most players surface.
+        format.SetMetadata("encoder", EncoderTag);
+        format.SetMetadata("comment", "Created with Sprocket");
+    }
+
+    private static string BuildEncoderTag()
+    {
+        Assembly asm = typeof(MediaEncoder).Assembly;
+        string? version = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? asm.GetName().Version?.ToString();
+        // InformationalVersion can carry a "+<git-sha>" build suffix; drop it for a clean tag.
+        int plus = version?.IndexOf('+') ?? -1;
+        if (plus >= 0) version = version![..plus];
+        return string.IsNullOrEmpty(version) ? "Sprocket" : $"Sprocket {version}";
     }
 
     private static (CodecContextHandle, IntPtr stream, AvFrameHandle rgba, AvFrameHandle yuv) OpenVideo(

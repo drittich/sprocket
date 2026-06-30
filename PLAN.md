@@ -1651,6 +1651,30 @@ Tags reference the [UI.md §4 checklist](UI.md).
     - **Security.** Off by default, loopback-only, and clearly indicated in the UI while running so
       the user knows the app is externally controllable; no remote/network exposure in this step.
 
+39. **Fade handles & opacity rubber-band (on-timeline fade editing + visualization).** Make a clip's
+    fade in/out directly **visible and editable on the timeline**, so a fade is never an invisible
+    surprise — the lesson from the Alt-copy "second clip plays black" bug (fixed 2026-06-30): the clip
+    carried a keyframed fade with nothing on the timeline to show it. Follows the Premiere/Resolve
+    convention. This lands on **existing seams**, not a new model — the fade is already the keyframed
+    `EffectTypeIds.Fade` / `EffectParamNames.Opacity` `AnimatableValue` that drives both video alpha
+    (shader, step 7) and audio gain (mixer, [§6](ARCHITECTURE.md)); this step is a timeline affordance over it.
+    Pieces:
+    - **Fade handles.** Small draggable triangles in each top corner of a clip, drawn in
+      `TimelineControl.DrawClips` (step 12). Dragging the left/right handle inward sets the fade-in/out
+      length; the clip body draws the resulting opacity ramp so the fade reads at a glance. Zero length =
+      the "no fade" rest state.
+    - **Opacity rubber-band (companion view).** A horizontal opacity line across the clip body the user can
+      pull down or add points to — the inline form of the same keyframe envelope already shown in the
+      Inspector's keyframe lane (step 16d), so the two stay in sync.
+    - **Edits route through the command stack (step 10).** Dragging a handle / rubber-band point issues
+      `IEditCommand`s that author or adjust the Fade effect's opacity keyframes, coalesced into one undo
+      entry per drag (mirrors the trim/slip drag coalescing).
+    - **Keyframes stay clip-aligned.** Effect keyframe times are **absolute timeline time**, so handles must
+      author keyframes at the clip's actual edges, and clip move/copy must keep the fade aligned with the
+      clip. Copy/paste rebasing was fixed 2026-06-30 (`ClipboardOps.Paste` → `EffectInstance.CloneShifted`);
+      the matching rebasing for a plain **move** (`SetClipPlacementCommand`, which today changes only
+      `TimelineStart`) is the remaining gap to close as part of this step.
+
 Open product questions (e.g. the mockup's user-avatar / account affordance, full panel docking)
 are tracked in [UI.md §5](UI.md).
 

@@ -330,6 +330,12 @@ foreach ($rid in $Rids) {
         "-p:Version=$fullVersion",
         '-p:PublishSingleFile=true',
         '-p:IncludeNativeLibrariesForSelfExtract=true',
+        # ReadyToRun: AOT-precompile the app AND its managed deps (Avalonia / SkiaSharp) so cold start skips
+        # JIT. Measured ~35% faster time-to-window on win-x64 (~1.5s JIT -> ~1.0s) at the cost of a larger
+        # artifact and a slower publish; the residual is framework init + UI-tree construction. crossgen2
+        # cross-compiles for every RID in the matrix from one host, but R2R is per-RID native code — smoke
+        # test each published artifact (it launches) on its target OS.
+        '-p:PublishReadyToRun=true',
         # Managed symbols are embedded into the assemblies (which are bundled into the single-file
         # exe) — see Directory.Build.props. No loose .pdb files ship.
         '-p:DebugType=embedded',

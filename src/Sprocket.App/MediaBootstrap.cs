@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using Sprocket.App.Proxy;
 using Sprocket.Audio;
@@ -12,10 +11,11 @@ using Sprocket.Playback;
 namespace Sprocket.App;
 
 /// <summary>
-/// Wires up the slice's playback session: opens a media file, builds a one-video-track
-/// <see cref="Project"/> over it, and hands back a started <see cref="PlaybackEngine"/>. Real media import
-/// (a bin, drag-drop, dialogs) is a later milestone (PLAN steps 11/15); for the slice the app opens the
-/// path given on the command line, or generates a sample clip.
+/// The composition root's session factory: builds a <see cref="Project"/> + a started
+/// <see cref="PlaybackEngine"/> for launch (an empty project, or a file passed on the command line), for
+/// File ▸ New / Open / Open Sample Project, and exposes the per-source feed/PCM factories the engine and
+/// mixer pull through. Launch opens an empty, importable project — it no longer generates a sample clip
+/// (the bundled demo clip is reached via File ▸ Open Sample Project / <see cref="SampleMediaPath"/>).
 /// </summary>
 internal static class MediaBootstrap
 {
@@ -25,17 +25,21 @@ internal static class MediaBootstrap
     public readonly record struct Result(PlaybackEngine? Engine, Project? Project, string Status, ProxyService? Proxy = null);
 
     /// <summary>
-    /// Opens <c>args[0]</c> (if it is an existing file) or a generated sample and builds the engine over it.
-    /// If opening fails — a bad file, or no <c>ffmpeg</c> to generate the sample — the app must not dead-end:
-    /// it falls back to an empty, importable project (ARCHITECTURE.md §15) so File ▸ Import / drag-drop still
-    /// work and can bring the editor to life, with the reason shown in the status line.
+    /// Builds the launch session. With a playable media file given on the command line (<c>args[0]</c>), opens a
+    /// session over it; otherwise opens an empty, importable project (ARCHITECTURE.md §15) so File ▸ Import /
+    /// drag-drop / Open Sample Project bring the editor to life. Launch no longer generates a sample clip, so
+    /// there is no slow first-run path to cover. If opening a command-line file fails the app still degrades to an
+    /// empty project rather than dead-ending, with the reason shown in the status line.
     /// </summary>
     public static Result Create(string[] args)
     {
         string? path = args.Length > 0 && File.Exists(args[0]) ? args[0] : null;
+        if (path is null)
+            return CreateEmpty(attemptedPath: null, error: null);
         try
         {
-            return CreateWithMedia(path ?? SampleClip.EnsureExists());
+            Project project = BuildProjectFromMedia(path);
+            return CreateForProject(project, DescribeMedia(path, project.Timeline));
         }
         catch (Exception ex)
         {
@@ -43,62 +47,64 @@ internal static class MediaBootstrap
         }
     }
 
-    /// <summary>Builds a playable session over one opened media file (the populated slice project).</summary>
-    private static Result CreateWithMedia(string path)
+    /// <summary>
+    /// Builds a project model over one media file: a video track with the clip and — when the source carries
+    /// audio — a linked companion audio clip on a sibling track, so "Linked" moves/blades both together
+    /// (PLAN.md step 13). No engine is built here; the composition root opens decoders + the audio master clock
+    /// via <see cref="CreateForProject"/> when the session is swapped in. Probing throws on an unopenable file.
+    /// Shared by launch (a command-line file) and File ▸ Open Sample Project.
+    /// </summary>
+    public static Project BuildProjectFromMedia(string path)
     {
-        {
-            // Probe once for format; the engine/mixer open their own per-source decoders via the factories below.
-            ProbedMediaInfo info;
-            using (MediaSource probe = MediaSource.Open(path))
-                info = probe.Info;
+        // Probe once for format; the engine/mixer open their own per-source decoders when the session is built.
+        ProbedMediaInfo info;
+        using (MediaSource probe = MediaSource.Open(path))
+            info = probe.Info;
 
-            int sampleRate = info.SampleRate > 0 ? info.SampleRate : 48000;
-            var timeline = new Timeline(info.FrameRate, new Resolution(info.Width, info.Height), sampleRate);
-            var project = new Project(timeline);
+        int sampleRate = info.SampleRate > 0 ? info.SampleRate : 48000;
+        var timeline = new Timeline(info.FrameRate, new Resolution(info.Width, info.Height), sampleRate);
+        var project = new Project(timeline);
 
-            var mediaId = MediaRefId.New();
-            project.MediaPool.Add(new MediaRef(mediaId, path, info));
+        var mediaId = MediaRefId.New();
+        project.MediaPool.Add(new MediaRef(mediaId, path, info));
 
-            // A shared link group ties the video clip to its companion audio so "Linked" moves/blades both
-            // together (PLAN.md step 13). The audio clip below joins the same group.
-            var linkGroup = Guid.NewGuid();
+        // A shared link group ties the video clip to its companion audio so edits move/blade both together.
+        var linkGroup = Guid.NewGuid();
 
-            var track = new VideoTrack { Name = "V1" };
-            var videoClip = new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero) { LinkGroupId = linkGroup };
-            // Slice DoD #4/#5: a GPU brightness effect plus a fade in/out, both as SkSL shaders (step 7).
-            videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.15));
-            videoClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
-                .Set(EffectParamNames.Opacity, FadeInOut(info.Duration)));
-            track.Clips.Add(videoClip);
-            timeline.Tracks.Add(track);
+        var videoTrack = new VideoTrack { Name = "V1" };
+        videoTrack.Clips.Add(new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero) { LinkGroupId = linkGroup });
+        timeline.Tracks.Add(videoTrack);
 
-            // Master clock: the audio device clock when the source has audio and a device is available
-            // (audio is the master, ARCHITECTURE.md §8); otherwise the software wall-clock (video-only).
-            (IMasterClock? clock, bool audioWired) = TryCreateAudioClock(project, mediaId, sampleRate, linkGroup);
+        // Always give the project an audio track; lay the companion clip on it only when the source has audio.
+        var audioTrack = new AudioTrack { Name = "A1" };
+        if (info.HasAudio)
+            audioTrack.Clips.Add(new Clip(mediaId, Timecode.Zero, info.Duration, Timecode.Zero) { LinkGroupId = linkGroup });
+        timeline.Tracks.Add(audioTrack);
 
-            // Default-on preview proxies (PLAN.md step 18): the feed factory resolves each source to its proxy
-            // when one is ready, else the original — so heavy sources preview immediately and switch transparently.
-            var proxy = new ProxyService(project.Settings.UseProxies, project.Settings.ProxyTier);
+        return project;
+    }
 
-            // Multi-track preview (PLAN.md step 14): a per-source feed factory lets the engine composite N video
-            // tracks; each opens its own decoder. Tracks added at runtime (+ Track) are picked up by the pump.
-            var engine = new PlaybackEngine(project, id => OpenVideoFeed(project, id, proxy), clock); // engine owns + disposes the clock
-            proxy.ProxyReady += engine.InvalidateSource; // switch the preview onto a proxy the moment it is ready
-            engine.Start();
-            proxy.Enqueue(project);
+    /// <summary>A status line summarising an opened media file: name · resolution · fps · duration.</summary>
+    private static string DescribeMedia(string path, Timeline timeline) =>
+        $"{Path.GetFileName(path)}  ·  {timeline.Resolution.Width}×{timeline.Resolution.Height}  ·  " +
+        $"{Fps(timeline.FrameRate):0.##} fps  ·  {timeline.Duration.ToSeconds():0.0}s";
 
-            string status =
-                $"{Path.GetFileName(path)}  ·  {info.Width}×{info.Height}  ·  " +
-                $"{Fps(info.FrameRate):0.##} fps  ·  {info.Duration.ToSeconds():0.0}s  ·  " +
-                (audioWired ? "audio master clock" : "no audio (software clock)");
-            return new Result(engine, project, status, proxy);
-        }
+    /// <summary>
+    /// The bundled demo clip copied next to the executable (Sprocket.App.csproj <c>Content</c>), or
+    /// <see langword="null"/> when it is not present (e.g. a build that did not copy the asset). Used by
+    /// File ▸ Open Sample Project.
+    /// </summary>
+    public static string? SampleMediaPath()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "Samples", "sample.mp4");
+        return File.Exists(path) ? path : null;
     }
 
     /// <summary>
     /// Builds an empty but fully-functional session — default settings, one empty video + audio track, a
-    /// video-only software clock — so the editor opens ready to import into rather than dead-ending. Used when
-    /// no media could be opened (a bad startup file, or no <c>ffmpeg</c> to generate the sample).
+    /// video-only software clock — so the editor opens ready to import into rather than dead-ending. This is the
+    /// normal launch state (no command-line file), and also the fallback when a command-line file could not be
+    /// opened (the reason is then shown in the status line).
     /// </summary>
     private static Result CreateEmpty(string? attemptedPath, string? error)
     {
@@ -113,15 +119,16 @@ internal static class MediaBootstrap
 
         string status = attemptedPath is not null
             ? $"Could not open {Path.GetFileName(attemptedPath)}: {error}  ·  opened an empty project — use File ▸ Import to add media"
-            : "No media loaded — use File ▸ Import to add a video";
+            : "New project — use File ▸ Import to add media, or File ▸ Open Sample Project for a demo clip";
         return new Result(engine, project, status, proxy);
     }
 
     /// <summary>
     /// Builds a playable session over an <em>already-constructed</em> project — a project freshly loaded from
-    /// disk (File ▸ Open) or a new empty one (File ▸ New), PLAN.md step 16c. Unlike <see cref="CreateWithMedia"/>
-    /// it never mutates the project (no tracks/clips/effects are added) — it just opens decoders for whatever
-    /// the project already references and an audio master clock when an audio-bearing source is present.
+    /// disk (File ▸ Open), a new empty one (File ▸ New), a sample project (File ▸ Open Sample Project), or one
+    /// built by <see cref="BuildProjectFromMedia"/> at launch (PLAN.md step 16c). It never mutates the project
+    /// (no tracks/clips are added) — it just opens decoders for whatever the project already references and an
+    /// audio master clock when an audio-bearing source is present.
     /// </summary>
     public static Result CreateForProject(Project project, string status)
     {
@@ -159,46 +166,6 @@ internal static class MediaBootstrap
             output = new OpenAlAudioOutput();
             output.Configure(sampleRate, channels);
             return (new AudioEngine(output, mixer, project), true); // the engine takes ownership
-        }
-        catch
-        {
-            output?.Dispose();
-            return (null, false); // degrade to the software clock; video still plays
-        }
-    }
-
-    /// <summary>
-    /// Builds the companion audio track + audio master clock for the source, or returns <c>(null, false)</c> so
-    /// the engine falls back to its default <c>SoftwareClock</c> — when the source has no audio, or no audio
-    /// device is available. Failures degrade gracefully (ARCHITECTURE.md §15): a missing device must not stop
-    /// playback. The mixer resolves a PCM reader per source on demand, so it already mixes N audio tracks.
-    /// </summary>
-    private static (IMasterClock? clock, bool audioWired) TryCreateAudioClock(
-        Project project, MediaRefId mediaId, int sampleRate, Guid linkGroup)
-    {
-        if (project.MediaPool.Get(mediaId) is not { Info.HasAudio: true })
-            return (null, false);
-
-        const int channels = 2; // stereo output; the source is upmixed/downmixed at decode
-        OpenAlAudioOutput? output = null;
-        try
-        {
-            var audioTrack = new AudioTrack { Name = "A1" };
-            var audioClip = new Clip(mediaId, Timecode.Zero, project.Timeline.Duration, Timecode.Zero) { LinkGroupId = linkGroup };
-            // The same fade envelope drives audio gain in the mixer (§6) as drives video alpha (§7).
-            audioClip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
-                .Set(EffectParamNames.Opacity, FadeInOut(project.Timeline.Duration)));
-            audioTrack.Clips.Add(audioClip);
-            project.Timeline.Tracks.Add(audioTrack);
-
-            // Per-source PCM readers (mirrors the export path) — the mixer owns + disposes them and sums N layers.
-            var mixer = new AudioMixer(sampleRate, channels, id => OpenPcmReader(project, id, sampleRate, channels));
-
-            output = new OpenAlAudioOutput();
-            output.Configure(sampleRate, channels);
-
-            // The engine takes ownership: it disposes the mixer (which disposes the readers) and the output.
-            return (new AudioEngine(output, mixer, project), true);
         }
         catch
         {
@@ -250,158 +217,4 @@ internal static class MediaBootstrap
     }
 
     private static double Fps(Rational r) => r.Den > 0 ? (double)r.Num / r.Den : 0;
-
-    /// <summary>
-    /// A fade-in over the first second and fade-out over the last second of a clip of length
-    /// <paramref name="duration"/> (opacity 0→1 … 1→0). Degrades to a plain fade-in/out pair for very short
-    /// clips. The opacity drives both video alpha (shader) and audio gain (mixer) so the fade is consistent.
-    /// </summary>
-    private static AnimatableValue FadeInOut(Timecode duration)
-    {
-        // Keep the ramps short relative to the clip so a tiny clip still gets a (degenerate) fade.
-        Timecode ramp = Timecode.Min(Timecode.FromSeconds(1), new Timecode(duration.Ticks / 2));
-        return AnimatableValue.Animated(
-        [
-            new Keyframe(Timecode.Zero, 0.0, Interpolation.Linear),
-            new Keyframe(ramp, 1.0, Interpolation.Linear),
-            new Keyframe(duration - ramp, 1.0, Interpolation.Linear),
-            new Keyframe(duration, 0.0, Interpolation.Linear),
-        ]);
-    }
-}
-
-/// <summary>
-/// Ensures a 1080p sample clip exists to play when no file is given on the command line. Generated once with
-/// the <c>ffmpeg</c> CLI into the app's output directory and cached (mirrors the spike's test asset).
-/// </summary>
-internal static class SampleClip
-{
-    public static string EnsureExists()
-    {
-        string dir = Path.Combine(AppContext.BaseDirectory, "assets");
-        string path = Path.Combine(dir, "sample.mp4");
-
-        // Reuse a cached sample only if it actually opens. A partial/corrupt file left by an earlier
-        // interrupted generation (e.g. the app was killed mid-encode) must not be handed back — it would
-        // fail at open with a bare "Invalid data" and the cache would keep failing on every launch.
-        if (File.Exists(path) && CanOpen(path))
-            return path;
-
-        Directory.CreateDirectory(dir);
-        Generate(path);
-        return path;
-    }
-
-    /// <summary>True if the file can be opened and has a decodable video stream.</summary>
-    private static bool CanOpen(string path)
-    {
-        try
-        {
-            using MediaSource source = MediaSource.Open(path, HardwareAccelMode.Disabled);
-            return source.HasVideo;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Generates the sample clip via the ffmpeg CLI, writing to a temp file and promoting it into place only
-    /// after a clean exit — so an interrupted or failed run never leaves a corrupt <c>sample.mp4</c> behind.
-    /// </summary>
-    private static void Generate(string path)
-    {
-        string temp = Path.Combine(Path.GetDirectoryName(path)!, $"sample.{Guid.NewGuid():N}.tmp.mp4");
-
-        // mandelbrot is an infinite source, so the duration is bounded by -t (mirrors the
-        // `ffmpeg -f lavfi -i mandelbrot=size=1920x1080:rate=30 -t 10 -c:v libx264` recipe). A
-        // brown-noise audio track rides alongside so the audio master clock path still demos.
-		string preferredArgs =
-			"-y " +
-			"-f lavfi -i \"mandelbrot=size=1920x1080:rate=30,format=yuv420p\" " +
-			"-f lavfi -i \"anoisesrc=color=brown:sample_rate=48000:duration=10,volume=0.015\" " +
-			$"-t 10 -c:v libx264 -preset veryfast -crf 30 -g 30 -pix_fmt yuv420p -c:a aac -shortest \"{temp}\"";
-
-        string fallbackArgs =
-            "-y -f lavfi -i testsrc2=size=1920x1080:rate=30:duration=10 " +
-            "-f lavfi -i sine=frequency=440:sample_rate=48000:duration=10 " +
-            $"-c:v libx264 -g 30 -pix_fmt yuv420p -c:a aac -shortest \"{temp}\"";
-
-        try
-        {
-            try
-            {
-                RunFfmpeg(temp, preferredArgs, "preferred sample");
-            }
-            catch (Exception preferredError)
-            {
-                TryDelete(temp);
-
-                try
-                {
-                    RunFfmpeg(temp, fallbackArgs, "fallback sample");
-                }
-                catch (Exception fallbackError)
-                {
-                    TryDelete(temp);
-                    throw new InvalidOperationException(
-                        "ffmpeg failed to generate the sample clip with both the preferred and fallback recipes.\n" +
-                        $"Preferred:\n{preferredError.Message}\n\n" +
-                        $"Fallback:\n{fallbackError.Message}");
-                }
-            }
-
-            File.Move(temp, path, overwrite: true);
-        }
-        catch
-        {
-            TryDelete(temp);
-            throw;
-        }
-    }
-
-    private static void RunFfmpeg(string tempPath, string args, string label)
-    {
-        var psi = new ProcessStartInfo("ffmpeg", args)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-        };
-
-        string stderr;
-        int exitCode;
-        try
-        {
-            using Process? process = Process.Start(psi)
-                ?? throw new InvalidOperationException(
-                    "No media path given and the ffmpeg CLI was not found to generate a sample clip. " +
-                    "Pass a video file path as the first argument.");
-
-            stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit();
-            exitCode = process.ExitCode;
-        }
-        catch
-        {
-            TryDelete(tempPath);
-            throw;
-        }
-
-        if (exitCode != 0 || !File.Exists(tempPath) || new FileInfo(tempPath).Length == 0 || !CanOpen(tempPath))
-        {
-            TryDelete(tempPath);
-            string tail = stderr.Length > 500 ? stderr[^500..] : stderr;
-            throw new InvalidOperationException(
-                $"ffmpeg failed to generate the {label} (exit code {exitCode})." +
-                (tail.Length > 0 ? $"\n{tail}" : ""));
-        }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch { /* best-effort cleanup */ }
-    }
 }

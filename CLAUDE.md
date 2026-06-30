@@ -41,7 +41,8 @@ dotnet test tests/Sprocket.Core.Tests/Sprocket.Core.Tests.csproj
 # Run a single test by name filter
 dotnet test tests/Sprocket.Core.Tests/Sprocket.Core.Tests.csproj --filter "FullyQualifiedName~TimingTests"
 
-# Run the editor app (optional first arg = media file; otherwise a sample clip is generated)
+# Run the editor app (optional first arg = media file; otherwise opens an empty project —
+# File ▸ Open Sample Project loads the bundled demo clip in src/Sprocket.App/Samples/sample.mp4)
 dotnet run --project src/Sprocket.App [path/to/media.mp4]
 
 # Linux headless cross-platform verification (decode→SkSL→offscreen PNG), needs Docker — see header of the script

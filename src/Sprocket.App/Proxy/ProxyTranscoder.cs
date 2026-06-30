@@ -17,8 +17,8 @@ namespace Sprocket.App.Proxy;
 /// <para><b>Why a separate process, not the in-process <see cref="Sprocket.Media.MediaEncoder"/>:</b> proxy
 /// generation runs in the background <em>while</em> the live preview is decoding and the GPU compositor is
 /// rendering. Driving a second libav* muxer/encoder in-process alongside that pipeline proved fragile (a native
-/// access violation in the muxer). Shelling out — the same approach <c>SampleClip</c> already uses to generate
-/// the sample clip — keeps proxy encoding entirely off our process's FFmpeg state and threads, can't corrupt the
+/// access violation in the muxer). Shelling out to the <c>ffmpeg</c> CLI keeps proxy encoding entirely off our
+/// process's FFmpeg state and threads, can't corrupt the
 /// live pipelines, and is cleanly cancellable by killing the child. If the <c>ffmpeg</c> CLI isn't on PATH the
 /// build simply fails and the source keeps previewing on its original (§15) — no crash, no dead-end.</para>
 /// <para>The output is written to a temp file and atomically promoted only on a clean exit, so a cancelled or

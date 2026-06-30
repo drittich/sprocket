@@ -42,6 +42,7 @@
           <MenuItem Header="_File">
             <MenuItem x:Name="NewMenuItem" Header="_New Project" InputGesture="Ctrl+N" />
             <MenuItem x:Name="OpenMenuItem" Header="_Open Project…" InputGesture="Ctrl+O" />
+            <MenuItem x:Name="OpenSampleMenuItem" Header="Open Sa_mple Project" />
             <Separator />
             <MenuItem x:Name="SaveMenuItem" Header="_Save Project" InputGesture="Ctrl+S" />
             <MenuItem x:Name="SaveAsMenuItem" Header="Save Project _As…" InputGesture="Ctrl+Shift+S" />

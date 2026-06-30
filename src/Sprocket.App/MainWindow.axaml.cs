@@ -28,8 +28,8 @@ namespace Sprocket.App;
 /// <summary>
 /// The editor shell (PLAN.md step 11, UI.md §1/§2): a frameless window with custom chrome + inline menu bar,
 /// splitter-resizable Project / Program / Inspector panes over a full-width Timeline, and a status bar with
-/// live telemetry. The full menu / command surface is wired in step 16c — File (New / Open / Save / Save As /
-/// Import / Export / Exit), Edit (undo/redo + clip cut/copy/paste/delete), Clip (unlink / nudge), Effects
+/// live telemetry. The full menu / command surface is wired in step 16c — File (New / Open / Open Sample /
+/// Save / Save As / Import / Export / Exit), Edit (undo/redo + clip cut/copy/paste/delete), Clip (unlink / nudge), Effects
 /// (apply from the catalog), View (zoom / snapping / guides / panel toggles), Window (reset layout) and Help
 /// (About) — every editing action routing through <see cref="EditHistory"/> so it stays undoable. Items whose
 /// feature lands in a later step (Sequence, per-clip Enable/Speed, Select All, Link) stay visibly disabled.
@@ -218,6 +218,7 @@ public partial class MainWindow : Window
         // File
         this.FindControl<MenuItem>("NewMenuItem")!.Click += (_, _) => NewProject();
         this.FindControl<MenuItem>("OpenMenuItem")!.Click += (_, _) => _ = OpenProjectAsync();
+        this.FindControl<MenuItem>("OpenSampleMenuItem")!.Click += (_, _) => OpenSampleProject();
         this.FindControl<MenuItem>("SaveMenuItem")!.Click += (_, _) => Save();
         this.FindControl<MenuItem>("SaveAsMenuItem")!.Click += (_, _) => _ = SaveAsAsync();
         this.FindControl<MenuItem>("ImportMenuItem")!.Click += (_, _) => _ = ImportDialogAsync();
@@ -1306,6 +1307,34 @@ public partial class MainWindow : Window
         project.Timeline.Tracks.Add(new VideoTrack { Name = "V1" });
         project.Timeline.Tracks.Add(new AudioTrack { Name = "A1" });
         SessionRequested?.Invoke(new SessionRequest(project, "New project", null));
+    }
+
+    /// <summary>
+    /// File ▸ Open Sample Project: after confirming any unsaved changes, builds a project over the demo clip
+    /// bundled next to the executable and requests a session over it (PLAN.md step 16c). The sample opens as an
+    /// untitled project — Save / Save As writes a fresh project file rather than touching the bundled clip. A
+    /// no-op with a status hint when the clip isn't present (e.g. a build that didn't copy the asset).
+    /// </summary>
+    private async void OpenSampleProject()
+    {
+        if (!await ConfirmDiscardIfDirty())
+            return;
+
+        if (MediaBootstrap.SampleMediaPath() is not { } path)
+        {
+            SetStatus("Sample clip is not available in this build.");
+            return;
+        }
+
+        try
+        {
+            Project project = MediaBootstrap.BuildProjectFromMedia(path);
+            SessionRequested?.Invoke(new SessionRequest(project, "Opened sample project", null));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not open the sample project: {ex.Message}");
+        }
     }
 
     /// <summary>File ▸ Open: after confirming unsaved changes, loads a project JSON and requests a session over

@@ -28,6 +28,13 @@
     <AvaloniaResource Include="Assets/**" />
   </ItemGroup>
 
+  <!-- Bundled demo clip for File ▸ Open Sample Project. A loose file copied next to the exe (NOT an
+       avares:// resource) so MediaSource / FFmpeg can open it by filesystem path. Resolved at runtime
+       from <AppContext.BaseDirectory>/Samples/sample.mp4 by MediaBootstrap.SampleMediaPath(). -->
+  <ItemGroup>
+    <Content Include="Samples\sample.mp4" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.0.5" />
     <PackageReference Include="Avalonia.Desktop" Version="12.0.5" />

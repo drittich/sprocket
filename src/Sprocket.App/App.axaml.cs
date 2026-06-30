@@ -1,10 +1,7 @@
-using System;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using Avalonia.Threading;
 using Sprocket.App.Proxy;
 using Sprocket.Core.Model;
 using Sprocket.Playback;
@@ -26,51 +23,15 @@ public partial class App : Application
             _desktop = desktop;
             desktop.ShutdownRequested += OnShutdownRequested;
 
-            // Building the launch session can be slow on first run — the sample clip is generated with the
-            // ffmpeg CLI (a few seconds). Show a splash immediately and build the session off the UI thread so
-            // the splash renders/animates rather than the app appearing not to start. We do NOT set
-            // desktop.MainWindow yet, so the lifetime's auto-show is a no-op; the splash is shown manually and
-            // the editor shell is shown (and the splash dismissed) once the session is ready.
-            var splash = new InitializingWindow();
-            splash.Show();
-            _ = InitializeFirstSessionAsync(splash, desktop.Args ?? []);
+            // Launch is fast now: an empty, importable project (or a file passed on the command line) — no sample
+            // clip is generated, so there is nothing slow to cover and no splash. Build the session synchronously
+            // and hand the shell to the lifetime, which shows it. MediaBootstrap.Create degrades to an empty
+            // project rather than throwing, so this can't strand the user.
+            MediaBootstrap.Result result = MediaBootstrap.Create(desktop.Args ?? []);
+            desktop.MainWindow = BuildWindow(result.Engine, result.Project, result.Status, projectPath: null, result.Proxy);
         }
 
         base.OnFrameworkInitializationCompleted();
-    }
-
-    /// <summary>
-    /// Builds the launch session (opening the CLI media arg, or generating + opening a sample clip) on a
-    /// background thread so the <see cref="InitializingWindow"/> splash stays responsive, then swaps in the
-    /// editor shell on the UI thread and dismisses the splash. <see cref="MediaBootstrap.Create"/> already
-    /// degrades to an empty project rather than throwing, but we still guard so a failure can't strand the user
-    /// on the splash. The shell is shown before the splash closes so the window count never hits zero (which
-    /// would trip the last-window-closes shutdown).
-    /// </summary>
-    private async Task InitializeFirstSessionAsync(Window splash, string[] args)
-    {
-        MediaBootstrap.Result result = await Task.Run(() =>
-        {
-            try { return MediaBootstrap.Create(args); }
-            catch (Exception ex) { return new MediaBootstrap.Result(null, null, $"Failed to start a session: {ex.Message}"); }
-        });
-
-        void Finish()
-        {
-            _proxy = result.Proxy;
-            MainWindow window = BuildWindow(result.Engine, result.Project, result.Status, projectPath: null, result.Proxy);
-            if (_desktop is not null)
-                _desktop.MainWindow = window;
-            window.Show();
-            splash.Close();
-        }
-
-        // Task.Run resumes on the captured UI context, but marshal explicitly so window construction is
-        // unambiguously on the UI thread regardless of how the continuation is scheduled.
-        if (Dispatcher.UIThread.CheckAccess())
-            Finish();
-        else
-            await Dispatcher.UIThread.InvokeAsync(Finish);
     }
 
     /// <summary>Builds a shell window over a session and tracks the session engine + proxy service for teardown / reload.</summary>

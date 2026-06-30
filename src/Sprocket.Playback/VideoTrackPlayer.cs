@@ -23,6 +23,7 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
 
     private IVideoFrameFeed? _feed;
     private MediaRefId? _feedSource;   // which source _feed currently decodes (factory mode)
+    private Clip? _feedClip;           // which clip the feed is currently positioned for (so a same-source clip change re-seeks)
     private bool _feedStarted;
     private bool _needsSeek = true;    // a fresh player (or one after a seek) must seek before presenting
     private bool _atEof;               // the feed reached end-of-stream; hold (don't re-read) until a seek resumes it
@@ -100,7 +101,20 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         if (clip is null)
         {
             ClearCurrent();
+            _feedClip = null; // re-entering any clip must re-seek the feed to that clip's in-point
             return (false, 0);
+        }
+
+        // A change of active clip breaks source-time continuity even when the next clip draws from the SAME
+        // source — e.g. the same media placed twice on one track with a gap between the two clips. The feed is
+        // left sitting at the previous clip's out-point (or parked at EOF), so it must seek to the new clip's
+        // mapped in-point. Without this the reused feed is positioned past the new clip's source range and never
+        // promotes a frame, so the track holds black. EnsureFeedFor only re-seeks when the source id changes, so
+        // a same-source clip change would otherwise slip through.
+        if (!ReferenceEquals(clip, _feedClip))
+        {
+            _needsSeek = true;
+            _feedClip = clip;
         }
 
         if (!EnsureFeedFor(clip.MediaRefId))

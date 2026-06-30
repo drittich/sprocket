@@ -40,6 +40,12 @@ internal static class AboutDialog
 {
     public static Task Show(Window owner)
     {
+        // The bundled media engine version — a user-facing credit for the core dependency (not framework
+        // chrome, UI.md §3.7). Degrades gracefully if FFmpeg can't be probed.
+        string ffmpeg;
+        try { ffmpeg = Sprocket.Media.FFmpegDiagnostics.DisplayVersion(); }
+        catch { ffmpeg = "FFmpeg unavailable"; }
+
         var logo = new Image
         {
             Width = 48,
@@ -63,7 +69,7 @@ internal static class AboutDialog
             Title = "About Sprocket",
             Icon = AppIcon.Window,
             Width = 380,
-            Height = 240,
+            Height = 270,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Palette.WindowBg,
@@ -77,6 +83,7 @@ internal static class AboutDialog
                     logo,
                     Centered("Sprocket", 20, FontWeight.SemiBold, Palette.Text),
                     Centered($"Version {Program.AppVersion}", 12, FontWeight.Normal, Palette.MutedText),
+                    Centered($"Media engine: {ffmpeg}", 12, FontWeight.Normal, Palette.MutedText),
                     Centered("A cross-platform, non-destructive video editor — free and open source.", 12, FontWeight.Normal, Palette.MutedText),
                     close,
                 },

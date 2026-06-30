@@ -1,4 +1,5 @@
-using Sdcb.FFmpeg.Raw;
+using System.Runtime.InteropServices;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
@@ -12,9 +13,28 @@ public enum HardwareAccelMode
     Disabled,
 }
 
+/// <summary>The FFmpeg <c>AVHWDeviceType</c> values Sprocket targets (numeric values match FFmpeg's enum).
+/// Replaces the binding-specific enum so no FFmpeg type leaks across the Media public surface.</summary>
+public enum HardwareDeviceType
+{
+    None = 0,
+    Vdpau = 1,
+    Cuda = 2,
+    Vaapi = 3,
+    Dxva2 = 4,
+    Qsv = 5,
+    VideoToolbox = 6,
+    D3D11Va = 7,
+    Drm = 8,
+    OpenCl = 9,
+    MediaCodec = 10,
+    Vulkan = 11,
+    D3D12Va = 12,
+}
+
 /// <summary>
 /// An FFmpeg hardware device context (ARCHITECTURE.md §11): a created <c>AVHWDeviceContext</c> of one
-/// <see cref="AVHWDeviceType"/> (D3D11VA/CUDA/QSV on Windows, VAAPI/CUDA on Linux, VideoToolbox on macOS).
+/// <see cref="HardwareDeviceType"/> (D3D11VA/CUDA/QSV on Windows, VAAPI/CUDA on Linux, VideoToolbox on macOS).
 /// <see cref="MediaSource"/> attaches it to a decoder so frames decode on the GPU; the per-OS device
 /// selection lives behind this interface so the decode path is identical everywhere and always has a
 /// software fallback.
@@ -22,7 +42,7 @@ public enum HardwareAccelMode
 public interface IHardwareContext : IDisposable
 {
     /// <summary>The FFmpeg device type backing this context.</summary>
-    AVHWDeviceType DeviceType { get; }
+    HardwareDeviceType DeviceType { get; }
 
     /// <summary>Human-readable device type name (e.g. <c>"d3d11va"</c>, <c>"videotoolbox"</c>).</summary>
     string Name { get; }
@@ -38,70 +58,71 @@ public interface IHardwareContext : IDisposable
 /// </summary>
 public sealed unsafe class HardwareDevice : IHardwareContext
 {
-    private AVBufferRef* _ctx;
+    private IntPtr _ctx; // AVBufferRef*
 
-    private HardwareDevice(AVBufferRef* ctx, AVHWDeviceType type)
+    private HardwareDevice(IntPtr ctx, HardwareDeviceType type)
     {
         _ctx = ctx;
         DeviceType = type;
-        Name = ffmpeg.av_hwdevice_get_type_name(type) ?? type.ToString();
+        Name = TypeName((int)type) ?? type.ToString();
     }
 
     /// <inheritdoc />
-    public AVHWDeviceType DeviceType { get; }
+    public HardwareDeviceType DeviceType { get; }
 
     /// <inheritdoc />
     public string Name { get; }
 
     /// <inheritdoc />
-    public nint DeviceContextRef => (nint)_ctx;
+    public nint DeviceContextRef => _ctx;
 
     /// <summary>Attempts to open a device of <paramref name="type"/>. Returns <c>null</c> if it is unavailable.</summary>
-    public static HardwareDevice? TryCreate(AVHWDeviceType type)
+    public static HardwareDevice? TryCreate(HardwareDeviceType type)
     {
-        AVBufferRef* ctx = null;
-        int rc = ffmpeg.av_hwdevice_ctx_create(&ctx, type, null, null, 0);
-        if (rc < 0 || ctx is null)
+        int rc = LibAv.av_hwdevice_ctx_create(out IntPtr ctx, (int)type, null, IntPtr.Zero, 0);
+        if (rc < 0 || ctx == IntPtr.Zero)
         {
-            if (ctx is not null)
-            {
-                AVBufferRef* c = ctx;
-                ffmpeg.av_buffer_unref(&c);
-            }
+            if (ctx != IntPtr.Zero)
+                LibAv.av_buffer_unref(ref ctx);
             return null;
         }
         return new HardwareDevice(ctx, type);
     }
 
     /// <summary>The hardware device types to try, most-preferred first, for the current OS (ARCHITECTURE.md §11).</summary>
-    public static IReadOnlyList<AVHWDeviceType> PlatformPreferredTypes()
+    public static IReadOnlyList<HardwareDeviceType> PlatformPreferredTypes()
     {
         if (OperatingSystem.IsWindows())
-            return [AVHWDeviceType.D3d11va, AVHWDeviceType.Cuda, AVHWDeviceType.Qsv, AVHWDeviceType.Dxva2];
+            return [HardwareDeviceType.D3D11Va, HardwareDeviceType.Cuda, HardwareDeviceType.Qsv, HardwareDeviceType.Dxva2];
         if (OperatingSystem.IsMacOS())
-            return [AVHWDeviceType.Videotoolbox];
+            return [HardwareDeviceType.VideoToolbox];
         if (OperatingSystem.IsLinux())
-            return [AVHWDeviceType.Vaapi, AVHWDeviceType.Cuda, AVHWDeviceType.Vdpau];
+            return [HardwareDeviceType.Vaapi, HardwareDeviceType.Cuda, HardwareDeviceType.Vdpau];
         return [];
     }
 
     /// <summary>Every hardware device type this FFmpeg build was compiled with (diagnostics).</summary>
-    public static IReadOnlyList<AVHWDeviceType> CompiledTypes()
+    public static IReadOnlyList<HardwareDeviceType> CompiledTypes()
     {
-        var types = new List<AVHWDeviceType>();
-        AVHWDeviceType t = AVHWDeviceType.None;
-        while ((t = ffmpeg.av_hwdevice_iterate_types(t)) != AVHWDeviceType.None)
-            types.Add(t);
+        var types = new List<HardwareDeviceType>();
+        int t = AvConst.HwTypeNone;
+        while ((t = LibAv.av_hwdevice_iterate_types(t)) != AvConst.HwTypeNone)
+            types.Add((HardwareDeviceType)t);
         return types;
+    }
+
+    private static string? TypeName(int type)
+    {
+        IntPtr p = LibAv.av_hwdevice_get_type_name(type);
+        return p == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(p);
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_ctx is null)
+        if (_ctx == IntPtr.Zero)
             return;
-        AVBufferRef* c = _ctx;
-        ffmpeg.av_buffer_unref(&c);
-        _ctx = null;
+        LibAv.av_buffer_unref(ref _ctx);
+        _ctx = IntPtr.Zero;
     }
 }

@@ -2,10 +2,11 @@
 #
 # Sprocket Linux release smoke test (headless).
 # Runs an already-published, self-contained linux-x64 bundle on a clean Linux machine and confirms
-# the bundled FFmpeg 7 native libraries actually load — with LD_LIBRARY_PATH unset, so resolution
-# must come from the application directory (the no-RootPath bundling path a shipped build relies on,
-# ARCHITECTURE.md §11). This proves scripts/release.ps1's FFmpeg bundling end-to-end, complementing
-# scripts/linux-check.sh (which proves the decode/SkSL stack via the spike).
+# the bundled FFmpeg 8 native libraries actually load — with LD_LIBRARY_PATH unset, so resolution
+# must come from the application directory via the hand-rolled binding's FFmpegLoader (the bundling
+# path a shipped build relies on, ARCHITECTURE.md §11). --ffmpeg-check also enforces the FFmpeg-8
+# version guard (libavcodec 62). This proves scripts/release.ps1's FFmpeg bundling end-to-end,
+# complementing scripts/linux-check.sh (which builds from source and probes a real decode).
 #
 # Two steps — build on the host, verify in a container:
 #   1) Publish + bundle the linux-x64 release (writes ./dist/Sprocket-<ver>-linux-x64/):

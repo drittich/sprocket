@@ -29,9 +29,9 @@ compute" pattern.
   on macOS). **No C++/CLI** — native wrapping must be plain P/Invoke against a C ABI so one
   managed codebase serves all three OSes; only the bundled native libraries differ per RID.
 - **Three target OSes: Windows 11, Linux, macOS** (`win-x64`, `linux-x64`, `osx-x64`, `osx-arm64`).
-  The managed assemblies are identical everywhere; FFmpeg is bundled per-RID (`.dll`/`.so`/`.dylib`,
-  see [ARCHITECTURE §11](ARCHITECTURE.md)) since there is no Sdcb runtime NuGet for Linux/macOS.
-  macOS ships as a signed/notarized `.app` bundle (build order step 36).
+  The managed assemblies are identical everywhere; FFmpeg 8 is bundled per-RID (`.dll`/`.so`/`.dylib`,
+  see [ARCHITECTURE §11](ARCHITECTURE.md)) since the hand-rolled binding ships no FFmpeg runtime NuGet
+  for any RID. macOS ships as a signed/notarized `.app` bundle (build order step 36).
 
 ## The non-negotiable performance rule
 
@@ -46,13 +46,37 @@ native buffers for the few crossings that must happen (audio samples). Server/Ba
 |---|---|---|
 | UI | **Avalonia UI 12.x** | Only mature native-Linux .NET desktop UI; renders via Skia. |
 | Compositing/effects | **SkiaSharp** (GPU backend) | Integrates with Avalonia; `SKCanvas`/`SKShader`/`SKRuntimeEffect` for effects. |
-| Decode/encode/filter | **Sdcb.FFmpeg** (or FFmpeg.AutoGen) | Library-level libav* P/Invoke; frame-accurate. NOT FFMpegCore (CLI wrapper). |
+| Decode/encode/filter | **Hand-rolled FFmpeg 8 binding** (`[LibraryImport]`) | Library-level libav* P/Invoke; frame-accurate. NOT FFMpegCore (CLI wrapper). Migrated off Sdcb.FFmpeg 2026-06-29 — see the migration note below and ARCHITECTURE §14. |
 | Hardware accel | FFmpeg hwaccel, per-OS | NVIDIA CUDA/NVENC (most portable); VAAPI (Linux), D3D11VA/QSV/AMF (Windows). |
 | Audio output | **Silk.NET.OpenAL** | Cross-platform now; behind `IAudioOutput` so it can be swapped. |
 | Plugins (later) | Custom **`IVideoEffect`** + collectible `AssemblyLoadContext` | OFX/frei0r hosting is a later, optional P/Invoke adapter. |
 
 > Licensing note: FFmpeg builds can be LGPL or GPL depending on enabled encoders (e.g.
 > x264 → GPL). Pick the build/license deliberately before any distribution.
+
+### FFmpeg-8 binding migration (recorded 2026-06-29)
+
+The decode/encode binding moved off **Sdcb.FFmpeg 7.0.0** — which was dormant (latest April 2024, no
+FFmpeg 8, no commits) and so froze Sprocket on FFmpeg 7.1 — to a **hand-rolled FFmpeg 8 binding** owned
+by the project. This also fixed a macOS bug where the shipped app, carrying no FFmpeg, silently fell
+back to the user's Homebrew FFmpeg 8 that the v7 bindings could not load. The choice followed a
+**three-arm de-risk spike** (hand-rolled `[LibraryImport]` vs FFmpeg.AutoGen 8.1 vs Flyleaf 8.1, all
+proven byte-identical on Windows + Linux); hand-rolled won on footprint / NativeAOT-trim friendliness
+and **cadence control** (a ClangSharp/offset regen ≈ once per FFmpeg *major*, no maintainer dependency —
+the exact risk that stranded us on Sdcb). Recorded in `src/Sprocket.Media/Native/SPIKE_RESULTS.md` (the
+throwaway three-arm spike project itself was removed post-migration; it lives in git history on the
+`ffmpeg8-migration` branch).
+
+What it changed, **confined to `Sprocket.Media`** behind Core's unchanged seams (ARCHITECTURE §17):
+its own `[LibraryImport]` layer (`Native/LibAv.cs`) + explicit-layout structs pinned to FFmpeg 8.1 x64
+(`Native/AvStructs.cs`), a thin RAII layer (`Native/Handles.cs`/`SwsScaler`/`SwrResampler`), a
+`FFmpegLoader` DllImport resolver that maps stems to versioned sonames (avcodec **62** etc.) and
+**version-guards on libavcodec major 62**, and **per-RID native bundling on every platform** (Windows
+included — there is no longer any FFmpeg runtime NuGet), with macOS `@loader_path` install-name rewrite
+making that bundle self-contained. Future binding-surface needs for later steps are catalogued in
+`src/Sprocket.Media/Native/FUTURE_BINDINGS.md`. See ARCHITECTURE §11 + §14 for the re-pinned stack.
+The historical ✅ DONE logs below (step 1 spike, step 3) predate this and still name Sdcb / FFmpeg 7 —
+they are accurate records of that earlier state, superseded by this note.
 
 ## Architecture (big picture)
 
@@ -88,7 +112,7 @@ opacity/gain ramp over a time range (video alpha via shader; audio gain in the m
 End-to-end on **all three** of Windows 11, Linux, and macOS (the slice is developed on Windows;
 Linux and macOS rest on bundling the native libs + on-device verification — see step 1 and step 36):
 1. Create a project; add 1 video track + 1 audio track.
-2. Import a media file (`MediaSource` opens via Sdcb.FFmpeg, reports duration/streams).
+2. Import a media file (`MediaSource` opens it via FFmpeg, reports duration/streams).
 3. Place a clip; set in/out trim (non-destructive — source untouched).
 4. Apply `BrightnessEffect` (GPU shader) to the clip.
 5. Apply a `FadeEffect` (video fade-to-black + audio fade) over a time range.
@@ -1188,8 +1212,9 @@ Tags reference the [UI.md §4 checklist](UI.md).
     `Logo_Anim.mov` flagged `Alpha`).
 27. **Broad media format support (import coverage + export format/codec matrix).** Open and write the
     **common containers and codecs**, not just the slice's H.264/AAC MP4. *Import* is mainly a
-    coverage/robustness task — `MediaSource`/`AudioSource` decode through Sdcb.FFmpeg (steps 2–3), which
-    already handles most formats — so this verifies and hardens a **support matrix**: containers
+    coverage/robustness task — `MediaSource`/`AudioSource` decode through the hand-rolled FFmpeg 8
+    binding (steps 2–3), which already handles most formats — so this verifies and hardens a **support
+    matrix**: containers
     **MP4 / MOV / MKV / WebM / AVI / MXF / TS**; video **H.264, HEVC, AV1, VP9, MPEG-2, ProRes,
     DNxHD/HR**; audio **AAC, MP3, PCM/WAV, FLAC, AC-3, Opus**; plus **10–12-bit, 4:2:2 / 4:4:4, HDR
     transfer, alpha, and variable-frame-rate (VFR)** sources — with file-dialog extension filters and
@@ -1315,7 +1340,7 @@ Tags reference the [UI.md §4 checklist](UI.md).
     transform / log handling (step 37) and the advanced OCIO / ACES color management (step 33). Lands
     entirely on the existing effect seam ([ARCHITECTURE §7](ARCHITECTURE.md), [§17](ARCHITECTURE.md)) — no
     render-graph redesign; builds on the done effect pipeline, so it can be pulled earlier if prioritized.
-35. **Cross-platform native-lib bundling.** Make the build self-contained per RID: copy the FFmpeg 7
+35. **Cross-platform native-lib bundling.** Make the build self-contained per RID: copy the FFmpeg 8
     `.dll`/`.so`/`.dylib` set and `SkiaSharp.NativeAssets.{Win32,Linux,macOS}` + OpenAL Soft natives
     into the publish output for `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64` so the app runs with no
     system FFmpeg ([ARCHITECTURE §11](ARCHITECTURE.md)). Needed for the slice to *run* on Linux/macOS

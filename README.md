@@ -75,14 +75,15 @@ color management (OpenColorIO / OFX) · DJI D-Log input color transforms. See th
 
 | OS | Runtime IDs | Status |
 |---|---|---|
-| **Windows 11** | `win-x64`, `win-arm64` | Primary development platform; FFmpeg natives bundled from NuGet. |
+| **Windows 11** | `win-x64`, `win-arm64` | Primary development platform; FFmpeg 8 natives bundled by the release script. |
 | **Linux** | `linux-x64`, `linux-arm64` | Render path verified byte-identical to Windows (headless); release bundle verified end-to-end. |
 | **macOS** | `osx-x64`, `osx-arm64` | Same managed code; ships as a signed/notarized `.app` (packaging in progress). |
 
 The managed assemblies are identical on every OS — only the bundled native libraries differ per RID.
-Sprocket bundles its **own FFmpeg 7.1** libraries rather than depending on a system install (distro
-FFmpeg versions vary and are often ABI-incompatible). On Windows these come from the Sdcb runtime
-NuGet; on Linux/macOS they are fetched and bundled by the release script (see
+Sprocket bundles its **own FFmpeg 8** libraries rather than depending on a system install (distro
+FFmpeg versions vary and are often ABI-incompatible). Sprocket talks to FFmpeg through its **own
+hand-rolled P/Invoke binding** (no FFmpeg binding or runtime NuGet), so the natives for **every** RID —
+Windows included — are fetched and bundled by the release script (see
 [Creating a release](#creating-a-release)).
 
 ---
@@ -131,7 +132,7 @@ docker run --rm -v "$PWD:/repo" -e HOME=/root \
 ## Creating a release
 
 [`scripts/release.ps1`](scripts/release.ps1) (PowerShell, cross-platform) publishes the editor as a
-self-contained, single-file executable for each target runtime and bundles the matching FFmpeg 7.1
+self-contained, single-file executable for each target runtime and bundles the matching FFmpeg 8
 native libraries next to it.
 
 ```powershell
@@ -153,16 +154,18 @@ pwsh scripts/release.ps1 -Version 0.3.0
 | `-OutDir <dir>` | Output directory (default `dist`). |
 | `-NoZip` | Leave the raw publish folders instead of zipping. |
 | `-NoFFmpeg` | Publish only; skip FFmpeg native bundling. |
-| `-OsxX64FFmpegUrl` / `-OsxArm64FFmpegUrl` | Archive URL of FFmpeg 7.1 macOS `.dylib`s to bundle. |
+| `-OsxX64FFmpegUrl` / `-OsxArm64FFmpegUrl` | Archive URL of FFmpeg 8 macOS `.dylib`s to bundle. |
 
-**How FFmpeg natives are sourced per RID:**
+**How FFmpeg natives are sourced per RID:** Sprocket uses its own hand-rolled binding, so there is no
+FFmpeg runtime NuGet for any platform — every RID's natives are fetched and bundled by this script.
 
-- **win-x64** — embedded during publish from the `Sdcb.FFmpeg.runtime.windows-x64` NuGet.
-- **linux-x64 / linux-arm64 / win-arm64** — downloaded from
-  [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) and copied next to the executable.
+- **win-x64 / win-arm64 / linux-x64 / linux-arm64** — downloaded from
+  [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (`*-gpl-shared`, FFmpeg 8) and copied
+  next to the executable.
 - **osx-x64 / osx-arm64** — no canonical automated build exists; pass a `.tar.xz`/`.zip` URL via
   `-OsxX64FFmpegUrl` / `-OsxArm64FFmpegUrl` to bundle them, otherwise that bundle ships without
-  FFmpeg and the script warns.
+  FFmpeg and the script warns. On a macOS build host the script rewrites the dylibs' install names to
+  `@loader_path` so the bundle is self-contained (no Homebrew, no `DYLD_*`).
 
 > **Verifying a release end-to-end.** The app sets no FFmpeg `RootPath`, so natives resolve from the
 > application directory — and the bundled libraries depend on one another. Sprocket pre-loads them in
@@ -213,8 +216,8 @@ seams rather than rewrites. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full 
 throughout the code as `§N`).
 
 **Technology stack:** Avalonia UI 12 · SkiaSharp 3.119.4 (pinned to match Avalonia's transitive
-Skia) · Sdcb.FFmpeg 7.0 (FFmpeg 7.1) · Silk.NET.OpenAL. All native interop is P/Invoke against a C
-ABI — there is no C++/CLI — so one managed build serves all three OSes.
+Skia) · FFmpeg 8 via a hand-rolled `[LibraryImport]` binding · Silk.NET.OpenAL. All native interop is
+P/Invoke against a C ABI — there is no C++/CLI — so one managed build serves all three OSes.
 
 ---
 

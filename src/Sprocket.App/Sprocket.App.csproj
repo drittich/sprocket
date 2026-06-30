@@ -40,10 +40,9 @@
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
 
-    <!-- The FFmpeg native runtime must land next to the exe for decode to load. Sprocket.Media
-         brings the bindings transitively; reference the Windows runtime here so its DLLs are
-         copied into the app output (on Linux the FFmpeg 7 .so files are bundled per §11). -->
-    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" />
+    <!-- FFmpeg 8 natives are NOT a NuGet dependency (no FFmpeg-8 runtime NuGet exists). They are
+         bundled per-RID next to the exe by scripts/release.ps1 (avcodec-62 / avutil-60 / … §11) and,
+         in local dev, resolved from %SPROCKET_FFMPEG8_DIR% by Sprocket.Media's FFmpegLoader. -->
   </ItemGroup>
 
   <ItemGroup>

@@ -1,7 +1,7 @@
 # Sprocket — Alpha
 
 Sprocket is a cross-platform (Windows 11 · Linux · macOS), non-destructive video editor built on
-.NET 10, FFmpeg 7, and Skia. This is an **early alpha**: the editing core is real and end-to-end,
+.NET 10, FFmpeg 8, and Skia. This is an **early alpha**: the editing core is real and end-to-end,
 but large parts of the feature set are still to come and the cross-platform builds have had limited
 on-device testing. Expect rough edges.
 
@@ -69,9 +69,9 @@ reports during an alpha. Please skip the items in "Not in this build yet" below;
 - **Primary testing is on Windows 11.** Linux and macOS run the *identical* managed code, but
   windowed-GPU and on-device verification there is still in progress — treat those builds as
   experimental.
-- **macOS builds ship without the FFmpeg libraries.** There is no automated source for FFmpeg 7.1
-  macOS `.dylib`s yet, so you supply FFmpeg 7 once — a one-time, two-minute setup covered step by step
-  in **🍎 macOS — get running** below. Windows and Linux archives bundle FFmpeg automatically.
+- **All platforms now bundle FFmpeg 8.** Windows, Linux, and macOS archives each ship their own
+  FFmpeg 8 native libraries — no system FFmpeg, no Homebrew, no `DYLD_*` needed (see **🍎 macOS — get
+  running** below; the macOS dylibs have their install names rewritten to load from the app folder).
 - The windowed GPU preview and audio output are display/device-bound and rest on manual verification.
 - **FFmpeg licensing (LGPL vs GPL)** for distribution has not been finalized.
 
@@ -80,40 +80,27 @@ reports during an alpha. Please skip the items in "Not in this build yet" below;
 Each archive is a self-contained build — unzip and run the `Sprocket` executable; no .NET install or
 system FFmpeg is required.
 
-- **Windows:** unzip and run `Sprocket.exe`. FFmpeg is bundled.
-- **Linux:** unzip, then `chmod +x Sprocket` and run `./Sprocket`. FFmpeg is bundled.
-- **macOS:** one extra step — see below.
+- **Windows:** unzip and run `Sprocket.exe`. FFmpeg 8 is bundled.
+- **Linux:** unzip, then `chmod +x Sprocket` and run `./Sprocket`. FFmpeg 8 is bundled.
+- **macOS:** one extra step (Gatekeeper) — see below. FFmpeg 8 is bundled.
 
-### 🍎 macOS — get running (one extra step for FFmpeg)
+### 🍎 macOS — get running (one Gatekeeper step)
 
-The macOS archive ships **without FFmpeg**, so you need to supply FFmpeg **7** once. The easiest way is
-[Homebrew](https://brew.sh):
+The macOS archive now **bundles FFmpeg 8** — no Homebrew, no `DYLD_*`, no system FFmpeg. The only extra
+step is clearing Apple's quarantine, because the build isn't notarized yet:
 
-1. **Install FFmpeg 7** (skip if you already have it):
-   ```bash
-   brew install ffmpeg
-   ```
-   Sprocket needs the **FFmpeg 7.x** libraries (`libavcodec.61`, `libswscale.8`, …). Confirm with
-   `ffmpeg -version` — the first line should start with `7.`. If Homebrew gives you a newer major
-   (8.x), Sprocket won't load it; install the 7 line instead (e.g. `brew install ffmpeg@7`).
-
-2. **Unzip** the download, then in Terminal `cd` into the unzipped folder and make the app runnable:
+1. **Unzip** the download, then in Terminal `cd` into the unzipped folder and run:
    ```bash
    chmod +x Sprocket
    xattr -dr com.apple.quarantine .   # clear Gatekeeper's quarantine (the build isn't notarized yet)
    ```
 
-3. **Launch it**, pointing Sprocket at Homebrew's FFmpeg 7 libraries:
+2. **Launch it:**
    ```bash
-   DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix ffmpeg)/lib" ./Sprocket
-   ```
-   To avoid typing that each time, copy the FFmpeg libraries next to the executable once, then just
-   run `./Sprocket`:
-   ```bash
-   cp "$(brew --prefix ffmpeg)"/lib/lib{avcodec,avformat,avutil,avfilter,avdevice,swscale,swresample,postproc}*.dylib .
+   ./Sprocket
    ```
 
-If video won't open or playback/export does nothing on macOS, it's almost always a missing or
-wrong-version FFmpeg — re-check step 1 (`ffmpeg -version` must report 7.x). Apple Silicon and Intel
-Macs are both supported (use the `osx-arm64` or `osx-x64` download respectively). A signed, notarized
-`.app` that bundles FFmpeg so none of this is needed is planned for a later release.
+Apple Silicon and Intel Macs are both supported (use the `osx-arm64` or `osx-x64` download
+respectively). A signed, notarized `.app` so even the `xattr` step isn't needed is planned for a later
+release. If video won't open, confirm you downloaded a macOS archive that includes the `libav*.dylib`
+files next to the executable.

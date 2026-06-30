@@ -19,17 +19,15 @@
 # binaries themselves report the plain numeric version. The bump (if any) is committed before the
 # tag so the tag points at a commit that contains its own version.
 #
-# macOS / FFmpeg — IMPORTANT: -OsxX64FFmpegUrl / -OsxArm64FFmpegUrl alone do NOT produce a working
-# self-contained macOS build. release.ps1's bundler copies only the libav*/libsw*/libpostproc dylibs
-# (it skips libx264/libx265/etc.) and does not rewrite Mach-O install names. A normal macOS FFmpeg
-# shared build links the libav* dylibs against a whole tree of other dylibs via ABSOLUTE install
-# paths (e.g. /opt/homebrew/...), so a bundle made this way still dlopen()s paths that won't exist on
-# a machine without those libs and decode fails. Making macOS genuinely download-and-run needs the
-# full dependency tree pulled in + install names rewritten to @loader_path (or FFmpeg 7 built with
-# static deps) — that is the signed/notarized .app of PLAN.md step 25, not a flag here. Until then,
-# the shipped macOS archives rely on the user supplying FFmpeg 7 (Homebrew), as documented in
-# RELEASE_NOTES.md ("macOS — get running"). Do NOT ship a second "no-FFmpeg" macOS variant: a macOS
-# build without FFmpeg can't decode/play/export at all, so it is a broken download, not a lite option.
+# macOS / FFmpeg — pass -OsxX64FFmpegUrl / -OsxArm64FFmpegUrl with archives of FFmpeg 8 .dylibs.
+# release.ps1 copies the libav*/libsw*/libpostproc dylibs next to the exe AND, when run ON macOS
+# (install_name_tool/otool present), rewrites each dylib's id + its sibling references to
+# @loader_path — so the bundle loads from the app folder with no Homebrew/absolute paths and the user
+# does nothing. IMPORTANT: that rewrite only happens on a Mac build host; cross-building macOS bundles
+# from Windows/Linux copies the dylibs but cannot rewrite their Mach-O install names, so cut the macOS
+# RIDs on a macOS runner for a genuinely self-contained app. The remaining macOS work is code-signing
+# + notarization + a proper .app (PLAN.md step 36), not a flag here. Do NOT ship a second "no-FFmpeg"
+# macOS variant: a macOS build without FFmpeg can't decode/play/export at all — a broken download.
 #
 # Requires: gh (authenticated — run `gh auth login`), a clean working tree, and the same toolchain
 # release.ps1 needs (dotnet 10, plus network access for the FFmpeg native downloads).
@@ -63,7 +61,7 @@ param(
     # Build configuration, passed through to release.ps1.
     [string] $Configuration = 'Release',
 
-    # Optional archive URLs of FFmpeg 7.1 macOS .dylib files, passed through to release.ps1.
+    # Optional archive URLs of FFmpeg 8 macOS .dylib files, passed through to release.ps1.
     [string] $OsxX64FFmpegUrl,
     [string] $OsxArm64FFmpegUrl,
 

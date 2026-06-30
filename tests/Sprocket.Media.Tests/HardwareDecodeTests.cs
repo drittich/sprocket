@@ -78,7 +78,7 @@ public class HardwareDecodeTests
     [Fact]
     public void Platform_Preferred_Types_Are_Defined_For_This_Os()
     {
-        IReadOnlyList<Sdcb.FFmpeg.Raw.AVHWDeviceType> preferred = HardwareDevice.PlatformPreferredTypes();
+        IReadOnlyList<HardwareDeviceType> preferred = HardwareDevice.PlatformPreferredTypes();
         if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             Assert.NotEmpty(preferred);
     }

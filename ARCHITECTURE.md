@@ -42,7 +42,7 @@ Projects marked *(planned)* are designed-for but not yet created; the rest exist
 Sprocket.slnx
 ├── src/
 │   ├── Sprocket.Core         // timeline model, render graph, time model. No native deps. No UI.
-│   ├── Sprocket.Media        // FFmpeg (Sdcb.FFmpeg) interop: decode, seek, encode, hw-accel.
+│   ├── Sprocket.Media        // FFmpeg 8 interop (hand-rolled [LibraryImport]): decode, seek, encode, hw-accel.
 │   ├── Sprocket.Render       // SkiaSharp compositing + effects (SKRuntimeEffect shaders).
 │   ├── Sprocket.Audio        // mixer + IAudioOutput (Silk.NET.OpenAL). Master clock.
 │   ├── Sprocket.Playback     // playback engine: scheduling, ring buffers, A/V sync, transport.
@@ -373,25 +373,29 @@ backend-specific and deferred to the hardware-accel milestone (PLAN step 6).
 
 ## 11. Media layer detail (Sprocket.Media)
 
-Using **Sdcb.FFmpeg 7.x** (library-level libav bindings). Key types: `FormatContext`,
-`CodecContext`, `Packet` (`.Unref()`), `Frame` (`.Data` is `IntPtr[]`, `.Linesize` is
-`int[]` — **direct native pointers, no managed copy**), pixel conversion via the swscale
-wrapper, `MediaDictionary` for options.
+Using a **hand-rolled FFmpeg 8 binding** — Sprocket's own source-generated `[LibraryImport]` P/Invoke
+layer (`Native/LibAv.cs`) over libav* (avcodec 62 / avutil 60 / avformat 62 / swscale 9 / swresample 6),
+with explicit-layout structs (`Native/AvStructs.cs`) and a thin internal RAII layer (`Native/Handles.cs`,
+`SwsScaler`, `SwrResampler`) that owns native lifetimes and translates error codes to typed exceptions
+(§15). The raw `AVFrame.data`/`linesize` are **direct native pointers, no managed copy**; the pointer is
+handed straight to Skia. There are **no Sdcb-style high-level wrappers and no FFmpeg binding/runtime
+NuGet** — the binding and the natives are both owned by the project (see §14, [Native/FUTURE_BINDINGS.md]).
 
-- **`MediaSource`** wraps a `FormatContext`: probe (duration, streams, fps, sample rate),
+- **`MediaSource`** wraps a format context: probe (duration, streams, fps, sample rate),
   expose a video `IFrameSource` and an audio PCM source. The probe also reads the video stream's
   **color transfer / primaries / space** (the `AVColorTransferCharacteristic`/`color_primaries`/
   `color_space` codec-parameter fields) and the `AVFormatContext`/`AVStream` **metadata
   dictionary**, surfaced on `ProbedMediaInfo` so a log profile (D-Log) can be auto-detected on
   import ([§18](#18-log-media--color-management-d-log)).
-- **Decode loop:** `ReadPacket` → `SendPacket` → `ReceiveFrame` (N frames per packet);
-  `packet.Unref()` in `finally`. Reuse a pooled `Frame`.
-- **Pixel conversion:** swscale YUV420p/NV12 → RGBA/BGRA into a pooled **native** buffer;
-  pass `Frame.Data[0]` + `Frame.Linesize[0]` straight in — never marshal to `byte[]`.
+- **Decode loop:** `av_read_frame` → `avcodec_send_packet` → `avcodec_receive_frame` (N frames per
+  packet); `av_packet_unref` in `finally` (via the RAII handle). Reuse a pooled `AvFrameHandle`.
+- **Pixel conversion:** `SwsScaler` YUV420p/NV12 → RGBA/BGRA into a pooled **native** buffer;
+  pass `AVFrame.data[0]` + `AVFrame.linesize[0]` straight in — never marshal to `byte[]`.
 - **Encoder** (export): mirror in reverse — frames → encoder → muxer; pick H.264 encoder
   (`libx264` software for the slice; `h264_nvenc`/`h264_vaapi` later).
-- **Hardware accel (later, behind `IHardwareContext`):** `av_hwdevice_ctx_create(type…)`,
-  attach to `CodecContext.HwDeviceContext`, set the decoder's `get_format` to the hw pixel
+- **Hardware accel (behind `IHardwareContext`):** `av_hwdevice_ctx_create(type…)`,
+  attach to `AVCodecContext.hw_device_ctx`, set the decoder's `get_format` (an
+  `[UnmanagedCallersOnly]` callback) to the hw pixel
   format, decode to a GPU frame, then either `av_hwframe_transfer_data` (simple, costs a copy)
   or map to a GPU texture for zero-copy (`FromTexture`). Runtime probe of available device types
   per OS — **Windows:** D3D11VA / CUDA / QSV / DXVA2; **Linux:** VAAPI / CUDA / VDPAU;
@@ -422,24 +426,31 @@ Practical picks, chosen by a runtime encoder probe behind `IHardwareContext`: **
 intra). Audio intermediates are simplest as **uncompressed PCM**. Because the choice only affects a
 throwaway cache, it has **no bearing on export determinism** (§1.6).
 
-**Native binaries (per-RID bundling).** `Sdcb.FFmpeg.runtime.windows-x64` NuGet supplies the
-FFmpeg 7.1 DLLs on Windows. **On Linux and macOS, Sprocket must ship its own FFmpeg 7 shared
-libraries** — there is no Sdcb.FFmpeg Linux or macOS runtime NuGet, and OS packages drift (Ubuntu
-24.04 ships FFmpeg 6.1 = `libav*.so.60`, ABI-incompatible with Sdcb 7.0 which loads `…so.61`;
-Homebrew tracks the latest major and Apple ships none). Bundle a FFmpeg 7.x shared build per RID:
-- **Linux** (`linux-x64`): `libav*.so.61` etc. on the loader path / `LD_LIBRARY_PATH`.
-- **macOS** (`osx-x64` and `osx-arm64`): `libav*.61.dylib` etc. next to the executable inside the
-  `.app` bundle (`Contents/MacOS` or `Contents/Frameworks`, found via `@loader_path`/`DYLD_*`).
-  Ship a build per architecture (Apple Silicon `arm64` is the default; `x64` for Intel Macs).
+**Native binaries (per-RID bundling).** Since the hand-rolled binding ships **no FFmpeg runtime NuGet
+for any RID** (there never was one for Linux/macOS, and the migration off Sdcb dropped the Windows one
+too), **Sprocket bundles its own FFmpeg 8 shared libraries on every platform** — chosen deliberately so
+the version that ships is the version we test against, immune to OS package drift (Ubuntu 24.04 ships
+FFmpeg 6.1; Homebrew tracks the latest major; Apple ships none). `scripts/release.ps1` pulls a
+FFmpeg 8 *shared* build per RID and bundles it next to the executable:
+- **Windows** (`win-x64`, `win-arm64`): `avcodec-62.dll` etc. from a BtbN `*-gpl-shared` build.
+- **Linux** (`linux-x64`, `linux-arm64`): `libav*.so.62` etc. resolved from the app dir by `FFmpegLoader`
+  (no `LD_LIBRARY_PATH` needed at runtime).
+- **macOS** (`osx-x64` and `osx-arm64`): `libav*.60/62.dylib` etc. next to the executable; `release.ps1`
+  rewrites each dylib's Mach-O install name + its sibling references to `@loader_path` (via
+  `install_name_tool`, on a macOS build host) so the bundle is self-contained with **no Homebrew and no
+  `DYLD_*`**. Ship a build per architecture (Apple Silicon `arm64` is the default; `x64` for Intel Macs).
 
-Sdcb constructs the versioned library name (`libavcodec.so.61`, `libavcodec.61.dylib`, etc.) from
-its `LibraryVersionMap` and the OS loader resolves it. The Linux path was confirmed end-to-end in a
-.NET 10 container: decode + SkSL + Skia render produced a **byte-identical PNG to the Windows
-build**; the macOS path uses the same code and rests on packaging the dylibs (PLAN step 25) +
-on-device verification. **Skia natives** come from `SkiaSharp.NativeAssets.{Win32,Linux,macOS}`
-per RID; the managed `SkiaSharp` stays pinned to 3.119.4 (§14). **Licensing:** an x264-enabled
-build is GPL (the verified Linux build was BtbN `gpl-shared`); choose the build and the product's
-license deliberately before any distribution.
+`FFmpegLoader` registers a `NativeLibrary.SetDllImportResolver` that maps each library stem to its
+versioned file (`avcodec` → `avcodec-62.dll` / `libavcodec.so.62` / `libavcodec.62.dylib`), preloads
+them in dependency order, and **version-guards on libavcodec major 62** — a wrong-major FFmpeg throws a
+typed, actionable `FFmpegException` instead of crashing or silently mis-binding (this is exactly the
+macOS "found Homebrew v8 under v7 bindings" failure the migration fixed). In dev/test the search dir is
+`%SPROCKET_FFMPEG8_DIR%`. The Linux path is confirmed end-to-end in a .NET 10 container
+(`scripts/linux-check.sh`): decode + SkSL + Skia render produces a **byte-identical PNG to the Windows
+build**. **Skia natives** come from `SkiaSharp.NativeAssets.{Win32,Linux,macOS}` per RID; the managed
+`SkiaSharp` stays pinned to 3.119.4 (§14). **Licensing:** an x264-enabled build is GPL (the bundled
+builds are BtbN `gpl-shared`); choose the build and the product's license deliberately before any
+distribution.
 
 ---
 
@@ -481,7 +492,7 @@ directory and preferred when present; missing media loads offline rather than fa
 | .NET | 10 (LTS) | Server/Background GC; `Span`, SIMD intrinsics, source-gen JSON. Single managed build runs on `win-x64`/`linux-x64`/`osx-x64`/`osx-arm64`. |
 | Avalonia | 12.0.5 | `ISkiaSharpApiLeaseFeature.Lease()` → `GrContext`+`SkCanvas`; `CompositionCustomVisualHandler`. Native desktop on Windows/Linux/**macOS** (Metal/OpenGL); Vulkan supported. |
 | SkiaSharp | **3.119.4** | Pinned to Avalonia 12.0.5's transitive SkiaSharp so the lease's Skia types match (a newer feed loads a 2nd incompatible assembly). `SKRuntimeEffect.CreateShader` (SkSL), `SKImage.FromTexture`/`FromPixels`, GPU surfaces. Natives per RID via `SkiaSharp.NativeAssets.{Win32,Linux,macOS}`. |
-| Sdcb.FFmpeg | 7.0.0 (FFmpeg 7.1) | `FormatContext`/`CodecContext`/`Packet`/`Frame`; `Frame.Data` = `IntPtr[]`. Win binaries via `Sdcb.FFmpeg.runtime.windows-x64`; **Linux & macOS must bundle FFmpeg 7 `.so`/`.dylib` (see §11)** — no Sdcb Linux/macOS runtime NuGet, OS versions vary. |
+| FFmpeg | **8.1** via a **hand-rolled binding** | Sprocket's own source-generated `[LibraryImport]` P/Invoke (`Native/LibAv.cs`) + explicit-layout structs pinned to FFmpeg 8.1 x64 (`Native/AvStructs.cs`); sonames avcodec 62 / avutil 60 / avformat 62 / swscale 9 / swresample 6. **No FFmpeg binding or runtime NuGet on any RID** — natives bundled per-RID (see §11), version-guarded on libavcodec major 62. Migrated off the dormant Sdcb.FFmpeg 7.0.0 (2026-06-29) after a three-arm spike chose hand-rolled for footprint/AOT + cadence control (`Native/SPIKE_RESULTS.md`; the spike project lives in git history). |
 | Silk.NET.OpenAL | 2.23 | Cross-platform audio out behind `IAudioOutput`; `Silk.NET.OpenAL.Soft.Native` 1.23.1 ships `win`/`linux`/**`osx-x64`+`osx-arm64`** binaries. (Silk.NET 2.x in limited maintenance — abstracted; macOS CoreAudio is an optional later swap.) |
 
 ---
@@ -518,7 +529,7 @@ directory and preferred when present; missing media loads offline rather than fa
 | FFmpeg native frame leaks across threads | Strict ref/unref ownership protocol (§8); cancellation drains in-flight frames. |
 | Zero-copy hardware interop complexity | Slice uses `FromPixels` (software path); defer `FromTexture`/DMA-BUF/D3D11/IOSurface to the hw milestone with software fallback retained. |
 | FFmpeg GPL vs LGPL licensing | Decide build + product license before distribution (§11). |
-| macOS packaging (`.app` bundle, FFmpeg dylibs, code signing/notarization) | Bundle per-RID FFmpeg 7 dylibs via the loader path (§11); produce a signed/notarized `.app` in the distribution step (PLAN step 25). Universal vs per-arch (`osx-arm64`/`osx-x64`) decided there. |
+| macOS packaging (`.app` bundle, FFmpeg dylibs, code signing/notarization) | Per-RID FFmpeg 8 dylibs are bundled with `@loader_path` install-names rewritten (§11, `release.ps1`); the remaining work is a signed/notarized `.app` in the distribution step (PLAN step 25). Universal vs per-arch (`osx-arm64`/`osx-x64`) decided there. |
 | Native-lib drift across the three OSes | Single managed build; only per-RID natives differ. CI builds/runs on win/linux/macOS runners; the headless render path is byte-identical across OSes (verified win↔linux). |
 
 ---

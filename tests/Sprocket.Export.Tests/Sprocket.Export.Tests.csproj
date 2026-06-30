@@ -7,8 +7,9 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Export round-trips through real FFmpeg encode + decode, so force the win-x64 RID on Windows to
-         land the transitive Sdcb.FFmpeg.runtime.windows-x64 natives in the output (as Media.Tests does). -->
+    <!-- Export round-trips through real FFmpeg 8 encode + decode; the natives resolve at runtime via
+         Sprocket.Media's FFmpegLoader from %SPROCKET_FFMPEG8_DIR%. The win-x64 RID is kept for a stable
+         Windows output layout (as Media.Tests does). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
   </PropertyGroup>
 

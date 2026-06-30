@@ -1,13 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Sprocket.Media — FFmpeg (Sdcb.FFmpeg) interop: open/probe a source, decode video
-    frames to native RGBA, seek frame-accurately, and feed a bounded ring buffer
-    (ARCHITECTURE.md §8, §11). Depends only on Sprocket.Core for the data/time model.
+    Sprocket.Media — FFmpeg 8 interop via Sprocket's own hand-rolled [LibraryImport] binding
+    (Native/LibAv.cs, chosen by the Phase-0 spike): open/probe a source, decode video frames to
+    native RGBA, seek frame-accurately, and feed a bounded ring buffer (ARCHITECTURE.md §8, §11).
+    Depends only on Sprocket.Core for the data/time model — and on NO external FFmpeg binding NuGet.
 
     Deliberately has NO SkiaSharp / UI dependency: decoded pixels live in FFmpeg's native
     AVFrame buffers and are exposed by pointer (the no-managed-pixels rule, §1). The
     Render/Playback layer wraps those pointers with SKImage.FromPixels inside the GPU lease.
+
+    Native libraries: FFmpeg 8 shared libs (avcodec-62 / avutil-60 / avformat-62 / swscale-9 /
+    swresample-6) are NOT a NuGet dependency — there is no FFmpeg-8 runtime NuGet for any RID. They
+    are bundled per-RID next to the executable by the release scripts (scripts/release.ps1, §11) and,
+    in local dev/test, resolved from %SPROCKET_FFMPEG8_DIR% by FFmpegLoader's DllImport resolver.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -22,12 +28,8 @@
     <ProjectReference Include="..\Sprocket.Core\Sprocket.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- Library-level libav* bindings. Stack versions pinned by the architecture spike
-         (ARCHITECTURE.md §14). On Windows the runtime NuGet supplies the FFmpeg 7.1 DLLs;
-         on Linux the app must bundle FFmpeg 7 .so files on the loader path (§11). -->
-    <PackageReference Include="Sdcb.FFmpeg" Version="7.0.0" />
-    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" />
-  </ItemGroup>
+  <!-- No FFmpeg binding NuGet: the libav* surface is hand-rolled in Native/LibAv.cs and the FFmpeg 8
+       shared natives are bundled per-RID by the release scripts / resolved via %SPROCKET_FFMPEG8_DIR%
+       in dev (see the header comment and FFmpegLoader). -->
 
 </Project>

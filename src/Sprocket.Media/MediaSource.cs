@@ -1,17 +1,15 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using Sdcb.FFmpeg.Codecs;
-using Sdcb.FFmpeg.Formats;
-using Sdcb.FFmpeg.Raw;
-using Sdcb.FFmpeg.Swscales;
-using Sdcb.FFmpeg.Utils;
+using System.Runtime.InteropServices;
 using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
 /// <summary>
-/// Opens one source media file with library-level FFmpeg (Sdcb.FFmpeg), probes its streams, and decodes
-/// its video stream to native RGBA frames with frame-accurate seeking (ARCHITECTURE.md §11). This is the
+/// Opens one source media file with the hand-rolled FFmpeg 8 binding, probes its streams, and decodes its
+/// video stream to native RGBA frames with frame-accurate seeking (ARCHITECTURE.md §11). This is the
 /// concrete backing for the timeline's source media; the playback layer wraps it in a ring buffer
 /// (<see cref="VideoDecodeRing"/>) and the render graph reaches it through the <c>IFrameSource</c> seam.
 /// </summary>
@@ -28,22 +26,21 @@ namespace Sprocket.Media;
 /// </remarks>
 public sealed unsafe class MediaSource : IDisposable
 {
-    // AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX — the decoder accepts an attached AVHWDeviceContext.
-    private const int HwConfigMethodDeviceCtx = 0x01;
+    // The desired GPU pixel format per decoder context, read by the static get_format callback (which can't
+    // capture state). Keyed by the AVCodecContext pointer; entries are removed on Dispose.
+    private static readonly ConcurrentDictionary<IntPtr, int> WantHwFormat = new();
 
-    private readonly FormatContext _format;
-    private readonly CodecContext _decoder;
-    private readonly MediaStream _videoStream;
-    private readonly VideoFrameConverter _converter = new();
-    private readonly Packet _packet = new();
-    private readonly Frame _yuv = new();          // reusable decoder output (source/hw pixel format)
-    private readonly AVRational _videoTimeBase;
+    private readonly FormatContextHandle _format;
+    private readonly CodecContextHandle _decoder;
+    private readonly SwsScaler _converter = new();
+    private readonly AvPacketHandle _packet = new();
+    private readonly AvFrameHandle _yuv = new();    // reusable decoder output (source/hw pixel format)
+    private readonly AvRational _videoTimeBase;
     private readonly int _videoIndex;
 
-    private readonly IHardwareContext? _hwDevice;       // null when decoding in software
-    private readonly AVPixelFormat _hwPixelFormat;       // the GPU frame format to expect when hw is active
-    private readonly Frame? _hwTransfer;                 // CPU frame the GPU frame is downloaded into
-    private readonly AVCodecContext_get_format? _getFormat; // held alive for the decoder's lifetime
+    private readonly IHardwareContext? _hwDevice;   // null when decoding in software
+    private readonly int _hwPixelFormat;            // the GPU frame format to expect when hw is active
+    private readonly AvFrameHandle? _hwTransfer;    // CPU frame the GPU frame is downloaded into
 
     private bool _inputEof;     // ReadFrame returned no more packets
     private bool _flushed;      // sent the end-of-stream flush packet to the decoder
@@ -51,18 +48,16 @@ public sealed unsafe class MediaSource : IDisposable
     private bool _disposed;
 
     private MediaSource(
-        FormatContext format, CodecContext decoder, MediaStream videoStream, ProbedMediaInfo info,
-        IHardwareContext? hwDevice, AVPixelFormat hwPixelFormat, AVCodecContext_get_format? getFormat)
+        FormatContextHandle format, CodecContextHandle decoder, int videoIndex, AvRational videoTimeBase,
+        ProbedMediaInfo info, IHardwareContext? hwDevice, int hwPixelFormat)
     {
         _format = format;
         _decoder = decoder;
-        _videoStream = videoStream;
-        _videoIndex = videoStream.Index;
-        _videoTimeBase = videoStream.TimeBase;
+        _videoIndex = videoIndex;
+        _videoTimeBase = videoTimeBase;
         _hwDevice = hwDevice;
         _hwPixelFormat = hwPixelFormat;
-        _getFormat = getFormat;
-        _hwTransfer = hwDevice is null ? null : new Frame();
+        _hwTransfer = hwDevice is null ? null : new AvFrameHandle();
         Info = info;
     }
 
@@ -84,45 +79,43 @@ public sealed unsafe class MediaSource : IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
 
-        // Ensure any FFmpeg natives bundled beside the executable are loaded in dependency order before
-        // the first FFmpeg call (ARCHITECTURE.md §11); no-op on Windows / local dev.
+        // Ensure any FFmpeg natives bundled beside the executable are loaded + the version is FFmpeg 8 before
+        // the first FFmpeg call (ARCHITECTURE.md §11); no-op on Windows / local dev once resolved.
         FFmpegLoader.EnsureBundledNativesLoaded();
 
-        FormatContext format = FormatContext.OpenInputUrl(path);
+        FormatContextHandle format = FormatContextHandle.OpenInput(path);
         try
         {
-            format.LoadStreamInfo();
-
-            MediaStream? videoStreamOrNull = format.FindBestStreamOrNull(AVMediaType.Video, -1, -1);
-            if (videoStreamOrNull is null)
+            if (!format.TryFindBestStream(AvConst.MediaTypeVideo, out int videoIndex, out IntPtr videoStream, out IntPtr decoderCodec)
+                || decoderCodec == IntPtr.Zero)
                 throw new InvalidOperationException($"No video stream found in '{path}'.");
 
-            MediaStream videoStream = videoStreamOrNull.Value;
-            Codec codec = Codec.FindDecoderById(videoStream.Codecpar!.CodecId);
+            var st = (AvStream*)videoStream;
+            IntPtr codecpar = st->codecpar;
+            AvRational videoTimeBase = st->time_base;
 
             // Negotiate a hardware device + its decoder pixel format, then open the decoder. If hardware setup
             // or open fails, tear it down and open a plain software decoder (the guaranteed fallback, §11).
             IHardwareContext? hw = null;
-            AVPixelFormat hwFmt = AVPixelFormat.None;
+            int hwFmt = AvConst.PixFmtNone;
             if (hwAccel == HardwareAccelMode.Auto)
-                (hw, hwFmt) = NegotiateHardware(codec);
+                (hw, hwFmt) = NegotiateHardware(decoderCodec);
 
-            CodecContext decoder;
-            AVCodecContext_get_format? getFormat = null;
+            CodecContextHandle decoder;
             try
             {
-                decoder = CreateDecoder(codec, videoStream, hw, hwFmt, out getFormat);
+                decoder = CreateDecoder(decoderCodec, codecpar, hw, hwFmt);
             }
             catch when (hw is not null)
             {
                 hw.Dispose();
                 hw = null;
-                hwFmt = AVPixelFormat.None;
-                decoder = CreateDecoder(codec, videoStream, null, AVPixelFormat.None, out getFormat);
+                hwFmt = AvConst.PixFmtNone;
+                decoder = CreateDecoder(decoderCodec, codecpar, null, AvConst.PixFmtNone);
             }
 
             ProbedMediaInfo info = Probe(format, videoStream, decoder);
-            return new MediaSource(format, decoder, videoStream, info, hw, hwFmt, getFormat);
+            return new MediaSource(format, decoder, videoIndex, videoTimeBase, info, hw, hwFmt);
         }
         catch
         {
@@ -132,101 +125,96 @@ public sealed unsafe class MediaSource : IDisposable
     }
 
     /// <summary>Finds the first platform-preferred hardware device the decoder supports and that opens.</summary>
-    private static (IHardwareContext?, AVPixelFormat) NegotiateHardware(Codec codec)
+    private static (IHardwareContext?, int) NegotiateHardware(IntPtr codec)
     {
-        foreach (AVHWDeviceType type in HardwareDevice.PlatformPreferredTypes())
+        foreach (HardwareDeviceType type in HardwareDevice.PlatformPreferredTypes())
         {
-            if (!TryFindHwConfig(codec, type, out AVPixelFormat pixFmt))
+            if (!TryFindHwConfig(codec, (int)type, out int pixFmt))
                 continue;
             HardwareDevice? device = HardwareDevice.TryCreate(type);
             if (device is not null)
                 return (device, pixFmt);
         }
-        return (null, AVPixelFormat.None);
+        return (null, AvConst.PixFmtNone);
     }
 
     /// <summary>Scans the decoder's hardware configs for one that uses an attachable device context of the
     /// given type, yielding the GPU pixel format frames will carry.</summary>
-    private static bool TryFindHwConfig(Codec codec, AVHWDeviceType type, out AVPixelFormat pixFmt)
+    private static bool TryFindHwConfig(IntPtr codec, int type, out int pixFmt)
     {
-        AVCodec* codecPtr = (Codec?)codec;
         for (int i = 0; ; i++)
         {
-            AVCodecHWConfig* config = ffmpeg.avcodec_get_hw_config(codecPtr, i);
-            if (config is null)
+            IntPtr cfg = LibAv.avcodec_get_hw_config(codec, i);
+            if (cfg == IntPtr.Zero)
                 break;
-            if ((config->methods & HwConfigMethodDeviceCtx) != 0 && config->device_type == type)
+            var config = (AvCodecHwConfig*)cfg;
+            if ((config->methods & AvConst.HwConfigMethodDeviceCtx) != 0 && config->device_type == type)
             {
                 pixFmt = config->pix_fmt;
                 return true;
             }
         }
-        pixFmt = AVPixelFormat.None;
+        pixFmt = AvConst.PixFmtNone;
         return false;
     }
 
     /// <summary>Creates and opens the video decoder, attaching the hardware device + a <c>get_format</c> that
     /// selects the GPU pixel format when <paramref name="hw"/> is present.</summary>
-    private static CodecContext CreateDecoder(
-        Codec codec, MediaStream videoStream, IHardwareContext? hw, AVPixelFormat hwFmt,
-        out AVCodecContext_get_format? getFormat)
+    private static CodecContextHandle CreateDecoder(IntPtr codec, IntPtr codecpar, IHardwareContext? hw, int hwFmt)
     {
-        getFormat = null;
-        var decoder = new CodecContext(codec);
+        CodecContextHandle decoder = CodecContextHandle.Alloc(codec);
         try
         {
-            decoder.FillParameters(videoStream.Codecpar!);
+            decoder.ApplyParameters(codecpar);
 
             if (hw is not null)
             {
-                AVCodecContext* raw = decoder;
-                AVPixelFormat want = hwFmt;
-                var pick = new AVCodecContext_get_format((_, formats) => PickFormat(formats, want));
-                raw->get_format = pick;
-                raw->hw_device_ctx = ffmpeg.av_buffer_ref((AVBufferRef*)hw.DeviceContextRef);
-                getFormat = pick;
+                WantHwFormat[decoder.Ptr] = hwFmt;
+                decoder.GetFormat = (IntPtr)(delegate* unmanaged<IntPtr, int*, int>)&PickFormat;
+                decoder.HwDeviceCtx = LibAv.av_buffer_ref(hw.DeviceContextRef);
             }
 
-            decoder.Open();
+            decoder.Open(codec);
             return decoder;
         }
         catch
         {
+            WantHwFormat.TryRemove(decoder.Ptr, out _);
             decoder.Dispose();
             throw;
         }
     }
 
-    /// <summary>The decoder's <c>get_format</c> callback: pick the GPU format if offered, else the first
-    /// (software) format so decode still proceeds.</summary>
-    private static AVPixelFormat PickFormat(AVPixelFormat* formats, AVPixelFormat want)
+    /// <summary>The decoder's <c>get_format</c> callback (unmanaged): pick the GPU format if offered, else the
+    /// first (software) format so decode still proceeds. Reads the wanted format from <see cref="WantHwFormat"/>.</summary>
+    [UnmanagedCallersOnly]
+    private static int PickFormat(IntPtr ctx, int* formats)
     {
-        for (AVPixelFormat* p = formats; *p != AVPixelFormat.None; p++)
-        {
-            if (*p == want)
-                return want;
-        }
+        if (WantHwFormat.TryGetValue(ctx, out int want))
+            for (int* p = formats; *p != AvConst.PixFmtNone; p++)
+                if (*p == want)
+                    return want;
         return *formats;
     }
 
-    private static ProbedMediaInfo Probe(FormatContext format, MediaStream videoStream, CodecContext decoder)
+    private static ProbedMediaInfo Probe(FormatContextHandle format, IntPtr videoStream, CodecContextHandle decoder)
     {
-        Rational frameRate = ReadFrameRate(videoStream);
+        var st = (AvStream*)videoStream;
+        Rational frameRate = ReadFrameRate(st);
 
         Timecode duration = format.Duration > 0
-            ? MediaTime.FromMicroseconds(format.Duration)         // AV_TIME_BASE (µs) container duration
-            : videoStream.Duration > 0
-                ? MediaTime.ToTimecode(videoStream.Duration, videoStream.TimeBase)
+            ? MediaTime.FromMicroseconds(format.Duration)          // AV_TIME_BASE (µs) container duration
+            : st->duration > 0
+                ? MediaTime.ToTimecode(st->duration, st->time_base)
                 : Timecode.Zero;
 
-        MediaStream? audioStream = format.FindBestStreamOrNull(AVMediaType.Audio, -1, -1);
-        bool hasAudio = audioStream is not null;
+        bool hasAudio = format.TryFindBestStream(AvConst.MediaTypeAudio, out _, out IntPtr audioStream, out _);
         int sampleRate = 0, channels = 0;
-        if (audioStream is { } audio)
+        if (hasAudio)
         {
-            CodecParameters audioPar = audio.Codecpar!;
-            sampleRate = audioPar.SampleRate;
-            channels = audioPar.ChLayout.nb_channels;
+            var audioPar = (AvCodecParameters*)((AvStream*)audioStream)->codecpar;
+            sampleRate = audioPar->sample_rate;
+            channels = audioPar->ch_layout.nb_channels;
         }
 
         return new ProbedMediaInfo(
@@ -241,13 +229,13 @@ public sealed unsafe class MediaSource : IDisposable
     }
 
     /// <summary>Reads the video frame rate, preferring the average rate and falling back to the real base rate.</summary>
-    private static Rational ReadFrameRate(MediaStream videoStream)
+    private static Rational ReadFrameRate(AvStream* videoStream)
     {
-        AVRational avg = videoStream.AvgFrameRate;
+        AvRational avg = videoStream->avg_frame_rate;
         if (avg.Num > 0 && avg.Den > 0)
             return new Rational(avg.Num, avg.Den);
 
-        AVRational real = videoStream.RFrameRate;
+        AvRational real = videoStream->r_frame_rate;
         if (real.Num > 0 && real.Den > 0)
             return new Rational(real.Num, real.Den);
 
@@ -273,11 +261,11 @@ public sealed unsafe class MediaSource : IDisposable
                 continue;
             _discardBeforePts = MediaTime.NoPts;
 
-            if (!TryGetCpuFrame(out Frame? source))
+            if (!TryGetCpuFrame(out AvFrameHandle? source))
                 continue; // a failed GPU download — skip this frame rather than crash (§15)
 
             VideoFrame rgba = pool.Rent();
-            _converter.ConvertFrame(source, rgba.Native, SWS.Bilinear);
+            _converter.Convert(source, rgba.Native);
             rgba.Pts = pts == MediaTime.NoPts ? Timecode.Zero : MediaTime.ToTimecode(pts, _videoTimeBase);
             frame = rgba;
             return true;
@@ -289,16 +277,16 @@ public sealed unsafe class MediaSource : IDisposable
 
     /// <summary>Returns the CPU-side frame to convert: the decoded frame directly in software, or the GPU
     /// frame downloaded via <c>av_hwframe_transfer_data</c> when hardware decode produced a GPU frame.</summary>
-    private bool TryGetCpuFrame([NotNullWhen(true)] out Frame? source)
+    private bool TryGetCpuFrame([NotNullWhen(true)] out AvFrameHandle? source)
     {
-        if (_hwDevice is null || (AVPixelFormat)_yuv.Format != _hwPixelFormat)
+        if (_hwDevice is null || _yuv.Format != _hwPixelFormat)
         {
             source = _yuv; // software decode, or a per-frame software fallback the decoder chose
             return true;
         }
 
         _hwTransfer!.Unref(); // let the transfer allocate fresh download buffers / choose the CPU format
-        if (ffmpeg.av_hwframe_transfer_data(_hwTransfer, _yuv, 0) < 0)
+        if (LibAv.av_hwframe_transfer_data(_hwTransfer.Ptr, _yuv.Ptr, 0) < 0)
         {
             source = null;
             return false;
@@ -310,8 +298,7 @@ public sealed unsafe class MediaSource : IDisposable
     /// <summary>
     /// Seeks so the next <see cref="TryDecodeNextFrame"/> returns the frame at/just after <paramref name="target"/>:
     /// seek to the I-frame at or before the target, flush the decoder, then arm decode-to-target discard
-    /// (ARCHITECTURE.md §8 "seeking"). ("I-frame" = the codec GOP key picture; "keyframe" is reserved for the
-    /// animation sense, PLAN.md step 16d.)
+    /// (ARCHITECTURE.md §8 "seeking").
     /// </summary>
     public void SeekTo(Timecode target)
     {
@@ -319,9 +306,9 @@ public sealed unsafe class MediaSource : IDisposable
 
         long targetPts = MediaTime.ToStreamTimestamp(target, _videoTimeBase);
 
-        // AVSEEK_FLAG.Backward: land on the I-frame at or before the target so the GOP decodes cleanly.
-        _format.SeekFrame(targetPts, _videoIndex, AVSEEK_FLAG.Backward);
-        FlushDecoder();
+        // AVSEEK_FLAG_BACKWARD: land on the I-frame at or before the target so the GOP decodes cleanly.
+        _format.SeekFrame(targetPts, _videoIndex, AvConst.SeekBackward);
+        _decoder.FlushBuffers();
 
         _inputEof = false;
         _flushed = false;
@@ -339,12 +326,11 @@ public sealed unsafe class MediaSource : IDisposable
     {
         while (true)
         {
-            CodecResult result = _decoder.ReceiveFrame(_yuv);
-            switch (result)
+            switch (_decoder.ReceiveFrame(_yuv))
             {
                 case CodecResult.Success:
                     return true;
-                case CodecResult.EOF:
+                case CodecResult.Eof:
                     return false;
                 case CodecResult.Again:
                     if (!FeedDecoder())
@@ -371,7 +357,7 @@ public sealed unsafe class MediaSource : IDisposable
             return true;
         }
 
-        while (_format.ReadFrame(_packet) == CodecResult.Success)
+        while (_format.ReadFrame(_packet))
         {
             try
             {
@@ -392,11 +378,8 @@ public sealed unsafe class MediaSource : IDisposable
         return FeedDecoder();
     }
 
-    /// <summary>Resets decoder state after a seek so it does not emit pre-seek frames or stale references.</summary>
-    private void FlushDecoder() => ffmpeg.avcodec_flush_buffers(_decoder);
-
     /// <summary>The frame's presentation timestamp, preferring the best-effort estimate over the raw PTS.</summary>
-    private static long FramePts(Frame frame) =>
+    private static long FramePts(AvFrameHandle frame) =>
         frame.BestEffortTimestamp != MediaTime.NoPts ? frame.BestEffortTimestamp : frame.Pts;
 
     /// <summary>Closes the decoder and source. Pooled frames are owned by the pool, not by the source.</summary>
@@ -406,6 +389,7 @@ public sealed unsafe class MediaSource : IDisposable
             return;
         _disposed = true;
 
+        WantHwFormat.TryRemove(_decoder.Ptr, out _);
         _packet.Dispose();
         _yuv.Dispose();
         _hwTransfer?.Dispose();

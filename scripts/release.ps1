@@ -3,7 +3,7 @@
 # Sprocket release builder.
 #
 # Publishes the Sprocket.App editor as a self-contained, single-file executable for each target
-# runtime (Windows / Linux / macOS), bundles the matching FFmpeg 7 native libraries next to it, then
+# runtime (Windows / Linux / macOS), bundles the matching FFmpeg 8 native libraries next to it, then
 # zips each bundle into dist/. One managed build serves all three OSes; only the bundled native libs
 # differ per RID (ARCHITECTURE.md §11, §14).
 #
@@ -19,16 +19,20 @@
 # stamped into the published assemblies, the executable, and the artifact names. Bump major/minor by
 # hand in Directory.Build.props.
 #
-# FFmpeg natives (ARCHITECTURE.md §11) — the bindings need FFmpeg 7.1 shared libs at runtime, found
-# by the OS loader in the app directory (the app sets no RootPath). They are sourced per RID:
-#   * win-x64                  — embedded from the Sdcb.FFmpeg.runtime.windows-x64 NuGet during
-#                                publish (nothing to fetch).
+# FFmpeg natives (ARCHITECTURE.md §11) — Sprocket's hand-rolled binding needs FFmpeg 8 shared libs at
+# runtime (avcodec-62 / avutil-60 / avformat-62 / swscale-9 / swresample-6), found by the OS loader /
+# FFmpegLoader in the app directory. There is NO FFmpeg-8 runtime NuGet for any RID, so EVERY platform's
+# natives are fetched and bundled here:
+#   * win-x64 / win-arm64      — downloaded from BtbN FFmpeg-Builds (n8 *-gpl-shared), .dll set copied
+#                                next to the executable. (win-x64 is no longer embedded — the dormant
+#                                Sdcb.FFmpeg runtime NuGet was dropped in the FFmpeg-8 migration.)
 #   * linux-x64 / linux-arm64  — downloaded from BtbN FFmpeg-Builds (same source as
-#     / win-arm64                scripts/linux-check.sh) and copied next to the executable.
+#                                scripts/linux-check.sh) and copied next to the executable.
 #   * osx-x64 / osx-arm64      — no canonical automated shared-dylib build exists. Pass a URL to an
-#                                archive of FFmpeg 7.1 .dylib files via -OsxX64FFmpegUrl /
-#                                -OsxArm64FFmpegUrl to have them bundled; otherwise the macOS bundle
-#                                ships without FFmpeg and the script warns.
+#                                archive of FFmpeg 8 .dylib files via -OsxX64FFmpegUrl /
+#                                -OsxArm64FFmpegUrl to have them bundled; the script then rewrites their
+#                                install names to @loader_path (when run on macOS) so the bundle is
+#                                self-contained. Otherwise the macOS bundle ships without FFmpeg and warns.
 
 [CmdletBinding()]
 param(
@@ -61,7 +65,7 @@ param(
     # Skip bundling FFmpeg native libraries entirely.
     [switch] $NoFFmpeg,
 
-    # Optional archive URLs (.tar.xz / .zip) of FFmpeg 7.1 macOS .dylib files to bundle.
+    # Optional archive URLs (.tar.xz / .zip) of FFmpeg 8 macOS .dylib files to bundle.
     [string] $OsxX64FFmpegUrl,
     [string] $OsxArm64FFmpegUrl
 )
@@ -109,11 +113,13 @@ if (-not $Version) {
 # numeric AssemblyVersion/FileVersion still derive from the X.Y.Z prefix.
 $fullVersion = if ($VersionSuffix) { "$Version-$VersionSuffix" } else { $Version }
 
-# RID -> BtbN FFmpeg-Builds platform token for the *-gpl-shared archives.
+# RID -> BtbN FFmpeg-Builds platform token for the *-gpl-shared archives. Every Windows + Linux RID is
+# sourced here now (FFmpeg 8 has no runtime NuGet); macOS is caller-supplied via the -Osx*FFmpegUrl params.
 $btbnPlatform = @{
+    'win-x64'     = 'win64'
+    'win-arm64'   = 'winarm64'
     'linux-x64'   = 'linux64'
     'linux-arm64' = 'linuxarm64'
-    'win-arm64'   = 'winarm64'
 }
 
 # Resolve (once) the BtbN download URL for a platform token from the rolling "latest" release,
@@ -128,9 +134,9 @@ function Get-BtbnUrl([string] $platform) {
         $script:btbnAssets = $rel.assets
     }
     $asset = $script:btbnAssets |
-        Where-Object { $_.name -match "$platform-gpl-shared" -and $_.name -match 'n7\.' -and $_.name -notmatch '\.sha256$' } |
+        Where-Object { $_.name -match "$platform-gpl-shared" -and $_.name -match 'n8\.' -and $_.name -notmatch '\.sha256$' } |
         Select-Object -First 1
-    if (-not $asset) { throw "No BtbN FFmpeg 7 gpl-shared asset found for platform '$platform'." }
+    if (-not $asset) { throw "No BtbN FFmpeg 8 gpl-shared asset found for platform '$platform'." }
     return $asset.browser_download_url
 }
 
@@ -157,13 +163,38 @@ function Expand-RemoteArchive([string] $url, [string] $tag) {
     return $dest
 }
 
+# On macOS, rewrite each bundled dylib's install name (id) and its references to sibling FFmpeg dylibs
+# to @loader_path so the set loads from the app folder with no Homebrew/absolute paths — the structural
+# fix that lets a macOS bundle run with no user setup (ARCHITECTURE.md §11). Needs Apple's
+# install_name_tool + otool, so it only runs when they are present (i.e. building on macOS); elsewhere
+# it warns and leaves the dylibs as-is (they would still need DYLD_FALLBACK_LIBRARY_PATH to load).
+function Repair-MacosInstallNames([string] $publishDir, [string[]] $libNames) {
+    if (-not (Get-Command install_name_tool -ErrorAction SilentlyContinue) -or
+        -not (Get-Command otool -ErrorAction SilentlyContinue)) {
+        Write-Host "    [warn] install_name_tool/otool not found — macOS dylib install names NOT rewritten" -ForegroundColor Yellow
+        Write-Host "           to @loader_path. Run the macOS bundling step on a Mac for a self-contained app." -ForegroundColor Yellow
+        return
+    }
+    $set = [System.Collections.Generic.HashSet[string]]::new([string[]]$libNames)
+    foreach ($name in $libNames) {
+        $path = Join-Path $publishDir $name
+        & install_name_tool -id "@loader_path/$name" $path 2>$null
+        # Rewrite every dependency that points at one of our sibling dylibs to @loader_path.
+        foreach ($line in (& otool -L $path)) {
+            $dep = ($line.Trim() -split '\s+')[0]
+            if (-not $dep) { continue }
+            $depName = Split-Path -Leaf $dep
+            if ($set.Contains($depName) -and $dep -ne "@loader_path/$depName") {
+                & install_name_tool -change $dep "@loader_path/$depName" $path 2>$null
+            }
+        }
+    }
+    Write-Host "    rewrote $($libNames.Count) macOS dylib install names to @loader_path"
+}
+
 # Bundle FFmpeg natives into a freshly published RID folder. Returns $true if libs were placed.
 function Add-FFmpegNatives([string] $rid, [string] $publishDir) {
-    if ($rid -eq 'win-x64') {
-        return $true   # embedded from the Sdcb NuGet during publish
-    }
-
-    # Resolve the download URL: BtbN for Linux/Win-arm64, caller-supplied for macOS.
+    # Resolve the download URL: BtbN for every Windows/Linux RID, caller-supplied for macOS.
     $url = $null
     if ($btbnPlatform.ContainsKey($rid)) {
         $url = Get-BtbnUrl $btbnPlatform[$rid]
@@ -185,6 +216,10 @@ function Add-FFmpegNatives([string] $rid, [string] $publishDir) {
         Copy-Item $lib.FullName -Destination (Join-Path $publishDir $lib.Name) -Force
     }
     Write-Host "    bundled $($libs.Count) FFmpeg libs into $rid"
+
+    if ($rid -like 'osx-*') {
+        Repair-MacosInstallNames $publishDir ($libs | ForEach-Object { $_.Name })
+    }
     return $true
 }
 
@@ -238,7 +273,7 @@ foreach ($rid in $Rids) {
     }
     if (-not $hasFFmpeg) {
         Write-Host "    [warn] $rid ships without FFmpeg natives — decode will not work until the" -ForegroundColor Yellow
-        Write-Host "           FFmpeg 7.1 .dylib files are placed next to the executable. Re-run with" -ForegroundColor Yellow
+        Write-Host "           FFmpeg 8 .dylib files are placed next to the executable. Re-run with" -ForegroundColor Yellow
         Write-Host "           -OsxX64FFmpegUrl / -OsxArm64FFmpegUrl to bundle them (ARCHITECTURE.md §11)." -ForegroundColor Yellow
     }
 

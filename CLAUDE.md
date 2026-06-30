@@ -43,10 +43,14 @@ dotnet run --project src/Sprocket.App [path/to/media.mp4]
 bash scripts/linux-check.sh
 ```
 
-**`ffmpeg` CLI must be on PATH** to run `Sprocket.Media.Tests` / `Sprocket.Audio.Tests`: they
-generate a deterministic fixture clip once via the `ffmpeg` command (see `TestVideo.cs`), cached in
-the test output dir. The decode tests force the `win-x64` RID on Windows so the Sdcb FFmpeg natives
-land in the output.
+**`ffmpeg` CLI must be on PATH** to run `Sprocket.Media.Tests` / `Sprocket.Audio.Tests` /
+`Sprocket.Export.Tests` / `Sprocket.Playback.Tests`: they generate a deterministic fixture clip once via
+the `ffmpeg` command (see `TestVideo.cs`), cached in the test output dir. They also need **FFmpeg 8**
+shared natives at runtime — set **`SPROCKET_FFMPEG8_DIR`** to the `bin` (Windows) / `lib` (Linux/macOS)
+of an extracted FFmpeg 8 build (BtbN `*-gpl-shared`); `Sprocket.Media`'s `FFmpegLoader` DllImport resolver
+loads them from there (and preloads in dependency order). The decode tests keep the `win-x64` RID on
+Windows for a stable output layout (there is no longer a transitive native NuGet to land). Pointing the
+FFmpeg-8 `bin` onto PATH satisfies both the CLI fixture step and native resolution at once.
 
 Tests are **xUnit**. There is no separate lint step; `Sprocket.Core` and `Sprocket.Media` build with
 `TreatWarningsAsErrors=true`, so warnings break the build there.
@@ -80,10 +84,13 @@ Sprocket.App ──► Sprocket.Playback ──► Sprocket.Render ──► Spr
   the **seam interfaces** everyone else implements: `IFrameSource`/`IVideoCompositor` (video),
   `IPcmReader` (audio PCM pull), `IClock`/`IMasterClock` (transport). Keep native/GPU/FFmpeg types
   out of Core.
-- **`Sprocket.Media`** — Sdcb.FFmpeg interop: `MediaSource` (probe/decode/seek), `AudioSource`
-  (`IPcmReader`, resamples to project rate via libswresample), `VideoFramePool`, `VideoDecodeRing`
-  (one worker → bounded `Channel<>`), `HardwareContext` (hw-accel decode behind `IHardwareContext`,
-  always with software fallback). **No SkiaSharp/UI** — pixels stay native.
+- **`Sprocket.Media`** — FFmpeg 8 interop via Sprocket's **own hand-rolled `[LibraryImport]` binding**
+  (`Native/LibAv.cs` + explicit-layout `Native/AvStructs.cs`, behind a thin RAII layer `Native/Handles.cs`
+  / `SwsScaler` / `SwrResampler`; chosen by the Phase-0 spike — no external FFmpeg NuGet): `MediaSource`
+  (probe/decode/seek), `AudioSource` (`IPcmReader`, resamples to project rate via libswresample),
+  `VideoFramePool`, `VideoDecodeRing` (one worker → bounded `Channel<>`), `HardwareContext` (hw-accel
+  decode behind `IHardwareContext`, always with software fallback). `FFmpegLoader` resolves/loads the
+  FFmpeg 8 natives and **version-guards** to libavcodec major 62. **No SkiaSharp/UI** — pixels stay native.
 - **`Sprocket.Audio`** — `AudioMixer`, `AudioEngine` (the **master clock**), `OpenAlAudioOutput`
   behind `IAudioOutput`. **Depends only on Core, not Media** — the FFmpeg audio decode lives in
   Media and is wired to the mixer by the `Sprocket.App` composition root, keeping the mixer/clock
@@ -122,7 +129,17 @@ Cross-cutting design facts that aren't obvious from any one file:
 
 Versions were verified together by the spike (ARCHITECTURE §14). In particular **SkiaSharp is
 pinned to 3.119.4 to match Avalonia 12.0.5's transitive SkiaSharp** — a newer SkiaSharp loads a
-second, incompatible Skia assembly and the GPU lease's types stop matching. Avalonia 12.0.5,
-Sdcb.FFmpeg 7.0.0 + runtime 7.1.0 (FFmpeg 7.1), Silk.NET.OpenAL 2.23 round out the locked stack.
-On Linux/macOS there is **no Sdcb.FFmpeg runtime NuGet** — FFmpeg 7 `.so`/`.dylib` files must be
-bundled per RID (§11).
+second, incompatible Skia assembly and the GPU lease's types stop matching. Avalonia 12.0.5 and
+Silk.NET.OpenAL 2.23 round out the locked stack.
+
+**FFmpeg 8 via a hand-rolled binding (migrated off the dormant Sdcb.FFmpeg 2026-06-29).** `Sprocket.Media`
+P/Invokes FFmpeg directly (`Native/LibAv.cs`); there is **no FFmpeg binding NuGet and no FFmpeg runtime
+NuGet for any RID**. The FFmpeg 8 shared natives (avcodec-62 / avutil-60 / avformat-62 / swscale-9 /
+swresample-6) are bundled **per-RID for every platform** by `scripts/release.ps1` (BtbN `*-gpl-shared`),
+and in dev/test resolved from `%SPROCKET_FFMPEG8_DIR%`. The explicit struct offsets in `Native/AvStructs.cs`
+are pinned to FFmpeg 8.1's x64 layout (`FFmpegLoader` enforces libavcodec major 62); regen the offsets
+only on a new FFmpeg **major** (SONAME bump) — the procedure (and the decision record) is in
+`Native/SPIKE_RESULTS.md`, and `Native/FUTURE_BINDINGS.md` lists the surface later PLAN steps add. The
+three-arm decision spike (`Sprocket.Spike.Bindings`, FFmpeg.AutoGen + Flyleaf) was removed post-migration
+to keep dev-only NuGets out of the tree; it lives in git history on the `ffmpeg8-migration` branch.
+**Do not reintroduce Sdcb.FFmpeg** (it never shipped FFmpeg 8).

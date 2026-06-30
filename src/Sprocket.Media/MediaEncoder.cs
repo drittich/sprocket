@@ -1,10 +1,5 @@
-using System.Runtime.InteropServices;
-using Sdcb.FFmpeg.Codecs;
-using Sdcb.FFmpeg.Formats;
-using Sdcb.FFmpeg.Raw;
-using Sdcb.FFmpeg.Swscales;
-using Sdcb.FFmpeg.Utils;
 using Sprocket.Core.Timing;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
@@ -33,50 +28,56 @@ public readonly record struct AudioEncoderSettings(int SampleRate, int Channels,
 /// uses the software <c>libx264</c>/native AAC encoders (hardware encode — <c>h264_nvenc</c> etc. — is a later
 /// addition behind the same shape, §11). Video frames are converted RGBA → yuv420p with swscale; audio is
 /// deinterleaved flt → fltp with swresample, both at write time.</para>
-/// <para>Packets from the two encoders are interleaved by the muxer (<c>InterleavedWritePacket</c>); the caller
-/// feeds frames in roughly timeline order (see the exporter) so the interleave stays within the muxer's buffer.
+/// <para>Packets from the two encoders are interleaved by the muxer (<c>av_interleaved_write_frame</c>); the
+/// caller feeds frames in roughly timeline order so the interleave stays within the muxer's buffer.
 /// Call <see cref="Finish"/> exactly once to flush both encoders and write the trailer before disposal.</para>
 /// </remarks>
 public sealed unsafe class MediaEncoder : IDisposable
 {
     private const long DefaultAudioBitRate = 192_000;
 
-    private readonly FormatContext _format;
+    private readonly FormatContextHandle _format;
 
     // Video
-    private readonly CodecContext _videoEncoder;
-    private readonly MediaStream _videoStream;
-    private readonly VideoFrameConverter _converter = new();
-    private readonly Frame _rgbaFrame;   // staging: incoming RGBA copied here, then swscaled to yuv
-    private readonly Frame _yuvFrame;    // swscale destination + encoder input
+    private readonly CodecContextHandle _videoEncoder;
+    private readonly IntPtr _videoStream;        // AVStream* — time_base/index read LIVE (post-WriteHeader)
+    private readonly AvRational _videoEncTimeBase;
+    private readonly SwsScaler _converter = new();
+    private readonly AvFrameHandle _rgbaFrame;   // staging: incoming RGBA copied here, then swscaled to yuv
+    private readonly AvFrameHandle _yuvFrame;    // swscale destination + encoder input
     private readonly int _width;
     private readonly int _height;
 
     // Audio (optional)
-    private readonly CodecContext? _audioEncoder;
-    private readonly MediaStream _audioStream;
-    private readonly Frame? _audioFrame;          // fltp encoder input (deinterleaved)
-    private SwrContext* _swr;                       // flt (interleaved) → fltp (planar), same rate
+    private readonly CodecContextHandle? _audioEncoder;
+    private readonly IntPtr _audioStream;        // AVStream*
+    private readonly AvRational _audioEncTimeBase;
+    private readonly AvFrameHandle? _audioFrame;     // fltp encoder input (deinterleaved)
+    private readonly SwrResampler? _swr;             // flt (interleaved) → fltp (planar), same rate
     private readonly int _channels;
 
-    private readonly Packet _packet = new();
+    private readonly AvPacketHandle _packet = new();
     private bool _finished;
     private bool _disposed;
 
     private MediaEncoder(
-        FormatContext format,
-        CodecContext videoEncoder, MediaStream videoStream, Frame rgbaFrame, Frame yuvFrame,
-        CodecContext? audioEncoder, MediaStream audioStream, Frame? audioFrame, SwrContext* swr, int channels)
+        FormatContextHandle format,
+        CodecContextHandle videoEncoder, IntPtr videoStream,
+        AvFrameHandle rgbaFrame, AvFrameHandle yuvFrame,
+        CodecContextHandle? audioEncoder, IntPtr audioStream,
+        AvFrameHandle? audioFrame, SwrResampler? swr, int channels)
     {
         _format = format;
         _videoEncoder = videoEncoder;
         _videoStream = videoStream;
+        _videoEncTimeBase = videoEncoder.TimeBase;
         _rgbaFrame = rgbaFrame;
         _yuvFrame = yuvFrame;
         _width = videoEncoder.Width;
         _height = videoEncoder.Height;
         _audioEncoder = audioEncoder;
         _audioStream = audioStream;
+        _audioEncTimeBase = audioEncoder?.TimeBase ?? default;
         _audioFrame = audioFrame;
         _swr = swr;
         _channels = channels;
@@ -90,7 +91,7 @@ public sealed unsafe class MediaEncoder : IDisposable
     public int AudioFrameSize { get; private set; }
 
     /// <summary>The hardware/software encoder name actually engaged for video (e.g. <c>"libx264"</c>).</summary>
-    public string VideoEncoderName => _videoEncoder.Codec.Name;
+    public string VideoEncoderName => _videoEncoder.CodecName;
 
     /// <summary>
     /// Creates an MP4 encoder at <paramref name="path"/> with an H.264 video stream and, when
@@ -109,30 +110,35 @@ public sealed unsafe class MediaEncoder : IDisposable
         if (video.FrameRate.Num <= 0 || video.FrameRate.Den <= 0)
             throw new ArgumentOutOfRangeException(nameof(video), "Output frame rate must be positive.");
 
-        FormatContext format = FormatContext.AllocOutput(fileName: path);
+        FFmpegLoader.EnsureBundledNativesLoaded();
+
+        FormatContextHandle format = FormatContextHandle.AllocOutput(path);
         try
         {
-            bool globalHeader = format.OutputFormat!.Value.Flags.HasFlag(AVFMT.Globalheader);
+            bool globalHeader = (format.OutputFlags & AvConst.FmtGlobalHeader) != 0;
+            bool noFile = (format.OutputFlags & AvConst.FmtNoFile) != 0;
 
-            (CodecContext videoEncoder, MediaStream videoStream, Frame rgbaFrame, Frame yuvFrame) =
+            (CodecContextHandle videoEncoder, IntPtr videoStream, AvFrameHandle rgbaFrame, AvFrameHandle yuvFrame) =
                 OpenVideo(format, video, globalHeader);
 
-            CodecContext? audioEncoder = null;
-            MediaStream audioStream = default;
-            Frame? audioFrame = null;
-            SwrContext* swr = null;
+            CodecContextHandle? audioEncoder = null;
+            IntPtr audioStream = IntPtr.Zero;
+            AvFrameHandle? audioFrame = null;
+            SwrResampler? swr = null;
             int channels = 0;
             int audioFrameSize = 0;
             if (audio is { } a)
             {
-                (audioEncoder, audioStream, audioFrame, nint swrPtr, audioFrameSize) = OpenAudio(format, a, globalHeader);
-                swr = (SwrContext*)swrPtr;
+                (audioEncoder, audioStream, audioFrame, swr, audioFrameSize) = OpenAudio(format, a, globalHeader);
                 channels = a.Channels;
             }
 
-            // Open the output file (unless the muxer is file-less) and write the container header.
-            if (!format.OutputFormat!.Value.Flags.HasFlag(AVFMT.Nofile))
-                format.Pb = IOContext.OpenWrite(path);
+            // Open the output file (unless the muxer is file-less) and write the container header. NOTE:
+            // avformat_write_header may rewrite each stream's time_base (the MP4 muxer picks its own
+            // timescale), so packet timestamps must be rescaled to the LIVE stream time_base read after
+            // this call — see DrainPackets.
+            if (!noFile)
+                format.OpenOutputFile(path);
             format.WriteHeader();
 
             return new MediaEncoder(
@@ -149,103 +155,86 @@ public sealed unsafe class MediaEncoder : IDisposable
         }
     }
 
-    private static (CodecContext, MediaStream, Frame rgba, Frame yuv) OpenVideo(
-        FormatContext format, VideoEncoderSettings v, bool globalHeader)
+    private static (CodecContextHandle, IntPtr stream, AvFrameHandle rgba, AvFrameHandle yuv) OpenVideo(
+        FormatContextHandle format, VideoEncoderSettings v, bool globalHeader)
     {
-        Codec codec = Codec.FindEncoderByName("libx264")
-            ?? Codec.FindEncoderById(AVCodecID.H264);
+        IntPtr codec = LibAv.avcodec_find_encoder_by_name("libx264");
+        if (codec == IntPtr.Zero) codec = LibAv.avcodec_find_encoder(AvConst.CodecIdH264);
+        if (codec == IntPtr.Zero) throw new FFmpegException("avcodec_find_encoder(H264)", 0, "no H.264 encoder available");
 
-        var encoder = new CodecContext(codec)
-        {
-            Width = v.Width,
-            Height = v.Height,
-            PixelFormat = AVPixelFormat.Yuv420p,
-            // Time base = 1/fps so a frame's PTS is simply its frame index.
-            TimeBase = new AVRational(v.FrameRate.Den, v.FrameRate.Num),
-            Framerate = new AVRational(v.FrameRate.Num, v.FrameRate.Den),
-        };
-        if (v.BitRate > 0)
-            encoder.BitRate = v.BitRate;
-        if (v.GopSize > 0)
-            encoder.GopSize = v.GopSize;
-        if (globalHeader)
-            encoder.Flags |= AV_CODEC_FLAG.GlobalHeader;
+        CodecContextHandle encoder = CodecContextHandle.Alloc(codec);
+        encoder.Width = v.Width;
+        encoder.Height = v.Height;
+        encoder.PixFmt = AvConst.PixFmtYuv420p;
+        // Time base = 1/fps so a frame's PTS is simply its frame index.
+        encoder.TimeBase = new AvRational(v.FrameRate.Den, v.FrameRate.Num);
+        encoder.Framerate = new AvRational(v.FrameRate.Num, v.FrameRate.Den);
+        if (v.BitRate > 0) encoder.BitRate = v.BitRate;
+        if (v.GopSize > 0) encoder.GopSize = v.GopSize;
+        if (globalHeader) encoder.Flags |= AvConst.CodecFlagGlobalHeader;
 
         // CRF/preset drive quality when no explicit bitrate is set; deterministic for golden-frame tests.
-        using var options = new MediaDictionary();
-        if (v.BitRate <= 0)
-            options["crf"] = "20";
-        options["preset"] = "medium";
+        IntPtr options = IntPtr.Zero;
+        if (v.BitRate <= 0) LibAv.av_dict_set(ref options, "crf", "20", 0);
+        LibAv.av_dict_set(ref options, "preset", "medium", 0);
         encoder.Open(codec, options);
 
-        MediaStream stream = format.NewStream(codec);
-        stream.Codecpar!.CopyFrom(encoder);
-        stream.TimeBase = encoder.TimeBase;
+        IntPtr stream = format.NewStream(codec);
+        var st = (AvStream*)stream;
+        encoder.ParametersToStream(st->codecpar);
+        st->time_base = encoder.TimeBase;
 
-        var rgba = Frame.CreateVideo(v.Width, v.Height, AVPixelFormat.Rgba);
-        rgba.EnsureBuffer(align: 4);
-        var yuv = Frame.CreateVideo(v.Width, v.Height, AVPixelFormat.Yuv420p);
-        yuv.EnsureBuffer(align: 32);
+        AvFrameHandle rgba = AvFrameHandle.CreateVideo(v.Width, v.Height, AvConst.PixFmtRgba, align: 4);
+        AvFrameHandle yuv = AvFrameHandle.CreateVideo(v.Width, v.Height, AvConst.PixFmtYuv420p, align: 32);
         return (encoder, stream, rgba, yuv);
     }
 
-    private static (CodecContext, MediaStream, Frame, nint swr, int frameSize) OpenAudio(
-        FormatContext format, AudioEncoderSettings a, bool globalHeader)
+    private static (CodecContextHandle, IntPtr stream, AvFrameHandle, SwrResampler, int frameSize) OpenAudio(
+        FormatContextHandle format, AudioEncoderSettings a, bool globalHeader)
     {
         if (a.SampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(a), "Audio sample rate must be positive.");
         if (a.Channels <= 0) throw new ArgumentOutOfRangeException(nameof(a), "Audio channel count must be positive.");
 
-        Codec codec = Codec.FindEncoderById(AVCodecID.Aac);
+        IntPtr codec = LibAv.avcodec_find_encoder(AvConst.CodecIdAac);
+        if (codec == IntPtr.Zero) throw new FFmpegException("avcodec_find_encoder(AAC)", 0, "no AAC encoder available");
 
-        AVChannelLayout layout;
-        ffmpeg.av_channel_layout_default(&layout, a.Channels);
-
-        var encoder = new CodecContext(codec)
-        {
-            SampleFormat = AVSampleFormat.Fltp,   // AAC encodes planar float
-            SampleRate = a.SampleRate,
-            ChLayout = layout,
-            BitRate = a.BitRate > 0 ? a.BitRate : DefaultAudioBitRate,
-            TimeBase = new AVRational(1, a.SampleRate),
-        };
-        if (globalHeader)
-            encoder.Flags |= AV_CODEC_FLAG.GlobalHeader;
-
+        AvChannelLayout layout = default;
+        LibAv.av_channel_layout_default(&layout, a.Channels);
         try
         {
+            CodecContextHandle encoder = CodecContextHandle.Alloc(codec);
+            encoder.SampleFmt = AvConst.SampleFmtFltp;   // AAC encodes planar float
+            encoder.SampleRate = a.SampleRate;
+            LibAv.av_channel_layout_copy(encoder.ChLayout, &layout);
+            encoder.BitRate = a.BitRate > 0 ? a.BitRate : DefaultAudioBitRate;
+            encoder.TimeBase = new AvRational(1, a.SampleRate);
+            if (globalHeader) encoder.Flags |= AvConst.CodecFlagGlobalHeader;
             encoder.Open(codec);
 
-            MediaStream stream = format.NewStream(codec);
-            stream.Codecpar!.CopyFrom(encoder);
-            stream.TimeBase = encoder.TimeBase;
+            IntPtr stream = format.NewStream(codec);
+            var ast = (AvStream*)stream;
+            encoder.ParametersToStream(ast->codecpar);
+            ast->time_base = encoder.TimeBase;
 
             // Some encoders report frame size 0 (any size accepted); use a standard AAC frame then.
             int frameSize = encoder.FrameSize > 0 ? encoder.FrameSize : 1024;
 
-            var frame = Frame.CreateAudio(AVSampleFormat.Fltp, layout, a.SampleRate, frameSize);
-            frame.EnsureBuffer(align: 0);
+            var frame = new AvFrameHandle();
+            frame.Format = AvConst.SampleFmtFltp;
+            LibAv.av_channel_layout_copy(frame.ChLayout, &layout);
+            frame.SampleRate = a.SampleRate;
+            frame.NbSamples = frameSize;
+            frame.GetBuffer(0);
 
             // Resampler only deinterleaves flt → fltp (same rate/layout); swr_convert returns samples 1:1.
-            SwrContext* swr = null;
-            AVChannelLayout inLayout = layout, outLayout = layout;
-            int rc = ffmpeg.swr_alloc_set_opts2(
-                &swr,
-                &outLayout, AVSampleFormat.Fltp, a.SampleRate,
-                &inLayout, AVSampleFormat.Flt, a.SampleRate,
-                0, null);
-            if (rc < 0 || swr is null || ffmpeg.swr_init(swr) < 0)
-            {
-                if (swr is not null) ffmpeg.swr_free(&swr);
-                throw new InvalidOperationException("Failed to initialise the audio export resampler.");
-            }
+            var swr = new SwrResampler();
+            swr.Configure(&layout, AvConst.SampleFmtFltp, a.SampleRate, &layout, AvConst.SampleFmtFlt, a.SampleRate);
 
-            ffmpeg.av_channel_layout_uninit(&layout);
-            return (encoder, stream, frame, (nint)swr, frameSize);
+            return (encoder, stream, frame, swr, frameSize);
         }
-        catch
+        finally
         {
-            ffmpeg.av_channel_layout_uninit(&layout);
-            throw;
+            LibAv.av_channel_layout_uninit(&layout);
         }
     }
 
@@ -265,19 +254,19 @@ public sealed unsafe class MediaEncoder : IDisposable
         CopyRgbaIntoFrame(rgbaPixels, rowBytes);
 
         _yuvFrame.MakeWritable();
-        _converter.ConvertFrame(_rgbaFrame, _yuvFrame, SWS.Bilinear);
+        _converter.Convert(_rgbaFrame, _yuvFrame);
         _yuvFrame.Pts = frameIndex;
 
         _videoEncoder.SendFrame(_yuvFrame);
-        DrainPackets(_videoEncoder, _videoStream);
+        DrainPackets(_videoEncoder, _videoStream, _videoEncTimeBase);
     }
 
     /// <summary>Copies the incoming RGBA pixels (which may have a wider stride than the frame) into the staging
     /// frame's native buffer row by row — a native→native copy, allowed on the throughput-bound export path.</summary>
     private void CopyRgbaIntoFrame(nint rgbaPixels, int rowBytes)
     {
-        byte* dst = (byte*)_rgbaFrame.Data[0];
-        int dstStride = _rgbaFrame.Linesize[0];
+        byte* dst = (byte*)_rgbaFrame.Data(0);
+        int dstStride = _rgbaFrame.Linesize(0);
         var src = (byte*)rgbaPixels;
         int copyBytes = Math.Min(rowBytes, dstStride);
         for (int y = 0; y < _height; y++)
@@ -292,7 +281,7 @@ public sealed unsafe class MediaEncoder : IDisposable
     public void WriteAudioFrame(ReadOnlySpan<float> interleaved, long startSampleIndex)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_audioEncoder is null || _audioFrame is null)
+        if (_audioEncoder is null || _audioFrame is null || _swr is null)
             throw new InvalidOperationException("This encoder has no audio stream.");
         if (interleaved.Length == 0)
             return;
@@ -304,20 +293,20 @@ public sealed unsafe class MediaEncoder : IDisposable
 
         fixed (float* inPtr = interleaved)
         {
-            byte_ptrArray8 inPlanes = default;
-            inPlanes[0] = (nint)inPtr;
-            byte_ptrArray8 outPlanes = default;
+            byte** inPlanes = stackalloc byte*[8];
+            inPlanes[0] = (byte*)inPtr;
+            byte** outPlanes = stackalloc byte*[8];
             for (int ch = 0; ch < _channels; ch++)
-                outPlanes[ch] = _audioFrame.Data[ch];
+                outPlanes[ch] = (byte*)_audioFrame.Data(ch);
 
-            int got = ffmpeg.swr_convert(_swr, (byte**)&outPlanes, samples, (byte**)&inPlanes, samples);
+            int got = _swr.Convert(outPlanes, samples, inPlanes, samples);
             if (got < 0)
                 throw new InvalidOperationException("Audio resample (deinterleave) failed during export.");
             _audioFrame.NbSamples = got;
         }
 
         _audioEncoder.SendFrame(_audioFrame);
-        DrainPackets(_audioEncoder, _audioStream);
+        DrainPackets(_audioEncoder, _audioStream, _audioEncTimeBase);
     }
 
     /// <summary>Flushes both encoders (drains buffered packets) and writes the container trailer. Idempotent.</summary>
@@ -329,30 +318,29 @@ public sealed unsafe class MediaEncoder : IDisposable
         _finished = true;
 
         _videoEncoder.SendFrame(null);
-        DrainPackets(_videoEncoder, _videoStream);
+        DrainPackets(_videoEncoder, _videoStream, _videoEncTimeBase);
 
         if (_audioEncoder is not null)
         {
             _audioEncoder.SendFrame(null);
-            DrainPackets(_audioEncoder, _audioStream);
+            DrainPackets(_audioEncoder, _audioStream, _audioEncTimeBase);
         }
 
         _format.WriteTrailer();
     }
 
-    /// <summary>Pulls every ready packet out of <paramref name="encoder"/>, stamps it for <paramref name="stream"/>,
-    /// and interleaves it into the muxer. Stops at <c>Again</c> (needs more input) or <c>EOF</c> (flushed).</summary>
-    private void DrainPackets(CodecContext encoder, MediaStream stream)
+    /// <summary>Pulls every ready packet out of <paramref name="encoder"/>, stamps it for the stream, and
+    /// interleaves it into the muxer. Stops at <c>Again</c> (needs more input) or <c>EOF</c> (flushed).
+    /// Reads the stream index + time_base LIVE from the AVStream — the muxer may have rewritten the
+    /// time_base in <c>avformat_write_header</c>, so the pre-header value would be wrong.</summary>
+    private void DrainPackets(CodecContextHandle encoder, IntPtr streamPtr, AvRational encTimeBase)
     {
-        while (true)
+        var st = (AvStream*)streamPtr;
+        while (encoder.ReceivePacket(_packet) == CodecResult.Success)
         {
-            CodecResult result = encoder.ReceivePacket(_packet);
-            if (result != CodecResult.Success)
-                return; // Again → needs more input; EOF → fully flushed
-
-            _packet.StreamIndex = stream.Index;
-            _packet.RescaleTimestamp(encoder.TimeBase, stream.TimeBase);
-            _format.InterleavedWritePacket(_packet); // takes ownership and unrefs the packet
+            _packet.StreamIndex = st->index;
+            _packet.RescaleTs(encTimeBase, st->time_base);
+            _format.InterleavedWriteFrame(_packet); // takes ownership and unrefs the packet
         }
     }
 
@@ -371,14 +359,8 @@ public sealed unsafe class MediaEncoder : IDisposable
 
         _audioFrame?.Dispose();
         _audioEncoder?.Dispose();
-        if (_swr is not null)
-        {
-            SwrContext* swr = _swr;
-            ffmpeg.swr_free(&swr);
-            _swr = null;
-        }
+        _swr?.Dispose();
 
-        _format.Pb?.Dispose();
         _format.Dispose();
     }
 }

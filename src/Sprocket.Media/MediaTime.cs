@@ -1,5 +1,5 @@
-using Sdcb.FFmpeg.Raw;
 using Sprocket.Core.Timing;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
@@ -23,7 +23,7 @@ internal static class MediaTime
     /// Converts a stream timestamp (<paramref name="pts"/>, in <paramref name="timeBase"/> units) to a
     /// <see cref="Timecode"/>. Rounds to the nearest tick.
     /// </summary>
-    public static Timecode ToTimecode(long pts, AVRational timeBase)
+    public static Timecode ToTimecode(long pts, AvRational timeBase)
     {
         // ticks = pts * (num/den) seconds * TicksPerSecond = pts * num * TicksPerSecond / den
         Int128 numerator = (Int128)pts * timeBase.Num * Timecode.TicksPerSecond;
@@ -34,7 +34,7 @@ internal static class MediaTime
     /// Converts a <see cref="Timecode"/> to a stream timestamp in <paramref name="timeBase"/> units
     /// (for seeking). Rounds to the nearest unit; never returns negative.
     /// </summary>
-    public static long ToStreamTimestamp(Timecode time, AVRational timeBase)
+    public static long ToStreamTimestamp(Timecode time, AvRational timeBase)
     {
         // pts = ticks/TicksPerSecond seconds / (num/den) = ticks * den / (TicksPerSecond * num)
         Int128 numerator = (Int128)time.Ticks * timeBase.Den;

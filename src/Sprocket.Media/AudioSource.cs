@@ -1,18 +1,15 @@
 using System.Runtime.InteropServices;
-using Sdcb.FFmpeg.Codecs;
-using Sdcb.FFmpeg.Formats;
-using Sdcb.FFmpeg.Raw;
-using Sdcb.FFmpeg.Utils;
 using Sprocket.Core.Audio;
 using Sprocket.Core.Timing;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
 /// <summary>
-/// Opens one source file's audio stream with library-level FFmpeg, decodes it, and resamples it to
-/// <b>interleaved float32 at a target sample rate and channel count</b> via libswresample — implementing
-/// <see cref="IPcmReader"/> so the mixer (Sprocket.Audio) only ever sums uniform buffers (ARCHITECTURE.md
-/// §6, §11). Resampling happens here, once at decode, exactly as the architecture prescribes.
+/// Opens one source file's audio stream with the hand-rolled FFmpeg 8 binding, decodes it, and resamples
+/// it to <b>interleaved float32 at a target sample rate and channel count</b> via libswresample —
+/// implementing <see cref="IPcmReader"/> so the mixer (Sprocket.Audio) only ever sums uniform buffers
+/// (ARCHITECTURE.md §6, §11). Resampling happens here, once at decode, exactly as the architecture prescribes.
 /// </summary>
 /// <remarks>
 /// <para><b>Not thread-safe</b> (like <see cref="MediaSource"/>): one decoder + reusable frame/packet, driven
@@ -23,19 +20,19 @@ namespace Sprocket.Media;
 /// </remarks>
 public sealed unsafe class AudioSource : IPcmReader
 {
-    private readonly FormatContext _format;
-    private readonly CodecContext _decoder;
+    private readonly FormatContextHandle _format;
+    private readonly CodecContextHandle _decoder;
     private readonly int _audioIndex;
-    private readonly AVRational _timeBase;
-    private readonly Packet _packet = new();
-    private readonly Frame _srcFrame = new();        // reusable decoder output (source format/layout)
-    private SwrContext* _swr;
+    private readonly AvRational _timeBase;
+    private readonly AvPacketHandle _packet = new();
+    private readonly AvFrameHandle _srcFrame = new();   // reusable decoder output (source format/layout)
+    private readonly SwrResampler _swr = new();
 
-    private nint _scratch;                            // native interleaved-float resample destination
-    private int _scratchFrames;                       // capacity of _scratch in sample-frames
-    private float[] _leftover = [];                   // resampled samples not yet returned (interleaved)
-    private int _leftoverOffset;                      // read cursor into _leftover, in floats
-    private int _leftoverCount;                        // valid floats in _leftover from the cursor
+    private nint _scratch;                               // native interleaved-float resample destination
+    private int _scratchFrames;                          // capacity of _scratch in sample-frames
+    private float[] _leftover = [];                      // resampled samples not yet returned (interleaved)
+    private int _leftoverOffset;                         // read cursor into _leftover, in floats
+    private int _leftoverCount;                          // valid floats in _leftover from the cursor
 
     private bool _inputEof;       // ReadFrame returned no more packets
     private bool _packetFlushed;  // sent the end-of-stream flush packet to the decoder
@@ -48,12 +45,12 @@ public sealed unsafe class AudioSource : IPcmReader
 
     private bool _disposed;
 
-    private AudioSource(FormatContext format, CodecContext decoder, MediaStream audioStream, int sampleRate, int channels)
+    private AudioSource(FormatContextHandle format, CodecContextHandle decoder, int audioIndex, AvRational timeBase, int sampleRate, int channels)
     {
         _format = format;
         _decoder = decoder;
-        _audioIndex = audioStream.Index;
-        _timeBase = audioStream.TimeBase;
+        _audioIndex = audioIndex;
+        _timeBase = timeBase;
         SampleRate = sampleRate;
         Channels = channels;
         InitResampler();
@@ -76,21 +73,29 @@ public sealed unsafe class AudioSource : IPcmReader
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
 
-        FormatContext format = FormatContext.OpenInputUrl(path);
+        FFmpegLoader.EnsureBundledNativesLoaded();
+
+        FormatContextHandle format = FormatContextHandle.OpenInput(path);
         try
         {
-            format.LoadStreamInfo();
-
-            MediaStream? audioStreamOrNull = format.FindBestStreamOrNull(AVMediaType.Audio, -1, -1);
-            if (audioStreamOrNull is null)
+            if (!format.TryFindBestStream(AvConst.MediaTypeAudio, out int audioIndex, out IntPtr audioStream, out IntPtr decoderCodec)
+                || decoderCodec == IntPtr.Zero)
                 throw new InvalidOperationException($"No audio stream found in '{path}'.");
 
-            MediaStream audioStream = audioStreamOrNull.Value;
-            var decoder = new CodecContext(Codec.FindDecoderById(audioStream.Codecpar!.CodecId));
-            decoder.FillParameters(audioStream.Codecpar);
-            decoder.Open();
+            var st = (AvStream*)audioStream;
+            CodecContextHandle decoder = CodecContextHandle.Alloc(decoderCodec);
+            try
+            {
+                decoder.ApplyParameters(st->codecpar);
+                decoder.Open(decoderCodec);
+            }
+            catch
+            {
+                decoder.Dispose();
+                throw;
+            }
 
-            return new AudioSource(format, decoder, audioStream, sampleRate, channels);
+            return new AudioSource(format, decoder, audioIndex, st->time_base, sampleRate, channels);
         }
         catch
         {
@@ -101,30 +106,19 @@ public sealed unsafe class AudioSource : IPcmReader
 
     private void InitResampler()
     {
-        AVChannelLayout outLayout;
-        ffmpeg.av_channel_layout_default(&outLayout, Channels);
-        AVChannelLayout inLayout = _decoder.ChLayout; // a copy; swr copies it again internally
-
-        SwrContext* swr = null;
-        int rc = ffmpeg.swr_alloc_set_opts2(
-            &swr,
-            &outLayout, AVSampleFormat.Flt, SampleRate,
-            &inLayout, _decoder.SampleFormat, _decoder.SampleRate,
-            0, null);
-        if (rc < 0 || swr is null)
+        AvChannelLayout outLayout = default;
+        LibAv.av_channel_layout_default(&outLayout, Channels);
+        try
         {
-            ffmpeg.av_channel_layout_uninit(&outLayout);
-            throw new InvalidOperationException($"Failed to allocate audio resampler (swr_alloc_set_opts2 = {rc}).");
+            // The decoder's own channel layout is the resampler input; swr copies it internally.
+            _swr.Configure(
+                &outLayout, AvConst.SampleFmtFlt, SampleRate,
+                _decoder.ChLayout, _decoder.SampleFmt, _decoder.SampleRate);
         }
-
-        rc = ffmpeg.swr_init(swr);
-        ffmpeg.av_channel_layout_uninit(&outLayout);
-        if (rc < 0)
+        finally
         {
-            ffmpeg.swr_free(&swr);
-            throw new InvalidOperationException($"Failed to initialise audio resampler (swr_init = {rc}).");
+            LibAv.av_channel_layout_uninit(&outLayout);
         }
-        _swr = swr;
     }
 
     /// <inheritdoc />
@@ -174,9 +168,9 @@ public sealed unsafe class AudioSource : IPcmReader
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         long ts = MediaTime.ToStreamTimestamp(sourceTime, _timeBase);
-        _format.SeekFrame(ts, _audioIndex, AVSEEK_FLAG.Backward);
-        ffmpeg.avcodec_flush_buffers(_decoder);
-        ffmpeg.swr_init(_swr); // re-initialising flushes the resampler's internal buffer
+        _format.SeekFrame(ts, _audioIndex, AvConst.SeekBackward);
+        _decoder.FlushBuffers();
+        _swr.Reinit(); // re-initialising flushes the resampler's internal buffer
 
         _inputEof = false;
         _packetFlushed = false;
@@ -248,23 +242,23 @@ public sealed unsafe class AudioSource : IPcmReader
     private int ResampleFrame()
     {
         int inCount = _srcFrame.NbSamples;
-        int outMax = ffmpeg.swr_get_out_samples(_swr, inCount);
+        int outMax = _swr.GetOutSamples(inCount);
         EnsureScratch(outMax);
 
-        byte_ptrArray8 inPlanes = default;
+        byte** inPlanes = stackalloc byte*[8];
         for (int i = 0; i < 8; i++)
-            inPlanes[i] = _srcFrame.Data[i];
+            inPlanes[i] = (byte*)_srcFrame.Data(i);
 
-        byte_ptrArray8 outPlanes = default;
-        outPlanes[0] = _scratch;
+        byte** outPlanes = stackalloc byte*[8];
+        outPlanes[0] = (byte*)_scratch;
 
-        int got = ffmpeg.swr_convert(_swr, (byte**)&outPlanes, _scratchFrames, (byte**)&inPlanes, inCount);
+        int got = _swr.Convert(outPlanes, _scratchFrames, inPlanes, inCount);
         return got < 0 ? 0 : got;
     }
 
     private int ResampleFlush()
     {
-        int outMax = ffmpeg.swr_get_out_samples(_swr, 0);
+        int outMax = _swr.GetOutSamples(0);
         if (outMax <= 0)
         {
             _swrDrained = true;
@@ -272,10 +266,10 @@ public sealed unsafe class AudioSource : IPcmReader
         }
         EnsureScratch(outMax);
 
-        byte_ptrArray8 outPlanes = default;
-        outPlanes[0] = _scratch;
+        byte** outPlanes = stackalloc byte*[8];
+        outPlanes[0] = (byte*)_scratch;
 
-        int got = ffmpeg.swr_convert(_swr, (byte**)&outPlanes, _scratchFrames, null, 0);
+        int got = _swr.Convert(outPlanes, _scratchFrames, null, 0);
         if (got <= 0)
         {
             _swrDrained = true;
@@ -290,12 +284,11 @@ public sealed unsafe class AudioSource : IPcmReader
     {
         while (true)
         {
-            CodecResult result = _decoder.ReceiveFrame(_srcFrame);
-            switch (result)
+            switch (_decoder.ReceiveFrame(_srcFrame))
             {
                 case CodecResult.Success:
                     return true;
-                case CodecResult.EOF:
+                case CodecResult.Eof:
                     return false;
                 case CodecResult.Again:
                     if (!FeedDecoder())
@@ -318,7 +311,7 @@ public sealed unsafe class AudioSource : IPcmReader
             return true;
         }
 
-        while (_format.ReadFrame(_packet) == CodecResult.Success)
+        while (_format.ReadFrame(_packet))
         {
             try
             {
@@ -370,12 +363,7 @@ public sealed unsafe class AudioSource : IPcmReader
             return;
         _disposed = true;
 
-        if (_swr is not null)
-        {
-            SwrContext* swr = _swr;
-            ffmpeg.swr_free(&swr);
-            _swr = null;
-        }
+        _swr.Dispose();
         if (_scratch != 0)
         {
             Marshal.FreeHGlobal(_scratch);

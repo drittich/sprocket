@@ -1,12 +1,11 @@
-using Sdcb.FFmpeg.Raw;
-using Sdcb.FFmpeg.Utils;
 using Sprocket.Core.Timing;
+using Sprocket.Media.Native;
 
 namespace Sprocket.Media;
 
 /// <summary>
-/// One decoded video frame: RGBA8888 pixels living in a native FFmpeg <see cref="Frame"/> buffer, plus
-/// the timeline-agnostic source <see cref="Pts"/>. The pixels are exposed by <em>pointer</em>
+/// One decoded video frame: RGBA8888 pixels living in a native FFmpeg <c>AVFrame</c> buffer, plus the
+/// timeline-agnostic source <see cref="Pts"/>. The pixels are exposed by <em>pointer</em>
 /// (<see cref="Pixels"/>) and are never copied to the managed heap (ARCHITECTURE.md §1); the
 /// Render/Playback layer wraps them with <c>SKImage.FromPixels</c> inside the GPU lease.
 /// </summary>
@@ -19,7 +18,7 @@ namespace Sprocket.Media;
 public sealed class VideoFrame : IDisposable
 {
     private readonly VideoFramePool? _pool;
-    private readonly Frame _rgba;
+    private readonly AvFrameHandle _rgba;
     private bool _disposed;
 
     internal VideoFrame(VideoFramePool? pool, int width, int height)
@@ -27,8 +26,7 @@ public sealed class VideoFrame : IDisposable
         _pool = pool;
         Width = width;
         Height = height;
-        _rgba = Frame.CreateVideo(width, height, AVPixelFormat.Rgba);
-        _rgba.EnsureBuffer(align: 4);
+        _rgba = AvFrameHandle.CreateVideo(width, height, AvConst.PixFmtRgba, align: 4);
     }
 
     /// <summary>Frame width in pixels.</summary>
@@ -41,13 +39,13 @@ public sealed class VideoFrame : IDisposable
     public Timecode Pts { get; internal set; }
 
     /// <summary>Pointer to the first (only) plane of RGBA8888 pixels. Valid until <see cref="Dispose"/>.</summary>
-    public IntPtr Pixels => _rgba.Data[0];
+    public IntPtr Pixels => _rgba.Data(0);
 
     /// <summary>Bytes per row (stride) of the RGBA buffer; may exceed <c>Width*4</c> due to alignment.</summary>
-    public int RowBytes => _rgba.Linesize[0];
+    public int RowBytes => _rgba.Linesize(0);
 
     /// <summary>The underlying native frame, for the decoder's swscale destination (Media-internal).</summary>
-    internal Frame Native => _rgba;
+    internal AvFrameHandle Native => _rgba;
 
     /// <summary>Returns this frame to its pool for reuse, or frees the native buffer if it has no pool.</summary>
     public void Dispose()

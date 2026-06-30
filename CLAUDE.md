@@ -13,6 +13,11 @@ making non-trivial changes:
 - [PLAN.md](PLAN.md) — feasibility analysis and the numbered build order, with a ✅ status note recorded inline on each completed step. **When you complete a build-order step, update its PLAN.md entry** the same way existing steps are annotated.
 - [UI.md](UI.md) — the target UI mockup and the features it implies.
 
+**When planning a feature, compare it to how Adobe Premiere Pro, DaVinci Resolve, and Final Cut Pro
+do the equivalent thing.** Prefer re-using their established behavior — the feature's implementation
+approach, default values, naming conventions, and keyboard shortcuts — over inventing our own, so the
+editor feels familiar to users coming from professional tools. Note any deliberate departure and why.
+
 The project is mid-build: the **vertical slice (PLAN steps 1–9) is complete** — import, trim, GPU
 effects (brightness/fade), audio master clock + mixer, hardware-accel decode, MP4 export, and JSON
 save/load, all on one cross-platform managed codebase. The post-slice UI build-out (steps 10+) and

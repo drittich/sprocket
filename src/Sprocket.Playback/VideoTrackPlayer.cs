@@ -31,6 +31,11 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
     private VideoFrame? _current;      // presented frame; guarded by _frameGate
     private VideoFrame? _next;         // pump-thread-only prefetch
 
+    // Decode info (codec + hw device) of the current feed, snapshotted when the feed is (re)built — it is
+    // immutable for a feed's life, so caching it lets the diagnostics overlay read it from the UI thread
+    // without touching native decoder state. Set on the pump thread / at construction; read cross-thread.
+    private VideoDecodeInfo? _decodeInfo;
+
     /// <summary>Fixed-feed player (slice/test path): always decodes <paramref name="feed"/>, source never changes.</summary>
     public VideoTrackPlayer(VideoTrack track, IVideoFrameFeed feed, object frameGate)
     {
@@ -40,6 +45,7 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         Track = track;
         _feed = feed;
         _frameGate = frameGate;
+        _decodeInfo = feed.DecodeInfo;
     }
 
     /// <summary>Factory player (app path): creates the feed lazily for the active clip's source.</summary>
@@ -58,6 +64,10 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
 
     /// <summary>The currently-presented frame, or <c>null</c>. Read only while holding the engine's frame gate.</summary>
     public VideoFrame? Current => _current;
+
+    /// <summary>How this player's current feed decodes (codec + hardware device), or <c>null</c> when it has no
+    /// feed. A cached snapshot, safe to read from another thread (the diagnostics overlay).</summary>
+    public VideoDecodeInfo? DecodeInfo => _decodeInfo;
 
     /// <summary>Forces the next pump to re-seek the feed (called by the engine when the playhead jumps).</summary>
     public void MarkNeedsSeek() => _needsSeek = true;
@@ -80,22 +90,23 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
     /// <summary>
     /// Advances this track's frame toward the playhead <paramref name="pos"/>: (re)targets the feed to the
     /// active clip's source, seeks if needed, then promotes the latest frame at/just before the target while
-    /// dropping intermediates. Returns whether the presented frame changed. With no active clip (or an
+    /// dropping intermediates. Returns whether the presented frame changed (<c>Promoted</c>) and how many decoded
+    /// frames were skipped to catch up (<c>Dropped</c>, for the diagnostics overlay). With no active clip (or an
     /// offline source) the track contributes nothing and its current frame is cleared.
     /// </summary>
-    public async Task<bool> PumpAsync(Timecode pos, bool force, CancellationToken ct)
+    public async Task<(bool Promoted, int Dropped)> PumpAsync(Timecode pos, bool force, CancellationToken ct)
     {
         Clip? clip = Track.Enabled ? Track.ResolveActiveClip(pos) : null;
         if (clip is null)
         {
             ClearCurrent();
-            return false;
+            return (false, 0);
         }
 
         if (!EnsureFeedFor(clip.MediaRefId))
         {
             ClearCurrent();
-            return false;
+            return (false, 0);
         }
 
         if (!_feedStarted)
@@ -121,9 +132,10 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         // keeps the position just short of the end), the pump would hang on the read — freezing the playhead and
         // never reaching the end-of-timeline stop, while the independent audio clock kept running.
         if (_atEof)
-            return false;
+            return (false, 0);
 
         bool promoted = false;
+        int advancePromotes = 0; // frames the steady-state advance loop promoted this pump (>1 ⇒ we fell behind)
         _next ??= await _feed!.ReadAsync(ct).ConfigureAwait(false);
 
         // After a seek, present the freshly decoded frame even if its PTS sits just past the target.
@@ -139,6 +151,7 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         {
             Promote(_next);
             promoted = true;
+            advancePromotes++;
             _next = await _feed!.ReadAsync(ct).ConfigureAwait(false);
         }
 
@@ -147,7 +160,12 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         if (_next is null)
             _atEof = true;
 
-        return promoted;
+        // Diagnostics (playback-stats overlay): in steady-state playback the advance loop should promote exactly
+        // one frame per due interval, so any promotions beyond the first mean the pump fell behind the clock and
+        // skipped the intermediate frames — those are dropped frames (ARCHITECTURE.md §8). A forced post-seek/scrub
+        // present is expected catch-up, not a stutter, so its skips are never counted as drops.
+        int dropped = localForce ? 0 : Math.Max(0, advancePromotes - 1);
+        return (promoted, dropped);
     }
 
     /// <summary>Ensures <see cref="_feed"/> decodes <paramref name="sourceId"/>, (re)building it in factory mode
@@ -168,6 +186,9 @@ internal sealed class VideoTrackPlayer : IAsyncDisposable
         _feedSource = sourceId;
         _feedStarted = false;
         _needsSeek = true;
+        // Snapshot the (immutable) decode info now, before the feed's worker starts, so the overlay never reads
+        // native decoder state off the pump thread.
+        _decodeInfo = _feed?.DecodeInfo;
         return _feed is not null;
     }
 

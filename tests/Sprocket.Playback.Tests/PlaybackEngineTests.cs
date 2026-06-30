@@ -112,6 +112,32 @@ public class PlaybackEngineTests
     }
 
     [Fact]
+    public async Task Reports_Dropped_Frames_In_Statistics_When_Catching_Up()
+    {
+        using var cts = new CancellationTokenSource(Timeout);
+        var elapsed = TimeSpan.Zero;
+        (Project project, RingVideoFrameFeed feed) = BuildSession();
+        var clock = new SoftwareClock(() => elapsed);
+        await using var engine = new PlaybackEngine(project, feed, clock);
+
+        feed.Start();
+        engine.SeekTo(Timecode.Zero);
+        await engine.PumpOnceAsync(forcePresent: true, cts.Token); // present frame 0 (forced ⇒ no drops counted)
+
+        Assert.Equal(0, engine.GetStatistics().FramesDropped);
+
+        clock.Start();
+        elapsed = TimeSpan.FromSeconds(1.0);                       // jump to frame 30 in one non-forced pump
+        await engine.PumpOnceAsync(forcePresent: false, cts.Token);
+
+        PlaybackStatistics stats = engine.GetStatistics();
+        // Frames 1..30 were promoted to land on frame 30; the 29 intermediates were dropped.
+        Assert.Equal(29, stats.FramesDropped);
+        Assert.Equal(2, stats.FramesPresented);   // forced frame 0 + the catch-up present
+        Assert.Equal(2, stats.PumpIterations);
+    }
+
+    [Fact]
     public async Task Reaches_End_Then_Stops_And_Signals()
     {
         using var cts = new CancellationTokenSource(Timeout);

@@ -8,6 +8,19 @@ using Sprocket.Media.Native;
 namespace Sprocket.Media;
 
 /// <summary>
+/// What the decoder for one source resolved to (diagnostics, for the playback-stats overlay): the video codec
+/// and, when GPU decode is engaged, the hardware device backing it. Stable for the life of a decoder.
+/// </summary>
+/// <param name="CodecName">The video codec short name the decoder uses (e.g. <c>"h264"</c>, <c>"hevc"</c>).</param>
+/// <param name="HardwareDeviceName">The GPU device type powering decode (e.g. <c>"d3d11va"</c>, <c>"cuda"</c>),
+/// or <see langword="null"/> when decoding in software.</param>
+public readonly record struct VideoDecodeInfo(string CodecName, string? HardwareDeviceName)
+{
+    /// <summary>True when a hardware device is attached to the decoder (GPU decode); false for software decode.</summary>
+    public bool IsHardwareAccelerated => !string.IsNullOrEmpty(HardwareDeviceName);
+}
+
+/// <summary>
 /// Opens one source media file with the hand-rolled FFmpeg 8 binding, probes its streams, and decodes its
 /// video stream to native RGBA frames with frame-accurate seeking (ARCHITECTURE.md §11). This is the
 /// concrete backing for the timeline's source media; the playback layer wraps it in a ring buffer
@@ -69,6 +82,12 @@ public sealed unsafe class MediaSource : IDisposable
 
     /// <summary>The hardware device powering decode (e.g. <c>"d3d11va"</c>), or <c>null</c> when decoding in software.</summary>
     public string? HardwareDeviceName => _hwDevice?.Name;
+
+    /// <summary>The video codec short name (e.g. <c>"h264"</c>) the decoder resolved to.</summary>
+    public string VideoDecoderName => _decoder.CodecName;
+
+    /// <summary>How this source's video decodes — codec + hardware device — for the diagnostics overlay.</summary>
+    public VideoDecodeInfo DecodeInfo => new(_decoder.CodecName, HardwareDeviceName);
 
     /// <summary>
     /// Opens and probes <paramref name="path"/>, opening its video decoder. Throws if the file cannot be

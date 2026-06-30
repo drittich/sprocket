@@ -65,6 +65,9 @@ public sealed class VideoDecodeRing : IAsyncDisposable
         });
     }
 
+    /// <summary>How the underlying source's video decodes — codec + hardware device — for the diagnostics overlay.</summary>
+    public VideoDecodeInfo DecodeInfo => _source.DecodeInfo;
+
     /// <summary>Starts the background decode worker. Idempotent.</summary>
     public void Start()
     {

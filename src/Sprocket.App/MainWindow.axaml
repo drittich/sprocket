@@ -107,6 +107,8 @@
             <Separator />
             <MenuItem x:Name="ShowProjectMenuItem" Header="_Project Panel" ToggleType="CheckBox" IsChecked="True" />
             <MenuItem x:Name="ShowInspectorMenuItem" Header="I_nspector Panel" ToggleType="CheckBox" IsChecked="True" />
+            <Separator />
+            <MenuItem x:Name="ShowStatsMenuItem" Header="Playback _Statistics" ToggleType="CheckBox" />
           </MenuItem>
           <MenuItem x:Name="WindowMenu" Header="_Window">
             <MenuItem x:Name="ResetLayoutMenuItem" Header="_Reset Layout" />

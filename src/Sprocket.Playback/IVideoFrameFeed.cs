@@ -24,6 +24,13 @@ public interface IVideoFrameFeed : IAsyncDisposable
     /// <summary>Requests that the feed resume from the frame at/just after <paramref name="sourceTarget"/>
     /// (a time within the source). Safe to call from any thread.</summary>
     void RequestSeek(Timecode sourceTarget);
+
+    /// <summary>
+    /// How this feed's video decodes — codec + hardware device — for the diagnostics overlay, or
+    /// <see langword="null"/> when unknown. Stable for the life of the feed. A default implementation returns
+    /// <see langword="null"/> so a minimal/alternate feed need not supply it.
+    /// </summary>
+    VideoDecodeInfo? DecodeInfo => null;
 }
 
 /// <summary>The default <see cref="IVideoFrameFeed"/>: a thin adapter over a <see cref="VideoDecodeRing"/>.</summary>
@@ -47,6 +54,9 @@ public sealed class RingVideoFrameFeed : IVideoFrameFeed
 
     /// <inheritdoc />
     public void RequestSeek(Timecode sourceTarget) => _ring.RequestSeek(sourceTarget);
+
+    /// <inheritdoc />
+    public VideoDecodeInfo? DecodeInfo => _ring.DecodeInfo;
 
     /// <inheritdoc />
     public ValueTask DisposeAsync() => _ring.DisposeAsync();

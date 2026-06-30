@@ -80,7 +80,8 @@ public partial class MainWindow : Window
     private MenuItem? _cutMenuItem, _copyMenuItem, _pasteMenuItem, _deleteMenuItem, _rippleDeleteMenuItem;
     private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem, _clipSpeedMenuItem;
     private MenuItem? _nestMenuItem, _openSequenceMenuItem; // Sequence menu (PLAN.md step 23)
-    private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem;
+    private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem, _showStatsMenuItem;
+    private PlaybackStatsOverlay? _statsOverlay; // floating playback-diagnostics window (View ▸ Playback Statistics)
     private System.Collections.Generic.IReadOnlyList<MenuItem> _effectsMenuItems = [];
     private ToggleButton? _snappingToggle, _guidesToggle;
     private Grid? _workspaceGrid, _outerGrid;
@@ -202,6 +203,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         WindowStateStore.Save(_lastNonMinimizedState); // remember maximized-or-not for next launch
+        _statsOverlay?.Close(); // tear down the diagnostics overlay's poll timer
         _autosave?.Dispose(); // stop the autosave timer for this session
         _thumbnails?.Dispose(); // releases the cached thumbnail bitmaps
         _ = _source?.DisposeAsync(); // tears down the Source monitor's decoder/engine if one is open
@@ -317,6 +319,8 @@ public partial class MainWindow : Window
         _guidesMenuItem.Click += (_, _) => { if (_guidesToggle is not null) _guidesToggle.IsChecked = _guidesMenuItem.IsChecked; };
         _showProjectMenuItem.Click += (_, _) => SetPanelVisible(project: true, _showProjectMenuItem.IsChecked == true);
         _showInspectorMenuItem.Click += (_, _) => SetPanelVisible(project: false, _showInspectorMenuItem.IsChecked == true);
+        _showStatsMenuItem = this.FindControl<MenuItem>("ShowStatsMenuItem")!;
+        _showStatsMenuItem.Click += (_, _) => ShowStatsOverlay(_showStatsMenuItem.IsChecked == true);
         this.FindControl<MenuItem>("ViewMenu")!.SubmenuOpened += (_, _) => RefreshViewMenu();
 
         // ── Sequence (multiple sequences + nested/compound clips, PLAN.md step 23) ──
@@ -990,6 +994,35 @@ public partial class MainWindow : Window
         if (_guidesMenuItem is not null) _guidesMenuItem.IsChecked = _guidesToggle?.IsChecked == true;
         if (_showProjectMenuItem is not null) _showProjectMenuItem.IsChecked = _projectPane?.IsVisible != false;
         if (_showInspectorMenuItem is not null) _showInspectorMenuItem.IsChecked = _inspectorPane?.IsVisible != false;
+        if (_showStatsMenuItem is not null) _showStatsMenuItem.IsChecked = _statsOverlay is not null;
+    }
+
+    /// <summary>
+    /// View ▸ Playback Statistics: opens or closes the floating diagnostics overlay (effective vs. target frame
+    /// rate, dropped frames, CPU / memory / GC). The overlay polls whichever monitor's engine is active, so it
+    /// reflects the Program timeline or a Source preview as the user switches tabs. Non-modal and always-on-top.
+    /// </summary>
+    private void ShowStatsOverlay(bool show)
+    {
+        if (show)
+        {
+            if (_statsOverlay is not null)
+                return;
+            var overlay = new PlaybackStatsOverlay(() => _active?.CurrentEngine ?? _engine);
+            overlay.Closed += (_, _) =>
+            {
+                _statsOverlay = null;
+                if (_showStatsMenuItem is not null)
+                    _showStatsMenuItem.IsChecked = false;
+            };
+            _statsOverlay = overlay;
+            overlay.Show(this);   // non-modal child window
+            overlay.PlaceNear(this);
+        }
+        else
+        {
+            _statsOverlay?.Close(); // Closed handler clears the field + unchecks the menu item
+        }
     }
 
     // ── View / Window: panel visibility + layout ────────────────────────────────────────────────────

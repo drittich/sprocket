@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Sprocket.Core.Model;
 using Sprocket.Core.Rendering;
 using Sprocket.Core.Timing;
@@ -60,6 +61,17 @@ public readonly record struct PresentedFrame(
     IReadOnlyList<ResolvedEffect> Effects);
 
 /// <summary>
+/// A snapshot of the <see cref="PlaybackEngine"/>'s playback-health counters, for the diagnostics overlay (the
+/// View ▸ Playback Statistics window). All counts are cumulative since the engine was created; the consumer derives
+/// rates (effective preview fps, drops/sec) from the delta between two snapshots taken a known interval apart.
+/// </summary>
+/// <param name="PumpIterations">Total pump ticks run (each reconciles + advances every track toward the clock).</param>
+/// <param name="FramesPresented">Pump ticks that produced a new/updated composite — i.e. the preview repaints.</param>
+/// <param name="FramesDropped">Decoded frames skipped to catch up to the clock when the pump fell behind
+/// (ARCHITECTURE.md §8). A healthy preview drops ~0; a rising count is the signature of playback stutter.</param>
+public readonly record struct PlaybackStatistics(long PumpIterations, long FramesPresented, long FramesDropped);
+
+/// <summary>
 /// The playback engine (PLAN.md steps 4/14): drives every enabled video track from a master
 /// <see cref="IClock"/>, keeping each track's presented frame in sync by dropping or holding decoded frames
 /// (ARCHITECTURE.md §8). Transport (<see cref="Play"/>/<see cref="Pause"/>/<see cref="SeekTo"/>) is callable from
@@ -79,7 +91,13 @@ public sealed class PlaybackEngine : IAsyncDisposable
 {
     private readonly Project _project;
     private readonly IMasterClock _clock;
-    private readonly int _paceMsPlaying;
+
+    // Frame-pacing state (pump thread only). The pump presents on an absolute wall-clock schedule
+    // (_nextPresentTs) so the cadence is regular regardless of per-iteration work; _delay1Ms tracks the real
+    // Task.Delay(1) duration so the sleep/spin split adapts to the OS timer granularity (see WaitForNextFrameAsync).
+    private long _nextPresentTs;
+    private bool _pacingAnchored;
+    private double _delay1Ms = 2.0;
 
     private readonly Func<MediaRefId, IVideoFrameFeed?>? _feedFactory;
     private readonly bool _reconcile;
@@ -96,11 +114,17 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
     private long _seekGeneration;     // bumped by SeekTo; the pump re-seeks players on change
     private long _lastPumpGen;
+
+    // Diagnostics counters (cumulative; written on the pump thread, read via Interlocked in GetStatistics).
+    private long _pumpCount;
+    private long _presentCount;
+    private long _dropCount;
     private CancellationTokenSource? _pumpCts;
     private Task? _pump;
     private bool _started;
     private bool _suspended;
     private bool _disposed;
+    private bool _highResTimer;       // whether we currently hold the 1ms OS timer period (raised only while playing)
 
     /// <summary>
     /// Single-feed engine (slice/test path): plays the project's first enabled video track from
@@ -123,8 +147,6 @@ public sealed class PlaybackEngine : IAsyncDisposable
             _players.Add(new VideoTrackPlayer(track, feed, _frameGate));
         else
             _ = feed.DisposeAsync(); // no video track to drive; don't leak the feed
-
-        _paceMsPlaying = ComputePace(project);
     }
 
     /// <summary>
@@ -142,14 +164,6 @@ public sealed class PlaybackEngine : IAsyncDisposable
         _clock = clock ?? new SoftwareClock();
         _feedFactory = feedFactory;
         _reconcile = true;
-        _paceMsPlaying = ComputePace(project);
-    }
-
-    private static int ComputePace(Project project)
-    {
-        Rational fps = project.Timeline.FrameRate;
-        double frameMs = fps.Num > 0 ? 1000.0 * fps.Den / fps.Num : 1000.0 / 30;
-        return Math.Clamp((int)(frameMs / 2), 4, 33);
     }
 
     /// <summary>Raised after any track's presented frame changes. Fires on the pump thread.</summary>
@@ -179,6 +193,41 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
     /// <summary>The total timeline duration.</summary>
     public Timecode Duration => _project.Timeline.Duration;
+
+    /// <summary>The active sequence's target frame rate — the cadence the preview aims to present at.</summary>
+    public Rational FrameRate => _project.Timeline.FrameRate;
+
+    /// <summary>
+    /// A point-in-time snapshot of the engine's playback-health counters for the diagnostics overlay (View ▸
+    /// Playback Statistics). Safe to call from any thread; see <see cref="PlaybackStatistics"/>.
+    /// </summary>
+    public PlaybackStatistics GetStatistics() => new(
+        Interlocked.Read(ref _pumpCount),
+        Interlocked.Read(ref _presentCount),
+        Interlocked.Read(ref _dropCount));
+
+    /// <summary>
+    /// The decode info (codec + hardware device) of the top-most enabled video track with an active clip at the
+    /// playhead — i.e. what the preview is currently showing — or <see langword="null"/> when nothing is being
+    /// decoded. For the diagnostics overlay. Returns a cached managed snapshot, so it is safe to call from the UI
+    /// thread (it never dereferences native decoder state).
+    /// </summary>
+    public VideoDecodeInfo? GetActiveVideoDecodeInfo()
+    {
+        Timecode pos = Position;
+        lock (_frameGate)
+        {
+            VideoDecodeInfo? top = null; // bottom→top: the last match is the top-most layer the preview shows
+            foreach (VideoTrack track in _project.Timeline.VideoTracks)
+            {
+                if (!track.Enabled || track.ResolveActiveClip(pos) is null)
+                    continue;
+                if (FindPlayer(track)?.DecodeInfo is { } info)
+                    top = info;
+            }
+            return top;
+        }
+    }
 
     /// <summary>
     /// Starts the background pump and positions the playhead at the start, so the first frame is presented before
@@ -391,12 +440,66 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
             try
             {
-                int pace = State == PlaybackState.Playing ? _paceMsPlaying : 16;
-                await Task.Delay(pace, ct).ConfigureAwait(false);
+                // While playing, wait until the next frame's exact deadline so each frame is presented on the
+                // frame grid (smooth cadence). While idle, a coarse poll is enough to stay responsive to seeks.
+                if (State == PlaybackState.Playing)
+                    await WaitForNextFrameAsync(ct).ConfigureAwait(false);
+                else
+                    await Task.Delay(16, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Waits until the next frame's scheduled present time, pacing the pump on an <b>absolute</b> wall-clock
+    /// schedule (one frame-interval apart) so the present cadence is regular regardless of how long a pump
+    /// iteration takes. A fixed sub-frame poll instead aliases against the true frame grid and produces visible
+    /// judder even when no frames are dropped (ARCHITECTURE.md §8); A/V sync is still maintained because each
+    /// iteration's <see cref="PumpOnceAsync"/> presents the frame matching the master clock (drop/hold).
+    /// </summary>
+    /// <remarks>
+    /// The wait sleeps in 1&#160;ms steps only while comfortably far from the deadline, then busy-spins the final
+    /// few ms. Because a step is taken only when the remaining time exceeds the observed <see cref="_delay1Ms"/>
+    /// granularity, a coarse OS timer (Windows can ignore <c>timeBeginPeriod</c> for background processes, making
+    /// <c>Task.Delay(1)</c> ~15.6&#160;ms) cannot overshoot the deadline — it just spins a little longer. When the
+    /// timer is fine the spin is ~2&#160;ms. If the pump falls more than two frames behind it re-anchors instead of
+    /// bursting to catch up.
+    /// </remarks>
+    private async Task WaitForNextFrameAsync(CancellationToken ct)
+    {
+        Rational fps = _project.Timeline.FrameRate;
+        double frameSec = fps.Num > 0 ? (double)fps.Den / fps.Num : 1.0 / 30;
+        long frameTicks = Math.Max(1, (long)(frameSec * Stopwatch.Frequency));
+        long now = Stopwatch.GetTimestamp();
+
+        if (!_pacingAnchored || now - _nextPresentTs > 2 * frameTicks)
+            _nextPresentTs = now + frameTicks; // first frame of a play span, or fell >2 frames behind → re-anchor
+        else
+            _nextPresentTs += frameTicks;
+        _pacingAnchored = true;
+
+        while (true)
+        {
+            long remTicks = _nextPresentTs - Stopwatch.GetTimestamp();
+            if (remTicks <= 0)
+                return;
+            double remMs = remTicks * 1000.0 / Stopwatch.Frequency;
+            if (remMs > _delay1Ms + 2.0)
+            {
+                long t0 = Stopwatch.GetTimestamp();
+                await Task.Delay(1, ct).ConfigureAwait(false);
+                double slept = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+                _delay1Ms = _delay1Ms * 0.9 + slept * 0.1; // EMA of the real timer granularity
+            }
+            else
+            {
+                if (ct.IsCancellationRequested)
+                    return;
+                Thread.SpinWait(40);
             }
         }
     }
@@ -423,15 +526,28 @@ public sealed class PlaybackEngine : IAsyncDisposable
         Timecode pos = PlaybackMath.ClampToTimeline(_clock.Now, Duration);
 
         bool promoted = false;
+        int dropped = 0;
         foreach (VideoTrackPlayer player in _players)
-            promoted |= await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
+        {
+            (bool playerPromoted, int playerDropped) = await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
+            promoted |= playerPromoted;
+            dropped += playerDropped;
+        }
+
+        // Health counters for the diagnostics overlay (cumulative; read via GetStatistics).
+        Interlocked.Increment(ref _pumpCount);
+        if (dropped > 0)
+            Interlocked.Add(ref _dropCount, dropped);
 
         // Generator / adjustment clips have no decoder to "promote" a frame, so they'd never trigger a repaint.
         // Repaint for them when playing (their content/effects may animate) or when a seek forces a present
         // (a scrub onto a title). A static synthetic clip while paused doesn't repaint every idle tick.
         bool synthetic = (State == PlaybackState.Playing || force) && HasActiveSyntheticVideoClip(pos);
         if (promoted || synthetic)
+        {
+            Interlocked.Increment(ref _presentCount); // a new composite was produced → the preview repaints
             FramePresented?.Invoke();
+        }
 
         PositionChanged?.Invoke(pos);
         HandleEnd(pos);
@@ -521,14 +637,27 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
     private void SetState(PlaybackState state)
     {
-        bool changed;
+        // Decide the OS-timer-resolution action under the same lock that guards the state flip, so a UI-thread
+        // transport call and the pump thread's end-of-timeline stop can't leave the 1ms period unbalanced. The
+        // native winmm call itself runs outside the lock. Hold the high-res timer only while playing, so the
+        // pump's Task.Delay frame-pacing is accurate (the default ~15.6ms Windows timer turns a 16ms pace into
+        // ~31ms → judder; see PlaybackTimerResolution).
+        bool changed, raise = false, lower = false;
         lock (_transportGate)
         {
             changed = _state != state;
             _state = state;
+            if (changed)
+            {
+                if (state == PlaybackState.Playing && !_highResTimer) { _highResTimer = true; raise = true; }
+                else if (state != PlaybackState.Playing && _highResTimer) { _highResTimer = false; lower = true; }
+            }
         }
-        if (changed)
-            StateChanged?.Invoke(state);
+        if (!changed)
+            return;
+        if (raise) PlaybackTimerResolution.Raise();
+        if (lower) PlaybackTimerResolution.Lower();
+        StateChanged?.Invoke(state);
     }
 
     /// <summary>
@@ -610,6 +739,12 @@ public sealed class PlaybackEngine : IAsyncDisposable
         if (_disposed)
             return;
         _disposed = true;
+
+        // Release the 1ms timer period if we were torn down mid-play (SetState's Pause/Stop never ran).
+        bool releaseTimer;
+        lock (_transportGate) { releaseTimer = _highResTimer; _highResTimer = false; }
+        if (releaseTimer)
+            PlaybackTimerResolution.Lower();
 
         await StopPumpAsync().ConfigureAwait(false);
 

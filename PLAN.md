@@ -1387,6 +1387,74 @@ Tags reference the [UI.md §4 checklist](UI.md).
       with **live angle cutting** — switching the active angle at the playhead lays down cuts via the
       command stack; angle switches and per-cut effect / audio overrides are model edits. Export resolves
       the chosen angles through the same render graph (deterministic).
+    - **✅ DONE (Core `Model/{Multicam,ClipSync,AudioSync,MulticamBuilder,Clip,Project}` +
+      `Rendering/RenderGraph` + `Commands/ModelCommands`; `Sprocket.Persistence/{ProjectDto,ProjectSerializer}`;
+      App `Timeline/TimelineControl` + `Inspector/InspectorPanel` + `MainWindow.axaml`/`.cs`; 31 new headless tests
+      — Core +28, Persistence +3, all green.)** Synced multi-angle editing lands entirely on the existing seams
+      (no redesign, ARCHITECTURE.md §17): a multicam source is a synced angle group, and its active angle resolves
+      to an **ordinary media frame at the synced source time**, so multicam rides the media seam the render graph,
+      mixer, preview, and export already drive — no recursion, no new compositor seam. Delivered:
+      - **Model (Core).** `MulticamSource` (id + name + an ordered `MulticamAngle` list) and a `MulticamId` value
+        type; `Project.MulticamSources` (+ `GetMulticam`). Each `MulticamAngle` carries its video `MediaRefId`, an
+        optional separate `AudioMediaRefId` (dual-system sound; `EffectiveAudioRefId` falls back to the video file),
+        and a `SyncOffset` — the per-angle alignment, so at multicam time `s` the angle's source frame is at
+        `s + SyncOffset`. `Clip` gains `ClipKind.Multicam` + `SourceMulticamId` + a mutable `ActiveAngle` and a
+        `CreateMulticamClip` factory; a blade split copies both onto each half (`CloneContentForSpan`), so the angle
+        program is just the run of multicam segments on the track.
+      - **Clip sync (Core, pure + tested).** `ClipSync.ComputeOffsets` reduces all three methods to one number per
+        angle (the source time of a shared instant), relative to a reference angle — markers feed the marked source
+        time, timecode feeds the source-time-at-a-common-TC, audio feeds the cross-correlation lag.
+        `AudioSync.FindBestLag`/`FindBestOffset` is the **audio-waveform cross-correlation** (energy-normalized, with
+        a min-overlap floor and a confidence in [-1,1]); it recovers a known delay (sign-correct), handles negative
+        lags, and converts a sample lag to a `Timecode` offset. `ClipSync.AngleSourceTime` is the synced sampling
+        time the render graph uses.
+      - **Multicam source / render graph (Core, §5).** `PlanVideoFrame`/`PlanAudioBuffer` resolve a multicam clip by
+        looking up its active angle and emitting a plain **media video layer** / **media audio layer** at
+        `ClipSync.AngleSourceTime` (the angle's `MediaRefId` / `EffectiveAudioRefId`); a missing source or a stale
+        angle index contributes nothing (renders as empty, §15). Because it's a media layer, **preview, the audio
+        mixer, and export work unchanged** — switching `ActiveAngle` switches the resolved source, and export
+        resolves the chosen angles deterministically through the same graph (`MediaBootstrap`'s per-source feed /
+        PCM-reader factories already open any `MediaRefId`, so no Playback/Media/Export source changed).
+      - **Angle editing + commands (Core + App).** `SetClipAngleCommand` (a discrete angle switch),
+        `Add`/`RemoveMulticamSourceCommand`, and `SetMulticamOffsetsCommand` (a re-sync of every angle, undoable) join
+        the step-10 set. `MulticamBuilder.CreateMulticam` (mirroring `SequenceNesting`) turns a set of angle clips
+        into a synced source and replaces them with a single **linked video + audio multicam clip** as one undoable
+        `CompositeCommand` (angles synced by the clips' existing placement by default). In the App, **Clip ▸ Create
+        Multicam Source** collapses the stacked video angles, the **number keys 1–9** do **live angle cutting** (blade
+        the clip — and its linked audio companion — at the playhead and set the new segment's angle, one undo entry),
+        and the **Inspector** grows a Multicam section (one button per angle, the active one highlighted, showing each
+        angle's sync offset) that sets the segment's angle. The timeline draws multicam clips in a distinct violet and
+        labels them `{source} · {active angle}`.
+      - **Persistence (additive, §12).** `MulticamSourceDto`/`MulticamAngleDto` + `Clip` DTO's `sourceMulticamId` /
+        `activeAngle` serialize only when used (orthogonal to the sequence shape; `WhenWritingNull`), so a
+        multicam-free project serializes **byte-identically** to a pre-step-24 file (no schema bump) and pre-24 files
+        load unchanged; the source (angles, names, offsets, separate audio) and the clip's active angle round-trip.
+      - **Tests + verification.** Core `MulticamTests` (model/factory, render resolution of the active angle to a
+        synced media/audio layer, angle switching, out-of-range/missing → nothing, blade keeps the angle, the sync
+        offset math, audio cross-correlation incl. negative/identical/empty, all four commands, and the builder's
+        create/undo/render/`<2`-angle-null), Persistence `MulticamPersistenceTests` (source+clip round-trip,
+        multicam-free omits the field, multicam writes the shape). **Full suite green — 498 tests, 0 failures**
+        (Core 197, Media 28, Render 23, Audio 21, Playback 48, Export 11, Persistence 37, App 133); clean build
+        (0 warnings) and a `SPROCKET_APP_SECONDS=6` smoke launch starts the shell with the multicam menu/keys/Inspector
+        wired and tears down cleanly (exit 0).
+      - **Fixed the FFmpeg-native test suites (they now actually run).** Steps 20–23 each recorded that the
+        Media/Playback/Export suites "couldn't run in the sandbox — a test-host native-loading limitation." That was a
+        misdiagnosis: the real bug was that `tests/Directory.Build.targets` copied **every** RID's cache extract into
+        one output dir (Windows `.dll` *and* Linux `.so` *and* macOS `.dylib`), and `FFmpegLoader.FindBundledLib`
+        matched the Linux soname **first, unconditionally**, so on Windows it picked `libavcodec.so.62` and
+        `NativeLibrary.TryLoad` failed with `BadImageFormatException` — the whole FFmpeg load aborted. (A shipped build
+        bundles only one OS's libs, so the bug stayed latent.) Two fixes: `FindBundledLib` now considers **only the
+        current OS's** library type, and the test-natives copy is gated per-OS so the output dir stays single-platform.
+        With that, all three FFmpeg suites pass locally with no `%SPROCKET_FFMPEG8_DIR%`, and the multicam render path
+        is now exercised end-to-end through the real decode→render→export round-trips, not just headlessly.
+      - **Deferred (noted, on the same seam):** the **live multi-angle grid monitor** (decode-bound — it needs every
+        angle decoded at once into thumbnails, the same heavy-decode work the nested-sequence preview deferred to the
+        render cache, step 32; the active angle previews live today); an **App "Sync by Audio" action** that reads each
+        angle's PCM via `AudioSource` and applies `SetMulticamOffsetsCommand` (the cross-correlation engine + the
+        re-sync command are delivered and tested — this is the decode-bound App glue, like `ThumbnailService`);
+        **sync by embedded source timecode** (the offset math is ready; reading a source's start TC from FFmpeg is the
+        missing input); and an **independent audio-follows-angle vs audio-follows-video** choice (audio follows the
+        same active angle today).
 25. **Transitions.** Transition library (Project panel **Transitions** tab) + overlapping-clip
     resolution in the render graph ([ARCHITECTURE §17](ARCHITECTURE.md)).
 26. **Alpha-channel media compositing.** Premultiplied-alpha path through the render graph (e.g.

@@ -19,6 +19,12 @@ public enum ClipKind
     /// at the mapped source time (PLAN.md step 23). The referenced sequence is named by
     /// <see cref="Clip.SourceSequenceId"/> — a reference, not a copy.</summary>
     Sequence,
+
+    /// <summary>A multicam clip (PLAN.md step 24): the clip's content is one selectable angle of a synced
+    /// <see cref="MulticamSource"/> (named by <see cref="Clip.SourceMulticamId"/>). The shown angle is
+    /// <see cref="Clip.ActiveAngle"/>; switching angles lays down cuts (each segment carries its own active
+    /// angle). The active angle resolves to an ordinary source frame at the synced time.</summary>
+    Multicam,
 }
 
 /// <summary>
@@ -35,12 +41,13 @@ public sealed class Clip
 {
     /// <summary>Creates a media clip referencing a source span and placing it on the timeline.</summary>
     public Clip(MediaRefId mediaRefId, Timecode sourceIn, Timecode sourceOut, Timecode timelineStart)
-        : this(ClipKind.Media, mediaRefId, generator: null, sourceSequenceId: null, sourceIn, sourceOut, timelineStart)
+        : this(ClipKind.Media, mediaRefId, generator: null, sourceSequenceId: null, sourceMulticamId: null,
+            sourceIn, sourceOut, timelineStart)
     {
     }
 
     private Clip(ClipKind kind, MediaRefId mediaRefId, GeneratorSpec? generator, SequenceId? sourceSequenceId,
-        Timecode sourceIn, Timecode sourceOut, Timecode timelineStart)
+        MulticamId? sourceMulticamId, Timecode sourceIn, Timecode sourceOut, Timecode timelineStart)
     {
         if (sourceOut < sourceIn)
             throw new ArgumentException("SourceOut must not precede SourceIn.", nameof(sourceOut));
@@ -49,6 +56,7 @@ public sealed class Clip
         MediaRefId = mediaRefId;
         Generator = generator;
         SourceSequenceId = sourceSequenceId;
+        SourceMulticamId = sourceMulticamId;
         SourceIn = sourceIn;
         SourceOut = sourceOut;
         TimelineStart = timelineStart;
@@ -62,7 +70,8 @@ public sealed class Clip
     public static Clip CreateGenerator(GeneratorSpec generator, Timecode duration, Timecode timelineStart)
     {
         ArgumentNullException.ThrowIfNull(generator);
-        return new Clip(ClipKind.Generator, default, generator, sourceSequenceId: null, Timecode.Zero, duration, timelineStart);
+        return new Clip(ClipKind.Generator, default, generator, sourceSequenceId: null, sourceMulticamId: null,
+            Timecode.Zero, duration, timelineStart);
     }
 
     /// <summary>
@@ -71,7 +80,8 @@ public sealed class Clip
     /// beneath it over the clip's time span.
     /// </summary>
     public static Clip CreateAdjustment(Timecode duration, Timecode timelineStart) =>
-        new(ClipKind.Adjustment, default, generator: null, sourceSequenceId: null, Timecode.Zero, duration, timelineStart);
+        new(ClipKind.Adjustment, default, generator: null, sourceSequenceId: null, sourceMulticamId: null,
+            Timecode.Zero, duration, timelineStart);
 
     /// <summary>
     /// Creates a nested-sequence clip (PLAN.md step 23): its content is the sequence identified by
@@ -80,7 +90,20 @@ public sealed class Clip
     /// effects, opacity, and blend like any clip — so editing it edits the nested sequence as one unit.
     /// </summary>
     public static Clip CreateSequenceClip(SequenceId sourceSequenceId, Timecode duration, Timecode timelineStart) =>
-        new(ClipKind.Sequence, default, generator: null, sourceSequenceId, Timecode.Zero, duration, timelineStart);
+        new(ClipKind.Sequence, default, generator: null, sourceSequenceId, sourceMulticamId: null,
+            Timecode.Zero, duration, timelineStart);
+
+    /// <summary>
+    /// Creates a multicam clip (PLAN.md step 24): its content is one selectable angle of the synced
+    /// <see cref="MulticamSource"/> identified by <paramref name="sourceMulticamId"/>, showing
+    /// <paramref name="activeAngle"/> over <c>[0, <paramref name="duration"/>)</c> in multicam time. Trimming /
+    /// slipping behaves like media (the multicam source is the source span); the clip carries effects, opacity,
+    /// and blend like any clip. Switching angles splits the clip and sets the new segment's
+    /// <see cref="ActiveAngle"/>.
+    /// </summary>
+    public static Clip CreateMulticamClip(MulticamId sourceMulticamId, int activeAngle, Timecode duration, Timecode timelineStart) =>
+        new(ClipKind.Multicam, default, generator: null, sourceSequenceId: null, sourceMulticamId,
+            Timecode.Zero, duration, timelineStart) { ActiveAngle = activeAngle };
 
     /// <summary>What this clip's frame is reconstructed from.</summary>
     public ClipKind Kind { get; }
@@ -92,6 +115,16 @@ public sealed class Clip
     /// <summary>The nested sequence this clip renders, or <see langword="null"/> unless <see cref="Kind"/> is
     /// <see cref="ClipKind.Sequence"/> (PLAN.md step 23). A reference by id into <see cref="Project.Sequences"/>.</summary>
     public SequenceId? SourceSequenceId { get; }
+
+    /// <summary>The multicam source this clip draws an angle from, or <see langword="null"/> unless
+    /// <see cref="Kind"/> is <see cref="ClipKind.Multicam"/> (PLAN.md step 24). A reference by id into
+    /// <see cref="Project.MulticamSources"/>.</summary>
+    public MulticamId? SourceMulticamId { get; }
+
+    /// <summary>Which angle (by index into <see cref="MulticamSource.Angles"/>) this multicam clip shows
+    /// (PLAN.md step 24). Unused for non-multicam clips. Switching angles = split the clip and set the new
+    /// segment's active angle, so an angle program is just the run of multicam segments on the track.</summary>
+    public int ActiveAngle { get; set; }
 
     /// <summary>Which source (by id) this clip draws from. Unused (default) for generator / adjustment clips.</summary>
     public MediaRefId MediaRefId { get; set; }
@@ -168,5 +201,6 @@ public sealed class Clip
     /// new clip keeps a media/generator/adjustment clip's nature (PLAN.md steps 13/19).
     /// </summary>
     internal Clip CloneContentForSpan(Timecode sourceIn, Timecode sourceOut, Timecode timelineStart) =>
-        new(Kind, MediaRefId, Generator?.Clone(), SourceSequenceId, sourceIn, sourceOut, timelineStart) { SpeedRatio = _speedRatio };
+        new(Kind, MediaRefId, Generator?.Clone(), SourceSequenceId, SourceMulticamId, sourceIn, sourceOut, timelineStart)
+        { SpeedRatio = _speedRatio, ActiveAngle = ActiveAngle };
 }

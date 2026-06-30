@@ -79,6 +79,16 @@ public static class RenderGraph
                             LayerKind.Sequence, NestedPlan: nested));
                     break;
 
+                case ClipKind.Multicam:
+                    // The active angle resolves to an ordinary media frame at the synced source time (PLAN.md
+                    // step 24) — so multicam rides the media seam, no recursion needed. A missing source or a
+                    // stale angle index contributes nothing (renders as empty, §15).
+                    if (ResolveMulticamAngle(project, clip) is { } angle)
+                        layers.Add(new VideoLayer(
+                            angle.MediaRefId, ClipSync.AngleSourceTime(angle, sourceT),
+                            effects, track.Opacity, track.BlendMode));
+                    break;
+
                 default:
                     layers.Add(new VideoLayer(clip.MediaRefId, sourceT, effects, track.Opacity, track.BlendMode));
                     break;
@@ -160,6 +170,15 @@ public static class RenderGraph
                 if (nested is not null)
                     layers.Add(new AudioLayer(default, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio, nested));
             }
+            else if (clip.Kind == ClipKind.Multicam)
+            {
+                // The active angle's audio is an ordinary source pulled at the synced time (PLAN.md step 24); a
+                // missing source / stale angle index contributes nothing (§15).
+                if (ResolveMulticamAngle(project, clip) is { } angle)
+                    layers.Add(new AudioLayer(
+                        angle.EffectiveAudioRefId, ClipSync.AngleSourceTime(angle, clip.MapToSource(bufferStart)),
+                        gainStart, gainEnd, clip.SpeedRatio));
+            }
             else
             {
                 layers.Add(new AudioLayer(clip.MediaRefId, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio));
@@ -189,6 +208,16 @@ public static class RenderGraph
         {
             path.Remove(childId);
         }
+    }
+
+    /// <summary>Resolves the active angle of a multicam clip — the angle at <see cref="Clip.ActiveAngle"/> in the
+    /// referenced <see cref="MulticamSource"/>, or <see langword="null"/> when the source is missing or the angle
+    /// index is out of range (renders as nothing, §15).</summary>
+    private static MulticamAngle? ResolveMulticamAngle(Project project, Clip clip)
+    {
+        if (clip.SourceMulticamId is not { } id || project.GetMulticam(id) is not { } source)
+            return null;
+        return source.AngleAt(clip.ActiveAngle);
     }
 
     /// <summary>

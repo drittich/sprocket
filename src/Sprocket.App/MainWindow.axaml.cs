@@ -79,6 +79,7 @@ public partial class MainWindow : Window
     // Command-menu items refreshed on submenu open (context-enabling) + the View toggles / panes.
     private MenuItem? _cutMenuItem, _copyMenuItem, _pasteMenuItem, _deleteMenuItem, _rippleDeleteMenuItem;
     private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem, _clipSpeedMenuItem;
+    private MenuItem? _createMulticamMenuItem; // Clip ▸ Create Multicam Source (PLAN.md step 24)
     private MenuItem? _nestMenuItem, _openSequenceMenuItem; // Sequence menu (PLAN.md step 23)
     private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem, _showStatsMenuItem;
     private PlaybackStatsOverlay? _statsOverlay; // floating playback-diagnostics window (View ▸ Playback Statistics)
@@ -276,6 +277,8 @@ public partial class MainWindow : Window
         _nudgeLeftMenuItem.Click += (_, _) => _timeline?.NudgeSelected(-1);
         _nudgeRightMenuItem.Click += (_, _) => _timeline?.NudgeSelected(+1);
         _clipSpeedMenuItem.Click += async (_, _) => await ShowSpeedDialogAsync();
+        _createMulticamMenuItem = this.FindControl<MenuItem>("CreateMulticamMenuItem")!;
+        _createMulticamMenuItem.Click += (_, _) => CreateMulticamSource();
         this.FindControl<MenuItem>("ClipMenu")!.SubmenuOpened += (_, _) => RefreshClipMenu();
 
         // ── Clip ▸ Insert (generators + adjustment layer, PLAN.md step 19) ──
@@ -371,6 +374,13 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Delete || e.Key == Key.Back) { _timeline?.DeleteSelected(); e.Handled = true; }
         else if (alt && e.Key == Key.Left) { _timeline?.NudgeSelected(-1); e.Handled = true; }
         else if (alt && e.Key == Key.Right) { _timeline?.NudgeSelected(+1); e.Handled = true; }
+        // Multicam angle switching (PLAN.md step 24): 1–9 cut the selected multicam clip to that angle at the
+        // playhead — the Premiere/Resolve convention. Only swallow the digit when a multicam clip is selected.
+        else if (!ctrl && !alt && TryAngleKey(e.Key, out int angle) && _timeline?.SelectedIsMulticam == true)
+        {
+            _timeline.SwitchSelectedAngle(angle);
+            e.Handled = true;
+        }
         // Jump-to-previous/next-keyframe of the selected clip (Premiere uses [ / ], step 16d).
         else if (e.Key == Key.OemOpenBrackets) { JumpToKeyframe(-1); e.Handled = true; }
         else if (e.Key == Key.OemCloseBrackets) { JumpToKeyframe(+1); e.Handled = true; }
@@ -383,6 +393,15 @@ public partial class MainWindow : Window
 
     private bool IsTypingInTextBox() =>
         TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is TextBox;
+
+    /// <summary>Maps a 1–9 number-row or numpad key to a zero-based multicam angle index (PLAN.md step 24).</summary>
+    private static bool TryAngleKey(Key key, out int angle)
+    {
+        if (key >= Key.D1 && key <= Key.D9) { angle = key - Key.D1; return true; }
+        if (key >= Key.NumPad1 && key <= Key.NumPad9) { angle = key - Key.NumPad1; return true; }
+        angle = 0;
+        return false;
+    }
 
     /// <summary>
     /// Seeks the playhead to the previous (<paramref name="direction"/> &lt; 0) or next keyframe of the selected
@@ -965,6 +984,7 @@ public partial class MainWindow : Window
         if (_nudgeLeftMenuItem is not null) _nudgeLeftMenuItem.IsEnabled = sel;
         if (_nudgeRightMenuItem is not null) _nudgeRightMenuItem.IsEnabled = sel;
         if (_clipSpeedMenuItem is not null) _clipSpeedMenuItem.IsEnabled = sel;
+        if (_createMulticamMenuItem is not null) _createMulticamMenuItem.IsEnabled = _timeline?.CanCreateMulticam == true;
     }
 
     private void RefreshEffectsMenu()
@@ -1121,6 +1141,15 @@ public partial class MainWindow : Window
     {
         if (_timeline?.NestSelection() is { } child)
             SetStatus($"Nested selection into {child.Name}");
+    }
+
+    /// <summary>Clip ▸ Create Multicam Source: collapses the stacked video angles into one synced multicam clip
+    /// (PLAN.md step 24). The work is the tested <see cref="Core.Model.MulticamBuilder"/>; this routes it and
+    /// reports. Switch angles afterwards with the 1–9 keys or the Inspector.</summary>
+    private void CreateMulticamSource()
+    {
+        if (_timeline?.CreateMulticamSource() is { } name)
+            SetStatus($"Created {name} — press 1–9 to switch angle at the playhead");
     }
 
     /// <summary>

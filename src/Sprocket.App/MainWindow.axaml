@@ -78,6 +78,11 @@
             <MenuItem x:Name="ClipSpeedMenuItem" Header="_Speed / Duration…" IsEnabled="False" /> <!-- enabled when a clip is selected -->
 
             <Separator />
+            <!-- Multicam (PLAN.md step 24): build a synced angle group from the stacked video tracks. Switch the
+                 active angle with the 1–9 keys or the Inspector. Create enables when ≥2 video tracks carry a clip. -->
+            <MenuItem x:Name="CreateMulticamMenuItem" Header="Create _Multicam Source" IsEnabled="False" />
+
+            <Separator />
             <MenuItem x:Name="NudgeLeftMenuItem" Header="Nudge _Left" InputGesture="Alt+Left" IsEnabled="False" />
             <MenuItem x:Name="NudgeRightMenuItem" Header="Nudge _Right" InputGesture="Alt+Right" IsEnabled="False" />
           </MenuItem>

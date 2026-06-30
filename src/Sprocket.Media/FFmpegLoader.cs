@@ -135,15 +135,27 @@ public static partial class FFmpegLoader
         return IntPtr.Zero; // fall through to default OS resolution (e.g. a system-installed FFmpeg)
     }
 
-    // Locate the on-disk file for one FFmpeg library, preferring the soname the loader binds against
-    // (libavcodec.so.62) over the fully-versioned file (libavcodec.so.62.3.100) or macOS .dylib.
+    // Locate the on-disk file for one FFmpeg library, considering ONLY the current OS's library type. This is
+    // essential when a directory holds more than one platform's natives at once — e.g. a test output dir into
+    // which the build copies the win/linux/macOS cache extracts together: a Windows process must pick
+    // avcodec-62.dll, never the sibling libavcodec.so.62 (loading that throws BadImageFormatException and the
+    // whole load fails). A shipped build bundles only one OS's libs, so this is also correct there.
     private static string? FindBundledLib(string dir, string stem)
     {
-        string? soname = Directory.GetFiles(dir, $"lib{stem}.so.*")
-            .FirstOrDefault(f => LinuxSoname().IsMatch(f));
-        if (soname is not null) return soname;
+        string[] patterns;
+        if (OperatingSystem.IsWindows())
+            patterns = [$"{stem}-*.dll", $"{stem}.dll"];
+        else if (OperatingSystem.IsMacOS())
+            patterns = [$"lib{stem}.*.dylib", $"lib{stem}.dylib"];
+        else
+        {
+            // Linux: prefer the versioned soname the loader binds against (libavcodec.so.62) over a bare .so.
+            string? soname = Directory.GetFiles(dir, $"lib{stem}.so.*").FirstOrDefault(f => LinuxSoname().IsMatch(f));
+            if (soname is not null) return soname;
+            patterns = [$"lib{stem}.so"];
+        }
 
-        foreach (string pattern in new[] { $"{stem}-*.dll", $"lib{stem}.*.dylib", $"lib{stem}.dylib", $"lib{stem}.so", $"{stem}.dll" })
+        foreach (string pattern in patterns)
         {
             string match = Directory.GetFiles(dir, pattern).FirstOrDefault() ?? "";
             if (match.Length > 0) return match;

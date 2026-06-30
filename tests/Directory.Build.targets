@@ -13,9 +13,19 @@
     needs the cache). The version-suffixed extract subfolder is matched by the recursive glob, so it keeps
     working across app-version bumps (it only changes on a new FFmpeg *major*).
   -->
-  <ItemGroup Condition="'$(UsesFFmpegNatives)' == 'true'">
+  <!--
+    Copy ONLY the current OS's natives. The cache can hold extracts for several RIDs at once (win/linux/macOS);
+    dumping all of them into one output dir put a Linux libavcodec.so.62 next to the Windows avcodec-62.dll, and
+    FFmpegLoader on Windows picked the .so (BadImageFormatException → the whole FFmpeg load failed, which is why
+    the Media/Playback/Export suites couldn't run locally). Gating by OS keeps the output dir single-platform.
+  -->
+  <ItemGroup Condition="'$(UsesFFmpegNatives)' == 'true' and $([MSBuild]::IsOSPlatform('Windows'))">
     <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/bin/*.dll" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UsesFFmpegNatives)' == 'true' and $([MSBuild]::IsOSPlatform('Linux'))">
     <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/lib/*.so*" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UsesFFmpegNatives)' == 'true' and $([MSBuild]::IsOSPlatform('OSX'))">
     <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/lib/*.dylib" />
   </ItemGroup>
 

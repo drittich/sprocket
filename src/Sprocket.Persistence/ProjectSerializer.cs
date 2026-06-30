@@ -77,15 +77,37 @@ public static class ProjectSerializer
 
         var settings = new SettingsDto(project.Settings.MasterGainDb, project.Settings.UseProxies, project.Settings.ProxyTier);
 
+        // Multicam sources are orthogonal to the sequence shape; null (omitted) when there are none, so a
+        // multicam-free project serializes byte-identically (WhenWritingNull).
+        List<MulticamSourceDto>? multicams = ToMulticamList(project.MulticamSources);
+
         // Single sequence with no nesting → the legacy Timeline-only shape, byte-identical to pre-step-23 files.
         // Multiple sequences or any nested-sequence clip → the Sequences shape (all sequences + the active id).
         if (project.Sequences.Count <= 1 && !HasAnySequenceClip(project))
-            return new ProjectDto(SchemaVersion, media, ToDto(project.Timeline), settings);
+            return new ProjectDto(SchemaVersion, media, ToDto(project.Timeline), settings, MulticamSources: multicams);
 
         var sequences = new List<SequenceDto>(project.Sequences.Count);
         foreach (Sequence s in project.Sequences)
             sequences.Add(new SequenceDto(s.Id.Value, s.Name, ToDto(s.Timeline)));
-        return new ProjectDto(SchemaVersion, media, Timeline: null, settings, sequences, project.ActiveSequence.Id.Value);
+        return new ProjectDto(
+            SchemaVersion, media, Timeline: null, settings, sequences, project.ActiveSequence.Id.Value, multicams);
+    }
+
+    /// <summary>Converts the multicam sources to DTOs, returning <see langword="null"/> when there are none so a
+    /// multicam-free project serializes byte-identically to a pre-step-24 file (WhenWritingNull).</summary>
+    private static List<MulticamSourceDto>? ToMulticamList(List<MulticamSource> sources)
+    {
+        if (sources.Count == 0)
+            return null;
+        var list = new List<MulticamSourceDto>(sources.Count);
+        foreach (MulticamSource s in sources)
+        {
+            var angles = new List<MulticamAngleDto>(s.Angles.Count);
+            foreach (MulticamAngle a in s.Angles)
+                angles.Add(new MulticamAngleDto(a.Name, a.MediaRefId.Value, a.SyncOffset.Ticks, a.AudioMediaRefId?.Value));
+            list.Add(new MulticamSourceDto(s.Id.Value, s.Name, angles));
+        }
+        return list;
     }
 
     /// <summary>Whether any sequence holds a nested-sequence clip — which forces the multi-sequence wire shape.</summary>
@@ -161,11 +183,14 @@ public static class ProjectSerializer
         GeneratorDto? generator = c.Generator is null ? null : ToDto(c.Generator);
         // A normal-speed clip writes no speed (WhenWritingNull) so the wire format is byte-identical to pre-21 files.
         bool retimed = c.SpeedRatio != Rational.One;
+        // Multicam fields only on a multicam clip, so non-multicam clips serialize byte-identically (WhenWritingNull).
+        bool multicam = c.Kind == ClipKind.Multicam;
         return new ClipDto(
             c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects,
             c.LinkGroupId, kind, generator, ToMarkerList(c.Markers),
             retimed ? c.SpeedRatio.Num : null, retimed ? c.SpeedRatio.Den : null,
-            c.SourceSequenceId?.Value);
+            c.SourceSequenceId?.Value,
+            multicam ? c.SourceMulticamId?.Value : null, multicam ? c.ActiveAngle : null);
     }
 
     private static GeneratorDto ToDto(GeneratorSpec g)
@@ -210,6 +235,9 @@ public static class ProjectSerializer
         project.Settings.MasterGainDb = dto.Settings.MasterGainDb;
         project.Settings.UseProxies = dto.Settings.UseProxies;
         project.Settings.ProxyTier = dto.Settings.ProxyTier;
+        if (dto.MulticamSources is { } multicams)
+            foreach (MulticamSourceDto m in multicams)
+                project.MulticamSources.Add(FromDto(m));
         return project;
     }
 
@@ -308,6 +336,9 @@ public static class ProjectSerializer
                 Clip.CreateAdjustment(sourceOut, start), sourceIn, sourceOut),
             ClipKind.Sequence => RestoreSpan(
                 Clip.CreateSequenceClip(new SequenceId(c.SourceSequenceId ?? Guid.Empty), sourceOut, start), sourceIn, sourceOut),
+            ClipKind.Multicam => RestoreSpan(
+                Clip.CreateMulticamClip(new MulticamId(c.SourceMulticamId ?? Guid.Empty), c.ActiveAngle ?? 0, sourceOut, start),
+                sourceIn, sourceOut),
             _ => new Clip(new MediaRefId(c.MediaRefId), sourceIn, sourceOut, start),
         };
         clip.LinkGroupId = c.LinkGroupId;
@@ -327,6 +358,16 @@ public static class ProjectSerializer
         clip.SourceIn = sourceIn;
         clip.SourceOut = sourceOut;
         return clip;
+    }
+
+    private static MulticamSource FromDto(MulticamSourceDto m)
+    {
+        var angles = new List<MulticamAngle>(m.Angles.Count);
+        foreach (MulticamAngleDto a in m.Angles)
+            angles.Add(new MulticamAngle(
+                a.Name, new MediaRefId(a.MediaRefId), new Timecode(a.SyncOffsetTicks),
+                a.AudioMediaRefId is { } aid ? new MediaRefId(aid) : null));
+        return new MulticamSource(new MulticamId(m.Id), m.Name, angles);
     }
 
     private static GeneratorSpec FromDto(GeneratorDto g)

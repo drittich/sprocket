@@ -20,7 +20,25 @@ internal sealed record ProjectDto(
     // nested-sequence clips writes only Timeline (byte-identical to pre-23 files, no schema bump); a multi-sequence
     // or nested project writes all Sequences + ActiveSequenceId instead, and omits Timeline.
     List<SequenceDto>? Sequences = null,
-    Guid? ActiveSequenceId = null);
+    Guid? ActiveSequenceId = null,
+    // Synced multicam angle groups (PLAN.md step 24). Additive + nullable and orthogonal to the sequence shape:
+    // a project with no multicam sources writes null (WhenWritingNull), so pre-24 files load with none and a
+    // multicam-free project serializes byte-identically.
+    List<MulticamSourceDto>? MulticamSources = null);
+
+/// <summary>A synced multicam source (PLAN.md step 24): a stable id, a display name, and its camera angles.</summary>
+internal sealed record MulticamSourceDto(
+    Guid Id,
+    string Name,
+    List<MulticamAngleDto> Angles);
+
+/// <summary>One camera angle: its display name, the source it draws video from, the sync offset that aligns it
+/// with the other angles, and an optional separate audio source (null = audio from the video file).</summary>
+internal sealed record MulticamAngleDto(
+    string Name,
+    Guid MediaRefId,
+    long SyncOffsetTicks,
+    Guid? AudioMediaRefId = null);
 
 /// <summary>A named sequence (PLAN.md step 23): a stable id, a display name, and its timeline content.</summary>
 internal sealed record SequenceDto(
@@ -97,7 +115,11 @@ internal sealed record ClipDto(
     int? SpeedDen = null,
     // Nested-sequence source (PLAN.md step 23). Present only on a Kind == Sequence clip; null/absent otherwise,
     // so non-nesting projects serialize byte-identically (WhenWritingNull).
-    Guid? SourceSequenceId = null);
+    Guid? SourceSequenceId = null,
+    // Multicam source + active angle (PLAN.md step 24). Present only on a Kind == Multicam clip; null/absent
+    // otherwise, so non-multicam projects serialize byte-identically (WhenWritingNull).
+    Guid? SourceMulticamId = null,
+    int? ActiveAngle = null);
 
 /// <summary>A marker (PLAN.md step 20): a time, optional name/comment, colour band, and an optional span
 /// (<see cref="DurationTicks"/> &gt; 0). Colour serializes as a string enum.</summary>

@@ -60,6 +60,11 @@ public sealed class Project
     /// <summary>All sequences in the project, in creation order. Always contains <see cref="ActiveSequence"/>.</summary>
     public List<Sequence> Sequences { get; } = new();
 
+    /// <summary>Synced multicam angle groups (PLAN.md step 24), referenced by <see cref="ClipKind.Multicam"/>
+    /// clips via <see cref="Clip.SourceMulticamId"/>. Built from synced source clips and edited through the
+    /// command stack; a source can be referenced by many clips and sequences (references, not copies).</summary>
+    public List<MulticamSource> MulticamSources { get; } = new();
+
     /// <summary>
     /// The sequence currently open for editing. Setting it must name a sequence that is in
     /// <see cref="Sequences"/> (switching the open sequence is navigation, not a model edit — it is not undone).
@@ -87,6 +92,16 @@ public sealed class Project
         foreach (Sequence s in Sequences)
             if (s.Id == id)
                 return s;
+        return null;
+    }
+
+    /// <summary>Finds a multicam source by id, or <see langword="null"/> if none exists (a dangling reference
+    /// after the source was deleted renders as nothing, §15).</summary>
+    public MulticamSource? GetMulticam(MulticamId id)
+    {
+        foreach (MulticamSource m in MulticamSources)
+            if (m.Id == id)
+                return m;
         return null;
     }
 

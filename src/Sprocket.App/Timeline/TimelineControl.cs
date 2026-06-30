@@ -45,6 +45,7 @@ public sealed class TimelineControl : Control
     private static readonly IBrush VideoFill = Brush("#2F3A5C");
     private static readonly IBrush AudioFill = Brush("#2C4A39");
     private static readonly IBrush SequenceFill = Brush("#1F5C63"); // nested-sequence clips (teal, distinct from media)
+    private static readonly IBrush MulticamFill = Brush("#5C3A6B"); // multicam clips (violet, distinct from media/nest)
     private static readonly IBrush ClipDetail = Brush("#4A567E");
     private static readonly IBrush AudioDetail = Brush("#4F7A60");
     private static readonly IBrush Text = Brush("#C9D1DA");
@@ -522,6 +523,93 @@ public sealed class TimelineControl : Control
         return nest.Child;
     }
 
+    /// <summary>Whether a multicam source can be created — at least two video tracks carry a clip (the angles).</summary>
+    public bool CanCreateMulticam =>
+        _project is not null && _project.Timeline.VideoTracks.Count(vt => vt.Clips.Count > 0) >= 2;
+
+    /// <summary>Whether the selected clip is a multicam clip (so angle switching applies).</summary>
+    public bool SelectedIsMulticam => _selected?.Kind == ClipKind.Multicam;
+
+    /// <summary>
+    /// Creates a synced multicam source from the stacked camera angles (the first clip on each video track) and
+    /// replaces them with a single multicam clip (PLAN.md step 24, the Premiere "Create Multi-Camera Source"
+    /// gesture). The angles are synced by their current placement; switch angles later with the number keys or the
+    /// Inspector. One undoable edit; the new multicam clip becomes the selection. Returns the source name, or
+    /// <see langword="null"/> when there are fewer than two angle tracks.
+    /// </summary>
+    public string? CreateMulticamSource()
+    {
+        if (_history is null || _project is null)
+            return null;
+
+        var angleClips = new List<Clip>();
+        foreach (VideoTrack vt in _project.Timeline.VideoTracks)
+            if (vt.Clips.Count > 0)
+                angleClips.Add(vt.Clips[0]);
+
+        string name = $"Multicam {_project.MulticamSources.Count + 1}";
+        if (MulticamBuilder.CreateMulticam(_project, _project.ActiveSequence, angleClips, name) is not { } result)
+            return null;
+
+        Execute(result.Command);
+        Select(result.PrimaryClip);
+        ClipPlaced?.Invoke();
+        return result.Source.Name;
+    }
+
+    /// <summary>
+    /// Switches the selected multicam clip to <paramref name="angleIndex"/> at the playhead (PLAN.md step 24, live
+    /// angle cutting): when the playhead is inside the clip the clip is bladed there and the new (right) segment
+    /// takes the angle — so the angle program is a run of segments — otherwise the whole segment's angle is set. With
+    /// <see cref="Linked"/> on, the companion audio multicam clip cuts/switches together. One undoable edit.
+    /// </summary>
+    public void SwitchSelectedAngle(int angleIndex)
+    {
+        if (_selected is null || _selected.Kind != ClipKind.Multicam || _history is null || _project is null)
+            return;
+        if (_selected.SourceMulticamId is not { } id || _project.GetMulticam(id) is not { } source)
+            return;
+        if (angleIndex < 0 || angleIndex >= source.Angles.Count || _selected.ActiveAngle == angleIndex)
+            return;
+
+        var members = new List<Clip> { _selected };
+        if (Linked)
+            members.AddRange(_project.Timeline.ClipsLinkedTo(_selected)
+                .Select(l => l.Clip).Where(c => c.Kind == ClipKind.Multicam));
+
+        var at = _playhead;
+        Guid? rightGroup = (Linked && _selected.LinkGroupId is not null && members.Count > 1) ? Guid.NewGuid() : null;
+
+        var commands = new List<IEditCommand>();
+        Clip? newPrimary = null;
+        foreach (Clip c in members)
+        {
+            if (TrackOf(c) is not { } track)
+                continue;
+            bool cut = at > c.TimelineStart && at < c.TimelineEnd;
+            if (cut)
+            {
+                var split = new SplitClipCommand(track, c, at, rightGroup);
+                commands.Add(split);
+                commands.Add(new SetClipAngleCommand(split.RightClip, angleIndex));
+                if (ReferenceEquals(c, _selected))
+                    newPrimary = split.RightClip;
+            }
+            else
+            {
+                commands.Add(new SetClipAngleCommand(c, angleIndex));
+                if (ReferenceEquals(c, _selected))
+                    newPrimary = c;
+            }
+        }
+        if (commands.Count == 0)
+            return;
+
+        Execute(commands.Count == 1 ? commands[0] : new CompositeCommand("Switch angle", commands));
+        if (newPrimary is not null)
+            Select(newPrimary);
+    }
+
     /// <summary>
     /// Adds a synthetic (generator / adjustment) clip at the playhead. It lands on the topmost video track when that
     /// track is free at the playhead; otherwise a new video track is created above so the clip stacks over (not
@@ -751,7 +839,12 @@ public sealed class TimelineControl : Control
 
                 var rect = new Rect(x0, top, Math.Max(2, x1 - x0), h);
                 var rounded = new RoundedRect(rect, 4);
-                IBrush fill = clip.Kind == ClipKind.Sequence ? SequenceFill : (isVideo ? VideoFill : AudioFill);
+                IBrush fill = clip.Kind switch
+                {
+                    ClipKind.Sequence => SequenceFill,
+                    ClipKind.Multicam => MulticamFill,
+                    _ => isVideo ? VideoFill : AudioFill,
+                };
                 ctx.DrawRectangle(fill, null, rounded);
 
                 using (ctx.PushClip(rect))
@@ -1807,6 +1900,11 @@ public sealed class TimelineControl : Control
                 // A nested-sequence clip is labelled with the child sequence's name; a dangling reference
                 // (the child was deleted) falls back to a neutral label (it renders as nothing, §15).
                 return (clip.SourceSequenceId is { } sid ? _project?.GetSequence(sid)?.Name : null) ?? "Nested sequence";
+            case ClipKind.Multicam:
+                // A multicam clip is labelled with its source name + the active angle's name (the live angle).
+                MulticamSource? mc = clip.SourceMulticamId is { } mid ? _project?.GetMulticam(mid) : null;
+                string angle = mc?.AngleAt(clip.ActiveAngle)?.Name ?? $"Angle {clip.ActiveAngle + 1}";
+                return mc is null ? "Multicam" : $"{mc.Name} · {angle}";
         }
         MediaRef? media = _project?.MediaPool.Get(clip.MediaRefId);
         return media is null ? "clip" : System.IO.Path.GetFileName(media.AbsolutePath);

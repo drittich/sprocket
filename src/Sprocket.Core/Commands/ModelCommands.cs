@@ -805,6 +805,120 @@ public sealed class RemoveSequenceCommand : EditCommand
     }
 }
 
+/// <summary>
+/// Adds a synced multicam source to the project; undo removes it (PLAN.md step 24). Building a multicam source
+/// goes through the command stack so it is undoable and flips the dirty indicator. A clip referencing a removed
+/// source renders as nothing (§15), and undo restores it.
+/// </summary>
+public sealed class AddMulticamSourceCommand(Project project, MulticamSource source) : EditCommand("Add multicam source")
+{
+    /// <inheritdoc />
+    public override void Apply() => project.MulticamSources.Add(source);
+
+    /// <inheritdoc />
+    public override void Revert() => project.MulticamSources.Remove(source);
+}
+
+/// <summary>Removes a multicam source from the project; undo re-inserts it at the same index (PLAN.md step 24).</summary>
+public sealed class RemoveMulticamSourceCommand : EditCommand
+{
+    private readonly Project _project;
+    private readonly MulticamSource _source;
+    private int _index = -1;
+
+    /// <summary>Captures the source to remove.</summary>
+    public RemoveMulticamSourceCommand(Project project, MulticamSource source) : base("Remove multicam source")
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(source);
+        _project = project;
+        _source = source;
+    }
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        _index = _project.MulticamSources.IndexOf(_source);
+        if (_index >= 0)
+            _project.MulticamSources.RemoveAt(_index);
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        if (_index < 0)
+            return;
+        _project.MulticamSources.Insert(Math.Min(_index, _project.MulticamSources.Count), _source);
+    }
+}
+
+/// <summary>
+/// Sets a multicam clip's active angle (PLAN.md step 24, an angle switch / cut). Not coalescing — each switch is
+/// a discrete edit (live cutting splits the clip first, so each segment's angle is set once). Undo restores the
+/// previous angle.
+/// </summary>
+public sealed class SetClipAngleCommand : EditCommand
+{
+    private readonly Clip _clip;
+    private readonly int _oldAngle;
+    private readonly int _newAngle;
+
+    /// <summary>Captures the clip's current angle and records the new one to apply.</summary>
+    public SetClipAngleCommand(Clip clip, int newAngle) : base("Switch angle")
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        if (newAngle < 0)
+            throw new ArgumentOutOfRangeException(nameof(newAngle), "The angle index must be non-negative.");
+        _clip = clip;
+        _oldAngle = clip.ActiveAngle;
+        _newAngle = newAngle;
+    }
+
+    /// <inheritdoc />
+    public override void Apply() => _clip.ActiveAngle = _newAngle;
+
+    /// <inheritdoc />
+    public override void Revert() => _clip.ActiveAngle = _oldAngle;
+}
+
+/// <summary>
+/// Re-syncs a multicam source by setting every angle's <see cref="MulticamAngle.SyncOffset"/> at once (PLAN.md
+/// step 24, after a sync pass — by timecode, markers, or audio cross-correlation). Undo restores the previous
+/// offsets. One offset per angle.
+/// </summary>
+public sealed class SetMulticamOffsetsCommand : EditCommand
+{
+    private readonly MulticamSource _source;
+    private readonly Timecode[] _oldOffsets;
+    private readonly Timecode[] _newOffsets;
+
+    /// <summary>Captures the source's current offsets and records the new ones to apply.</summary>
+    public SetMulticamOffsetsCommand(MulticamSource source, IReadOnlyList<Timecode> newOffsets) : base("Sync angles")
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(newOffsets);
+        if (newOffsets.Count != source.Angles.Count)
+            throw new ArgumentException("There must be one offset per angle.", nameof(newOffsets));
+        _source = source;
+        _oldOffsets = source.Angles.Select(a => a.SyncOffset).ToArray();
+        _newOffsets = newOffsets.ToArray();
+    }
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        for (int i = 0; i < _source.Angles.Count; i++)
+            _source.Angles[i].SyncOffset = _newOffsets[i];
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        for (int i = 0; i < _source.Angles.Count; i++)
+            _source.Angles[i].SyncOffset = _oldOffsets[i];
+    }
+}
+
 /// <summary>Adds a track to the timeline (appended on top in z-order); undo removes it.</summary>
 public sealed class AddTrackCommand(Timeline timeline, Track track) : EditCommand("Add track")
 {

@@ -113,6 +113,9 @@ public sealed class InspectorPanel : UserControl
 
         _body.Children.Add(BuildClipSection(_clip));
 
+        if (_clip.Kind == ClipKind.Multicam)
+            _body.Children.Add(BuildMulticamSection(_clip));
+
         foreach (EffectInstance effect in _clip.Effects)
             _body.Children.Add(BuildEffectSection(_clip, effect));
 
@@ -175,6 +178,52 @@ public sealed class InspectorPanel : UserControl
         row.Children.Add(right);
         row.Children.Add(new TextBlock { Text = "Speed", FontSize = 11, Foreground = FaintText, VerticalAlignment = VerticalAlignment.Center });
         return row;
+    }
+
+    /// <summary>The Multicam section (PLAN.md step 24): the synced source plus one button per camera angle (the
+    /// active one highlighted). Clicking sets the segment's angle via <see cref="SetClipAngleCommand"/> (the
+    /// number keys do the same with a playhead cut). Shows each angle's sync offset.</summary>
+    private Control BuildMulticamSection(Clip clip)
+    {
+        var content = new StackPanel { Spacing = 6, Margin = new Avalonia.Thickness(4, 4, 4, 4) };
+        MulticamSource? source = clip.SourceMulticamId is { } id ? _project!.GetMulticam(id) : null;
+        if (source is null)
+        {
+            content.Children.Add(new TextBlock { Text = "Multicam source missing.", FontSize = 11, Foreground = FaintText });
+            return Section("Multicam", content, expanded: true);
+        }
+
+        content.Children.Add(InfoRow("Source", source.Name));
+        content.Children.Add(new TextBlock { Text = "Active angle", FontSize = 11, Foreground = FaintText });
+
+        var angles = new StackPanel { Spacing = 3 };
+        for (int i = 0; i < source.Angles.Count; i++)
+        {
+            int index = i; // capture per iteration
+            MulticamAngle a = source.Angles[i];
+            bool active = clip.ActiveAngle == i;
+            string offset = a.SyncOffset.Ticks == 0 ? "" : $"   ({FormatSeconds(a.SyncOffset)})";
+            var button = new Button
+            {
+                Content = $"{i + 1}.  {a.Name}{offset}",
+                FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Avalonia.Thickness(8, 3),
+                Background = active ? Accent : RaisedBg,
+                Foreground = TextBrush,
+                BorderBrush = Edge,
+            };
+            button.Click += (_, _) =>
+            {
+                if (_history is null || clip.ActiveAngle == index)
+                    return;
+                _history.Execute(new SetClipAngleCommand(clip, index));
+            };
+            angles.Children.Add(button);
+        }
+        content.Children.Add(angles);
+        return Section("Multicam", content, expanded: true);
     }
 
     private Control BuildEffectSection(Clip clip, EffectInstance effect)

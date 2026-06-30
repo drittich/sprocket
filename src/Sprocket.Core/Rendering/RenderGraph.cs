@@ -78,7 +78,7 @@ public static class RenderGraph
             double trackGain = DbToLinear(track.GainDb);
             double gainStart = trackGain * FadeGain(clip, bufferStart);
             double gainEnd = trackGain * FadeGain(clip, bufferEnd);
-            layers.Add(new AudioLayer(clip.MediaRefId, clip.MapToSource(bufferStart), gainStart, gainEnd));
+            layers.Add(new AudioLayer(clip.MediaRefId, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio));
         }
 
         return new AudioBufferPlan(bufferStart, bufferDuration, layers, DbToLinear(project.Settings.MasterGainDb));

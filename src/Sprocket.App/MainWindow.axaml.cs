@@ -78,7 +78,7 @@ public partial class MainWindow : Window
 
     // Command-menu items refreshed on submenu open (context-enabling) + the View toggles / panes.
     private MenuItem? _cutMenuItem, _copyMenuItem, _pasteMenuItem, _deleteMenuItem;
-    private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem;
+    private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem, _clipSpeedMenuItem;
     private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem;
     private System.Collections.Generic.IReadOnlyList<MenuItem> _effectsMenuItems = [];
     private ToggleButton? _snappingToggle, _guidesToggle;
@@ -266,9 +266,11 @@ public partial class MainWindow : Window
         _unlinkMenuItem = this.FindControl<MenuItem>("ClipUnlinkMenuItem")!;
         _nudgeLeftMenuItem = this.FindControl<MenuItem>("NudgeLeftMenuItem")!;
         _nudgeRightMenuItem = this.FindControl<MenuItem>("NudgeRightMenuItem")!;
+        _clipSpeedMenuItem = this.FindControl<MenuItem>("ClipSpeedMenuItem")!;
         _unlinkMenuItem.Click += (_, _) => _timeline?.UnlinkSelected();
         _nudgeLeftMenuItem.Click += (_, _) => _timeline?.NudgeSelected(-1);
         _nudgeRightMenuItem.Click += (_, _) => _timeline?.NudgeSelected(+1);
+        _clipSpeedMenuItem.Click += async (_, _) => await ShowSpeedDialogAsync();
         this.FindControl<MenuItem>("ClipMenu")!.SubmenuOpened += (_, _) => RefreshClipMenu();
 
         // ── Clip ▸ Insert (generators + adjustment layer, PLAN.md step 19) ──
@@ -925,6 +927,7 @@ public partial class MainWindow : Window
         if (_unlinkMenuItem is not null) _unlinkMenuItem.IsEnabled = _timeline?.SelectedIsLinked == true;
         if (_nudgeLeftMenuItem is not null) _nudgeLeftMenuItem.IsEnabled = sel;
         if (_nudgeRightMenuItem is not null) _nudgeRightMenuItem.IsEnabled = sel;
+        if (_clipSpeedMenuItem is not null) _clipSpeedMenuItem.IsEnabled = sel;
     }
 
     private void RefreshEffectsMenu()
@@ -932,6 +935,20 @@ public partial class MainWindow : Window
         bool sel = _timeline?.HasSelection == true;
         foreach (MenuItem item in _effectsMenuItems)
             item.IsEnabled = sel;
+    }
+
+    /// <summary>Clip ▸ Speed / Duration (PLAN.md step 21): prompts for a speed percentage and retimes the
+    /// selected clip (and its linked companions) through the command stack.</summary>
+    private async Task ShowSpeedDialogAsync()
+    {
+        if (_timeline is not { HasSelection: true } timeline)
+            return;
+        Sprocket.Core.Timing.Rational? speed = await SpeedDialog.Show(this, timeline.SelectedClipSpeed);
+        if (speed is { } s)
+        {
+            timeline.SetSelectedClipSpeed(s);
+            SetStatus($"Clip speed set to {(s.ToDouble() * 100):0.##}%.");
+        }
     }
 
     private void RefreshViewMenu()

@@ -139,9 +139,12 @@ public static class ProjectSerializer
         // Media clips leave Kind/Generator null so the wire format is byte-identical to pre-step-19 files.
         ClipKind? kind = c.Kind == ClipKind.Media ? null : c.Kind;
         GeneratorDto? generator = c.Generator is null ? null : ToDto(c.Generator);
+        // A normal-speed clip writes no speed (WhenWritingNull) so the wire format is byte-identical to pre-21 files.
+        bool retimed = c.SpeedRatio != Rational.One;
         return new ClipDto(
             c.MediaRefId.Value, c.SourceIn.Ticks, c.SourceOut.Ticks, c.TimelineStart.Ticks, effects,
-            c.LinkGroupId, kind, generator, ToMarkerList(c.Markers));
+            c.LinkGroupId, kind, generator, ToMarkerList(c.Markers),
+            retimed ? c.SpeedRatio.Num : null, retimed ? c.SpeedRatio.Den : null);
     }
 
     private static GeneratorDto ToDto(GeneratorSpec g)
@@ -258,6 +261,9 @@ public static class ProjectSerializer
             _ => new Clip(new MediaRefId(c.MediaRefId), sourceIn, sourceOut, start),
         };
         clip.LinkGroupId = c.LinkGroupId;
+        // Speed absent ⇒ 1/1 (pre-21 files / normal-speed clips).
+        if (c.SpeedNum is int speedNum && c.SpeedDen is int speedDen)
+            clip.SpeedRatio = new Rational(speedNum, speedDen);
         foreach (EffectDto e in c.Effects)
             clip.Effects.Add(FromDto(e));
         AddMarkers(clip.Markers, c.Markers);

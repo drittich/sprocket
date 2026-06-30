@@ -170,6 +170,46 @@ public sealed class SetClipPlacementCommand : EditCommand
 }
 
 /// <summary>
+/// Sets a clip's playback speed (retime, PLAN.md step 21). The selected source span is unchanged; only the
+/// clip's timeline <see cref="Clip.Duration"/> and its time map derive from the new <see cref="Clip.SpeedRatio"/>.
+/// Coalesces with further speed changes of the same clip so dragging the speed control is one undo entry.
+/// </summary>
+public sealed class SetClipSpeedCommand : EditCommand
+{
+    private readonly Clip _clip;
+    private readonly Rational _oldSpeed;
+    private Rational _newSpeed;
+
+    /// <summary>Captures the clip's current speed and records the new (strictly positive) ratio to apply.</summary>
+    public SetClipSpeedCommand(Clip clip, Rational newSpeed) : base("Change speed")
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        if (newSpeed.Num <= 0)
+            throw new ArgumentOutOfRangeException(nameof(newSpeed), "Speed must be strictly positive.");
+        _clip = clip;
+        _oldSpeed = clip.SpeedRatio;
+        _newSpeed = newSpeed;
+    }
+
+    /// <inheritdoc />
+    public override void Apply() => _clip.SpeedRatio = _newSpeed;
+
+    /// <inheritdoc />
+    public override void Revert() => _clip.SpeedRatio = _oldSpeed;
+
+    /// <inheritdoc />
+    public override bool TryMergeWith(IEditCommand next)
+    {
+        if (next is SetClipSpeedCommand other && ReferenceEquals(other._clip, _clip))
+        {
+            _newSpeed = other._newSpeed;
+            return true;
+        }
+        return false;
+    }
+}
+
+/// <summary>
 /// Splits a clip in two at timeline time <paramref name="at"/> — the Blade (razor) op (PLAN.md step 13,
 /// UI.md §3.2). The original clip becomes the left half (its <see cref="Clip.SourceOut"/> is pulled back to
 /// the split point); a new right-half clip is inserted immediately after it, carrying the remaining source

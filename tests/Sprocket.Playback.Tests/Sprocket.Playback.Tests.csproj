@@ -7,9 +7,11 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <!-- The engine integration tests decode a real fixture, so they need the FFmpeg 8 native libs;
-         they resolve at runtime via Sprocket.Media's FFmpegLoader from %SPROCKET_FFMPEG8_DIR%. The
+         they resolve at runtime via Sprocket.Media's FFmpegLoader from the output dir
+         (UsesFFmpegNatives copies them from ./.ffmpeg-cache) or %SPROCKET_FFMPEG8_DIR% (CI). The
          win-x64 RID is kept for a stable Windows output layout. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
+    <UsesFFmpegNatives>true</UsesFFmpegNatives>
   </PropertyGroup>
 
   <ItemGroup>

@@ -8,9 +8,11 @@
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Export round-trips through real FFmpeg 8 encode + decode; the natives resolve at runtime via
-         Sprocket.Media's FFmpegLoader from %SPROCKET_FFMPEG8_DIR%. The win-x64 RID is kept for a stable
+         Sprocket.Media's FFmpegLoader from the output dir (UsesFFmpegNatives copies them from
+         ./.ffmpeg-cache) or %SPROCKET_FFMPEG8_DIR% (CI). The win-x64 RID is kept for a stable
          Windows output layout (as Media.Tests does). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
+    <UsesFFmpegNatives>true</UsesFFmpegNatives>
   </PropertyGroup>
 
   <ItemGroup>

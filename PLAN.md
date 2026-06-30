@@ -1159,6 +1159,53 @@ Tags reference the [UI.md §4 checklist](UI.md).
       refinement, step 31); reverse plays the source backward.
     - **UI.** The **Clip ▸ Speed/Duration** menu item (built but disabled at step 16c) + an inspector
       control + a speed-ramp keyframe lane (reusing step-16b/16d keyframing).
+    - **✅ DONE — constant-speed retime (`Sprocket.Core/Model/Clip` + `Timing/{Timecode,Rational}` +
+      `Commands/ModelCommands` + `Rendering/{RenderPlan,RenderGraph}`; `Sprocket.Audio/AudioMixer`;
+      `Sprocket.Persistence`; `Sprocket.App/{SpeedFormat,Dialogs,Inspector/InspectorPanel,Timeline/TimelineControl,
+      MainWindow}`; 24 new tests — Core +8, Audio +3, Persistence +2, App +11, all green).** Per-clip speed lands
+      on the existing clip / render-graph / time model with no redesign (ARCHITECTURE.md §5/§17). Delivered:
+      - **Model (Core, §4).** `Clip.SpeedRatio` is a strictly-positive `Rational` (default 1/1, non-destructive — the
+        source bytes and the selected `SourceIn`/`SourceOut` span are untouched). The clip's timeline `Duration`
+        derives from it (`(SourceOut − SourceIn) / Speed`, so 2× is half as long, ½× twice as long) and the
+        timeline→source map is `MapToSource(t) = SourceIn + (t − TimelineStart) × Speed`. Both go through a new exact
+        `Timecode.Scale(Rational)` (Int128 product, rounded), and `Rational.One` was added as the identity. A blade
+        split copies the speed onto both halves (`CloneContentForSpan`), so the two halves still sum to the original
+        timeline span.
+      - **Command (Core, step 10).** `SetClipSpeedCommand` applies/reverts the ratio and coalesces per clip, so a
+        Speed dialog / inspector edit is one undo entry. The source span is never touched — only `Duration` and the
+        map derive from the new speed.
+      - **Render graph (Core, §5).** Video needs no new plumbing — `PlanVideoFrame` already maps each layer's source
+        time through `clip.MapToSource`, so a retimed clip walks its source proportionally faster/slower on **preview
+        and export** with no per-frame managed pixels (§1). `AudioLayer` gained a `SpeedRatio` (default 1/1) that
+        `PlanAudioBuffer` fills from the clip, so the mixer knows the resample factor.
+      - **Audio (Sprocket.Audio).** `AudioMixer` resamples a retimed layer's source PCM by the speed factor with a
+        **streaming linear resampler**: a per-source carried window holds source frames already pulled but not yet
+        consumed, so reading stays sequential across buffers (no per-buffer seek) and the source cursor never drifts;
+        a jump still re-seeks and resets the window. The **1× fast path is completely untouched** (read sequentially,
+        no resample). Pitch is not preserved — a deliberate first cut (pitch-preserving time-stretch is step 31).
+      - **Persistence.** `ClipDto` gains additive, nullable `speedNum`/`speedDen`: a normal-speed (1/1) clip writes
+        neither (`WhenWritingNull`), so pre-21 files load at 1× and un-retimed projects serialize byte-identically
+        (no schema bump, §12). A retimed clip's speed round-trips and its derived duration comes back right.
+      - **UI (App, manual-verified).** **Clip ▸ Speed / Duration…** (enabled when a clip is selected) opens a small
+        percentage dialog (100% = normal, with 25/50/100/200/400% presets); the **Inspector** Clip section grew an
+        editable **Speed %** row. Both retime the selected clip **and its linked companions together** (so companion
+        audio stays in sync) through `TimelineControl.SetSelectedClipSpeed` / the inspector commit, as one undo entry.
+        The percentage↔ratio conversions live in a pure, tested `SpeedFormat` helper (mirroring the `TimelineMath`
+        split); the Duration row updates on the resulting rebuild.
+      - **Tests (24).** Core — duration/map at 1×/2×/½×, positive-speed guard, `Timecode.Scale` rounding,
+        `SetClipSpeedCommand` apply/revert/coalesce, split-preserves-speed-on-both-halves; Audio — mixer resamples a
+        known source ramp at 2×/½× (exact on the source grid) and **streams across buffers without re-seeking**;
+        Persistence — speed round-trip + 1× omits-the-field/loads-as-unity; App — `SpeedFormat` parse/format/round-trip
+        + non-positive rejection (the deferred reverse/freeze inputs). Clean build (0 warnings); full suite
+        **410 tests green** (Core 139, Media 28, Render 23, Audio 19, Playback 47, Export 10, Persistence 30,
+        App 114) — the FFmpeg-native suites (Media/Playback/Export) verified against the bundled FFmpeg-8 shared
+        natives, confirming the 1× fast path is behaviour-unchanged and the retimed-audio resample feeds the real
+        decode → mixer → export round-trip.
+      - **Deferred (noted, on the same seam — additive when picked up):** **reverse** playback (the `Reverse` flag —
+        needs backward decode in the feed/export provider, not just a negated map), keyframed **speed ramps** (an
+        integrated time map from a keyframed-speed `AnimatableValue`), **freeze frame** (speed 0 — needs an
+        independent timeline duration rather than one derived from the source span), and **pitch-preserving**
+        time-stretch / frame-interpolated slow-motion (step 31 / a later quality tier behind the same seam).
 22. **Ripple / roll / slide editing.** Trim modes that preserve timeline continuity — basic editor
     ergonomics — extending the step-12/13 timeline tools (Select / Blade / Slip already exist). Each is a
     new pure timeline operation issued as a command (or `CompositeCommand`) so it stays undoable:

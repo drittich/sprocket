@@ -396,6 +396,27 @@ public sealed class TimelineControl : Control
         Execute(commands.Count == 1 ? commands[0] : new CompositeCommand("Unlink clips", commands));
     }
 
+    /// <summary>
+    /// Retimes the selected clip to <paramref name="speed"/> (PLAN.md step 21), and — so companion audio stays in
+    /// sync — every clip linked to it, as one undo entry. The source span is unchanged; the clip's timeline
+    /// duration derives from the new speed.
+    /// </summary>
+    public void SetSelectedClipSpeed(Rational speed)
+    {
+        if (_selected is null || _history is null || _project is null || speed.Num <= 0)
+            return;
+        var members = new List<Clip> { _selected };
+        members.AddRange(_project.Timeline.ClipsLinkedTo(_selected).Select(l => l.Clip));
+
+        var commands = members
+            .Select(c => (IEditCommand)new SetClipSpeedCommand(c, speed))
+            .ToList();
+        Execute(commands.Count == 1 ? commands[0] : new CompositeCommand("Change speed", commands));
+    }
+
+    /// <summary>The selected clip's current playback speed (1/1 when nothing is selected), for the Speed dialog.</summary>
+    public Rational SelectedClipSpeed => _selected?.SpeedRatio ?? Rational.One;
+
     /// <summary>Appends an effect (by catalog id) to the selected clip via <see cref="AddEffectCommand"/> (steps 15–16).</summary>
     public void ApplyEffectToSelected(string effectTypeId)
     {

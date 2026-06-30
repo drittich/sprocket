@@ -259,6 +259,34 @@ public class ProjectSerializerTests
     }
 
     [Fact]
+    public void Clip_Speed_Round_Trips()
+    {
+        var timeline = new Timeline(new Rational(30, 1), new Resolution(1920, 1080), 48000);
+        var project = new Project(timeline);
+        project.MediaPool.Add(new MediaRef(VideoId, @"C:\media\clip.mp4",
+            new ProbedMediaInfo(Timecode.FromSeconds(12.5), true, new Rational(30, 1), 1920, 1080, false, 0, 0)));
+        var video = new VideoTrack { Name = "V1" };
+        video.Clips.Add(new Clip(VideoId, Timecode.Zero, Timecode.FromSeconds(6), Timecode.Zero) { SpeedRatio = new Rational(3, 2) });
+        timeline.Tracks.Add(video);
+
+        Clip loaded = RoundTrip(project).Timeline.VideoTracks.First().Clips.Single();
+        Assert.Equal(new Rational(3, 2), loaded.SpeedRatio);
+        Assert.Equal(Timecode.FromSeconds(4), loaded.Duration); // 6s / 1.5×
+    }
+
+    [Fact]
+    public void Normal_Speed_Clip_Omits_Speed_In_Json_And_Loads_As_Unity()
+    {
+        // Speed is additive + nullable: a 1× clip must not emit it so pre-21 files stay byte-identical.
+        string json = ProjectSerializer.Serialize(BuildRichProject());
+        Assert.DoesNotContain("\"speedNum\"", json);
+        Assert.DoesNotContain("\"speedDen\"", json);
+
+        Clip loaded = RoundTrip(BuildRichProject()).Timeline.VideoTracks.First().Clips.Single();
+        Assert.Equal(Rational.One, loaded.SpeedRatio);
+    }
+
+    [Fact]
     public void Serialized_Json_Carries_The_Schema_Version()
     {
         string json = ProjectSerializer.Serialize(BuildRichProject());

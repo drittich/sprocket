@@ -29,6 +29,20 @@ public sealed class AudioMixer : IDisposable
         public required IPcmReader Reader;
         public Timecode NextSourceTime;
         public bool Positioned;
+
+        // Retime resampler state (PLAN.md step 21), used only by retimed (speed ≠ 1) layers. A streaming linear
+        // resampler: Window holds source frames already pulled but not yet fully consumed (carried across buffers
+        // so reading stays sequential — no per-buffer seek), and Phase is the fractional position of the next
+        // output sample measured from Window[0]. Reset whenever the reader is (re)seeked.
+        public float[] Window = [];
+        public int WindowFrames;
+        public double Phase;
+
+        public void ResetResampler()
+        {
+            WindowFrames = 0;
+            Phase = 0;
+        }
     }
 
     private readonly Func<MediaRefId, IPcmReader?> _resolve;
@@ -83,8 +97,17 @@ public sealed class AudioMixer : IDisposable
                 continue;
 
             layer.Clear();
-            int got = reader.Read(layer);
-            AdvanceReader(al.MediaRefId, got);
+            SourceState state = _states[al.MediaRefId];
+            // Speed 1/1 is the common case: read sequentially, no resample (the original fast path, untouched).
+            if (al.SpeedRatio.Num == al.SpeedRatio.Den)
+            {
+                int got = reader.Read(layer);
+                state.NextSourceTime += Timecode.FromSamples(got, SampleRate);
+            }
+            else
+            {
+                ReadResampled(state, layer, frames, al.SpeedRatio.ToDouble());
+            }
 
             SumWithRamp(destinationInterleaved, layer, frames, al.GainStartLinear, al.GainEndLinear);
         }
@@ -109,14 +132,70 @@ public sealed class AudioMixer : IDisposable
             state.Reader.SeekTo(sourceStart);
             state.NextSourceTime = sourceStart;
             state.Positioned = true;
+            state.ResetResampler(); // the carried resample window is stale after a jump
         }
         return state.Reader;
     }
 
-    private void AdvanceReader(MediaRefId id, int framesRead)
+    /// <summary>
+    /// Fills <paramref name="layer"/> (one buffer of <paramref name="frames"/> output sample-frames) by reading
+    /// the source at <paramref name="speed"/>× through a streaming linear resampler (PLAN.md step 21). The state's
+    /// <see cref="SourceState.Window"/> carries source frames already pulled but not yet consumed, so reads stay
+    /// sequential across buffers (no per-buffer seek) and the source cursor never drifts. Pitch is not preserved
+    /// (a deliberate first cut — pitch-preserving time-stretch is step 31). End of stream resamples as silence.
+    /// </summary>
+    private void ReadResampled(SourceState state, Span<float> layer, int frames, double speed)
     {
-        SourceState state = _states[id];
-        state.NextSourceTime += Timecode.FromSamples(framesRead, SampleRate);
+        int c = Channels;
+
+        // Continuous source index (measured from Window[0]) of the last output sample's right interpolation
+        // neighbour, and of the next buffer's first output sample (which fixes how far to advance the window).
+        double endPos = state.Phase + frames * speed;
+        int rightNeeded = (int)Math.Floor(state.Phase + (frames - 1) * speed) + 1;
+        int baseAdvance = (int)Math.Floor(endPos);
+        int framesNeeded = Math.Max(rightNeeded, baseAdvance) + 1; // +1 so index `rightNeeded` is in range
+
+        // Pull source frames sequentially until the window holds what this buffer needs. A short read is EOF:
+        // zero the tail so out-of-range samples read as silence, but still count them so we don't busy-read.
+        EnsureWindow(state, framesNeeded * c);
+        if (state.WindowFrames < framesNeeded)
+        {
+            int toRead = framesNeeded - state.WindowFrames;
+            int got = state.Reader.Read(state.Window.AsSpan(state.WindowFrames * c, toRead * c));
+            if (got < toRead)
+                Array.Clear(state.Window, (state.WindowFrames + got) * c, (toRead - got) * c);
+            state.WindowFrames = framesNeeded;
+        }
+
+        for (int f = 0; f < frames; f++)
+        {
+            double pos = state.Phase + f * speed;
+            int k = (int)Math.Floor(pos);
+            float frac = (float)(pos - k);
+            int leftBase = k * c;
+            int rightBase = (k + 1) * c;
+            for (int ch = 0; ch < c; ch++)
+            {
+                float left = state.Window[leftBase + ch];
+                float right = state.Window[rightBase + ch];
+                layer[f * c + ch] = left + (right - left) * frac;
+            }
+        }
+
+        // Advance the window: drop the consumed frames from the front, carry the rest, keep the fractional phase.
+        int drop = Math.Min(baseAdvance, state.WindowFrames);
+        int remaining = state.WindowFrames - drop;
+        if (remaining > 0 && drop > 0)
+            Array.Copy(state.Window, drop * c, state.Window, 0, remaining * c);
+        state.WindowFrames = remaining;
+        state.Phase = endPos - baseAdvance;
+        state.NextSourceTime += Timecode.FromSamples(drop, SampleRate);
+    }
+
+    private static void EnsureWindow(SourceState state, int floats)
+    {
+        if (state.Window.Length < floats)
+            Array.Resize(ref state.Window, floats);
     }
 
     /// <summary>Sums <paramref name="layer"/> into <paramref name="mix"/>, scaling by a per-frame gain that

@@ -7,6 +7,7 @@ using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Sprocket.Core.Timing;
 
 namespace Sprocket.App;
 
@@ -222,6 +223,117 @@ internal static class MessageDialog
 
         ok.Click += (_, _) => dialog.Close();
         return dialog.ShowDialog(owner);
+    }
+}
+
+/// <summary>
+/// The Clip ▸ Speed / Duration dialog (PLAN.md step 21): edits a clip's playback speed as a percentage
+/// (100% = normal), with quick presets. Returns the chosen speed as an exact <see cref="Rational"/>, or
+/// <see langword="null"/> on cancel. Reverse and freeze (0%) are deferred, so the input is clamped to a
+/// positive percentage.
+/// </summary>
+internal static class SpeedDialog
+{
+    public static Task<Rational?> Show(Window owner, Rational current)
+    {
+        var box = new TextBox
+        {
+            Text = SpeedFormat.ToPercentString(current),
+            Width = 90,
+            Foreground = Palette.Text,
+            Background = Palette.PanelBg,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var presets = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 10, 0, 0) };
+        foreach (int pct in new[] { 25, 50, 100, 200, 400 })
+        {
+            int p = pct;
+            var b = new Button
+            {
+                Content = $"{p}%",
+                Padding = new Thickness(10, 4),
+                Foreground = Palette.Text,
+                Background = Palette.PanelBg,
+                CornerRadius = new CornerRadius(4),
+            };
+            b.Click += (_, _) => box.Text = p.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            presets.Children.Add(b);
+        }
+
+        var ok = new Button
+        {
+            Content = "Apply",
+            Padding = new Thickness(16, 5),
+            Foreground = Brushes.White,
+            Background = Palette.Accent,
+            CornerRadius = new CornerRadius(5),
+        };
+        var cancel = new Button
+        {
+            Content = "Cancel",
+            Padding = new Thickness(16, 5),
+            Foreground = Palette.Text,
+            Background = Palette.PanelBg,
+            CornerRadius = new CornerRadius(5),
+        };
+
+        var dialog = new Window
+        {
+            Title = "Speed / Duration",
+            Icon = AppIcon.Window,
+            Width = 360,
+            Height = 210,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Palette.WindowBg,
+            Content = new DockPanel
+            {
+                Margin = new Thickness(22),
+                Children =
+                {
+                    new StackPanel
+                    {
+                        [DockPanel.DockProperty] = Dock.Bottom,
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Margin = new Thickness(0, 16, 0, 0),
+                        Children = { cancel, ok },
+                    },
+                    new StackPanel
+                    {
+                        Spacing = 6,
+                        Children =
+                        {
+                            new TextBlock { Text = "Speed", Foreground = Palette.MutedText, FontSize = 12 },
+                            new StackPanel
+                            {
+                                Orientation = Orientation.Horizontal,
+                                Spacing = 6,
+                                Children =
+                                {
+                                    box,
+                                    new TextBlock { Text = "%", Foreground = Palette.Text, VerticalAlignment = VerticalAlignment.Center },
+                                },
+                            },
+                            presets,
+                        },
+                    },
+                },
+            },
+        };
+
+        void Accept()
+        {
+            if (SpeedFormat.TryParsePercent(box.Text, out Rational speed))
+                dialog.Close(speed);
+        }
+        ok.Click += (_, _) => Accept();
+        cancel.Click += (_, _) => dialog.Close(null);
+        box.KeyDown += (_, e) => { if (e.Key == Avalonia.Input.Key.Enter) Accept(); };
+
+        return dialog.ShowDialog<Rational?>(owner);
     }
 }
 

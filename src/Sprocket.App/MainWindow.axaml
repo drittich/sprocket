@@ -74,7 +74,8 @@
             <MenuItem x:Name="ClipLinkMenuItem" Header="_Link" IsEnabled="False" />
             <MenuItem x:Name="ClipUnlinkMenuItem" Header="_Unlink" IsEnabled="False" />
             <Separator />
-            <MenuItem x:Name="ClipSpeedMenuItem" Header="_Speed / Duration…" IsEnabled="False" />
+            <MenuItem x:Name="ClipSpeedMenuItem" Header="_Speed / Duration…" IsEnabled="False" /> <!-- enabled when a clip is selected -->
+
             <Separator />
             <MenuItem x:Name="NudgeLeftMenuItem" Header="Nudge _Left" InputGesture="Alt+Left" IsEnabled="False" />
             <MenuItem x:Name="NudgeRightMenuItem" Header="Nudge _Right" InputGesture="Alt+Right" IsEnabled="False" />

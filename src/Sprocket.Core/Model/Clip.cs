@@ -85,6 +85,28 @@ public sealed class Clip
     /// <summary>Where the clip sits on the timeline.</summary>
     public Timecode TimelineStart { get; set; }
 
+    private Rational _speedRatio = Rational.One;
+
+    /// <summary>
+    /// Playback speed as an exact ratio of source time to timeline time (retime, PLAN.md step 21): 1/1 = normal,
+    /// 2/1 = double speed (the source span plays in half the timeline span), 1/2 = half-speed slow motion. Must be
+    /// strictly positive. Non-destructive: the source bytes and the selected source span
+    /// (<see cref="SourceIn"/>/<see cref="SourceOut"/>) are untouched — only the clip's timeline
+    /// <see cref="Duration"/> and the <see cref="MapToSource"/> time map derive from it.
+    /// </summary>
+    /// <remarks>Reverse playback, keyframed speed ramps, and freeze-frame (speed 0) are deferred (PLAN.md step 21);
+    /// the speed is a single constant ratio here.</remarks>
+    public Rational SpeedRatio
+    {
+        get => _speedRatio;
+        set
+        {
+            if (value.Num <= 0)
+                throw new ArgumentOutOfRangeException(nameof(value), "SpeedRatio must be strictly positive.");
+            _speedRatio = value;
+        }
+    }
+
     /// <summary>
     /// Identifies a linked-clip group (PLAN.md step 13, UI.md §3.2). Clips that share a non-null
     /// <see cref="LinkGroupId"/> are companion A/V — a video clip and its source's audio — and the editor
@@ -99,8 +121,12 @@ public sealed class Clip
     /// through the command stack, drawn on the clip body, and listed in the markers panel (PLAN.md step 20).</summary>
     public List<Marker> Markers { get; } = new();
 
-    /// <summary>Duration on the timeline, derived from the trimmed source span.</summary>
-    public Timecode Duration => SourceOut - SourceIn;
+    /// <summary>
+    /// Duration on the timeline, derived from the trimmed source span and the playback <see cref="SpeedRatio"/>:
+    /// <c>(SourceOut - SourceIn) / Speed</c> (so a 2× clip is half as long, a ½× clip twice as long). At the
+    /// default 1/1 speed this is simply the source span.
+    /// </summary>
+    public Timecode Duration => (SourceOut - SourceIn).Scale(_speedRatio.Inverse());
 
     /// <summary>Exclusive end of the clip on the timeline (<see cref="TimelineStart"/> + <see cref="Duration"/>).</summary>
     public Timecode TimelineEnd => TimelineStart + Duration;
@@ -110,9 +136,11 @@ public sealed class Clip
 
     /// <summary>
     /// Maps a timeline time within this clip to the corresponding time within the source
-    /// (ARCHITECTURE.md §5b): <c>sourceT = SourceIn + (t - TimelineStart)</c>.
+    /// (ARCHITECTURE.md §5b): <c>sourceT = SourceIn + (t - TimelineStart) × Speed</c>. At the default 1/1 speed
+    /// this is the plain <c>SourceIn + (t - TimelineStart)</c>; a faster clip walks the source proportionally
+    /// faster (PLAN.md step 21).
     /// </summary>
-    public Timecode MapToSource(Timecode t) => SourceIn + (t - TimelineStart);
+    public Timecode MapToSource(Timecode t) => SourceIn + (t - TimelineStart).Scale(_speedRatio);
 
     /// <summary>
     /// A new clip of the same <see cref="Kind"/> and content (media id / cloned generator) over the given span and
@@ -120,5 +148,5 @@ public sealed class Clip
     /// new clip keeps a media/generator/adjustment clip's nature (PLAN.md steps 13/19).
     /// </summary>
     internal Clip CloneContentForSpan(Timecode sourceIn, Timecode sourceOut, Timecode timelineStart) =>
-        new(Kind, MediaRefId, Generator?.Clone(), sourceIn, sourceOut, timelineStart);
+        new(Kind, MediaRefId, Generator?.Clone(), sourceIn, sourceOut, timelineStart) { SpeedRatio = _speedRatio };
 }

@@ -106,3 +106,47 @@ internal sealed class FakePcmReader : IPcmReader
 
     public void Dispose() => Disposed = true;
 }
+
+/// <summary>
+/// A synthetic <see cref="IPcmReader"/> whose sample value is a known linear ramp of the absolute source frame
+/// index (× <see cref="_scale"/>, equal on every channel), so the retime resampler (PLAN.md step 21) can be
+/// verified: an output sample produced from source position <c>p</c> reads back as <c>p × scale</c>. Records
+/// seeks so streaming (seek-free) playback is observable.
+/// </summary>
+internal sealed class RampPcmReader : IPcmReader
+{
+    private readonly float _scale;
+    private long _frame;
+
+    public RampPcmReader(int sampleRate, int channels, float scale)
+    {
+        SampleRate = sampleRate;
+        Channels = channels;
+        _scale = scale;
+    }
+
+    public int Channels { get; }
+    public int SampleRate { get; }
+    public List<Timecode> Seeks { get; } = new();
+
+    public int Read(Span<float> destinationInterleaved)
+    {
+        int frames = destinationInterleaved.Length / Channels;
+        for (int f = 0; f < frames; f++)
+        {
+            float v = (_frame + f) * _scale;
+            for (int ch = 0; ch < Channels; ch++)
+                destinationInterleaved[f * Channels + ch] = v;
+        }
+        _frame += frames;
+        return frames;
+    }
+
+    public void SeekTo(Timecode sourceTime)
+    {
+        Seeks.Add(sourceTime);
+        _frame = sourceTime.ToSampleIndex(SampleRate);
+    }
+
+    public void Dispose() { }
+}

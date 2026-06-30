@@ -93,11 +93,14 @@ public sealed record VideoFramePlan(Resolution Resolution, Timecode Time, IReadO
 /// <param name="SourceStart">Time within the source corresponding to the start of the buffer.</param>
 /// <param name="GainStartLinear">Linear gain at the start of the buffer.</param>
 /// <param name="GainEndLinear">Linear gain at the end of the buffer.</param>
+/// <param name="SpeedRatio">Playback speed (source time per timeline time, PLAN.md step 21). 1/1 = normal; the
+/// mixer resamples the source PCM by this factor. Defaults to 1/1 so non-retimed callers are unaffected.</param>
 public sealed record AudioLayer(
     MediaRefId MediaRefId,
     Timecode SourceStart,
     double GainStartLinear,
-    double GainEndLinear);
+    double GainEndLinear,
+    Rational SpeedRatio);
 
 /// <summary>
 /// A pure description of how to fill one audio output buffer: which source spans to sum and at what

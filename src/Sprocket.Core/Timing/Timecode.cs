@@ -83,6 +83,20 @@ public readonly record struct Timecode : IComparable<Timecode>
         return (long)FloorDivide(numerator, TicksPerSecond);
     }
 
+    // ---- Scaling ----
+
+    /// <summary>
+    /// This time scaled by an exact rational factor, rounded to the nearest tick. Retime/speed uses this
+    /// (PLAN.md step 21): a clip's timeline offset maps to a source offset by multiplying by the speed ratio,
+    /// and a source span maps to a timeline duration by multiplying by the reciprocal. Done in
+    /// <see cref="Int128"/> so the intermediate product never overflows for realistic durations.
+    /// </summary>
+    public Timecode Scale(Rational factor)
+    {
+        Int128 numerator = (Int128)Ticks * factor.Num;
+        return new Timecode((long)RoundedDivide(numerator, factor.Den));
+    }
+
     // ---- Arithmetic ----
 
     public static Timecode operator +(Timecode a, Timecode b) => new(a.Ticks + b.Ticks);

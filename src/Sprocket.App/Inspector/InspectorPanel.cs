@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -127,7 +128,53 @@ public sealed class InspectorPanel : UserControl
         info.Children.Add(InfoRow("Start", FormatSeconds(clip.TimelineStart)));
         info.Children.Add(InfoRow("Duration", FormatSeconds(clip.Duration)));
         info.Children.Add(InfoRow("Trim", $"{FormatSeconds(clip.SourceIn)} – {FormatSeconds(clip.SourceOut)}"));
+        info.Children.Add(BuildSpeedRow(clip));
         return Section("Clip", info, expanded: true);
+    }
+
+    /// <summary>An editable Speed row (retime, PLAN.md step 21): a percentage box committing a
+    /// <see cref="SetClipSpeedCommand"/> on Enter/blur. Linked companions are retimed together so A/V stays in
+    /// sync. The Duration row above updates on the resulting rebuild.</summary>
+    private Control BuildSpeedRow(Clip clip)
+    {
+        var box = new TextBox
+        {
+            Width = 72,
+            FontSize = 11,
+            Padding = new Avalonia.Thickness(6, 2),
+            Background = PanelBg,
+            BorderBrush = Edge,
+            Foreground = TextBrush,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Text = SpeedFormat.ToPercentString(clip.SpeedRatio),
+        };
+        void Commit()
+        {
+            if (_history is null || _project is null)
+                return;
+            if (!SpeedFormat.TryParsePercent(box.Text, out Rational speed))
+            {
+                box.Text = SpeedFormat.ToPercentString(clip.SpeedRatio);
+                return;
+            }
+            if (speed == clip.SpeedRatio)
+                return;
+            var members = new List<Clip> { clip };
+            members.AddRange(_project.Timeline.ClipsLinkedTo(clip).Select(l => l.Clip));
+            var commands = members.Select(c => (IEditCommand)new SetClipSpeedCommand(c, speed)).ToList();
+            _history.Execute(commands.Count == 1 ? commands[0] : new CompositeCommand("Change speed", commands));
+        }
+        box.KeyDown += (_, e) => { if (e.Key == Key.Enter) { Commit(); e.Handled = true; } };
+        box.LostFocus += (_, _) => Commit();
+
+        var row = new DockPanel();
+        var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3, HorizontalAlignment = HorizontalAlignment.Right };
+        right.Children.Add(box);
+        right.Children.Add(new TextBlock { Text = "%", FontSize = 11, Foreground = FaintText, VerticalAlignment = VerticalAlignment.Center });
+        DockPanel.SetDock(right, Dock.Right);
+        row.Children.Add(right);
+        row.Children.Add(new TextBlock { Text = "Speed", FontSize = 11, Foreground = FaintText, VerticalAlignment = VerticalAlignment.Center });
+        return row;
     }
 
     private Control BuildEffectSection(Clip clip, EffectInstance effect)

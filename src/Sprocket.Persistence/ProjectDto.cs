@@ -77,7 +77,11 @@ internal sealed record ClipDto(
     ClipKind? Kind = null,
     GeneratorDto? Generator = null,
     // Clip markers (PLAN.md step 20). Additive + nullable: a marker-less clip writes null (WhenWritingNull).
-    List<MarkerDto>? Markers = null);
+    List<MarkerDto>? Markers = null,
+    // Playback speed (retime, PLAN.md step 21). Additive + nullable: a normal-speed (1/1) clip writes neither
+    // (WhenWritingNull), so pre-21 files load at 1× and un-retimed projects serialize byte-identically.
+    int? SpeedNum = null,
+    int? SpeedDen = null);
 
 /// <summary>A marker (PLAN.md step 20): a time, optional name/comment, colour band, and an optional span
 /// (<see cref="DurationTicks"/> &gt; 0). Colour serializes as a string enum.</summary>

@@ -46,11 +46,20 @@ bash scripts/linux-check.sh
 **`ffmpeg` CLI must be on PATH** to run `Sprocket.Media.Tests` / `Sprocket.Audio.Tests` /
 `Sprocket.Export.Tests` / `Sprocket.Playback.Tests`: they generate a deterministic fixture clip once via
 the `ffmpeg` command (see `TestVideo.cs`), cached in the test output dir. They also need **FFmpeg 8**
-shared natives at runtime — set **`SPROCKET_FFMPEG8_DIR`** to the `bin` (Windows) / `lib` (Linux/macOS)
-of an extracted FFmpeg 8 build (BtbN `*-gpl-shared`); `Sprocket.Media`'s `FFmpegLoader` DllImport resolver
-loads them from there (and preloads in dependency order). The decode tests keep the `win-x64` RID on
-Windows for a stable output layout (there is no longer a transitive native NuGet to land). Pointing the
-FFmpeg-8 `bin` onto PATH satisfies both the CLI fixture step and native resolution at once.
+shared natives at runtime, resolved by `Sprocket.Media`'s `FFmpegLoader` (which searches the output dir
+first, then `%SPROCKET_FFMPEG8_DIR%`, preloading in dependency order). Two ways to supply them:
+- **Locally (zero setup after a one-time extract):** the decode/encode-backed projects
+  (`Media`/`Playback`/`Export.Tests`) set `<UsesFFmpegNatives>true`, and `tests/Directory.Build.targets`
+  copies the natives that
+  `scripts/release.ps1` extracts into `./.ffmpeg-cache/extract-<rid>/.../{bin,lib}` (gitignored) into the
+  test output dir. Run `release.ps1` once to populate the cache; thereafter `dotnet test` and the IDE
+  runner resolve the natives with no env var. The copy is best-effort/no-op when the cache is absent.
+- **CI / explicit:** set **`SPROCKET_FFMPEG8_DIR`** to the `bin` (Windows) / `lib` (Linux/macOS) of an
+  extracted FFmpeg 8 build (BtbN `*-gpl-shared`).
+
+The decode tests keep the `win-x64` RID on Windows for a stable output layout (there is no longer a
+transitive native NuGet to land). Pointing the FFmpeg-8 `bin` onto PATH satisfies both the CLI fixture
+step and native resolution at once.
 
 Tests are **xUnit**. There is no separate lint step; `Sprocket.Core` and `Sprocket.Media` build with
 `TreatWarningsAsErrors=true`, so warnings break the build there.

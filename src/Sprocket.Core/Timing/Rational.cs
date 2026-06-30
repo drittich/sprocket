@@ -44,6 +44,9 @@ public readonly record struct Rational : IComparable<Rational>
     /// <summary>Zero (0/1).</summary>
     public static Rational Zero => new(0, 1);
 
+    /// <summary>One (1/1) — the identity factor (e.g. normal playback speed, PLAN.md step 21).</summary>
+    public static Rational One => new(1, 1);
+
     /// <summary>The fraction as a <see cref="double"/>. For display/approximation only — never for timing math.</summary>
     public double ToDouble() => (double)Num / Den;
 

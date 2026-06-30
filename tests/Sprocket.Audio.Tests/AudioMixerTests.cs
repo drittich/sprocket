@@ -159,6 +159,62 @@ public class AudioMixerTests
         Assert.All(buffer, s => Assert.Equal(0f, s));
     }
 
+    // ── Retime / speed (PLAN.md step 21) ──────────────────────────────────────────────────────────────
+
+    private const float RampScale = 1e-4f; // keeps the ramp inside [-1, 1] so the master hard-limit never clips it
+
+    private static AudioTrack RetimedTrack(MediaRefId id, Rational speed)
+    {
+        var track = new AudioTrack { Name = "A" };
+        var clip = new Clip(id, Timecode.Zero, Timecode.FromSeconds(60), Timecode.Zero) { SpeedRatio = speed };
+        track.Clips.Add(clip);
+        return track;
+    }
+
+    [Fact]
+    public void Resamples_Source_At_Double_Speed()
+    {
+        var reader = new RampPcmReader(Rate, Channels, RampScale);
+        using var mixer = new AudioMixer(Rate, Channels, id => id == A ? reader : null);
+
+        float[] buffer = Mix(mixer, ProjectWith(RetimedTrack(A, new Rational(2, 1))), 256, Timecode.Zero);
+
+        // Output frame f is sampled from source frame 2f, so value ≈ 2f × scale (exact at the even source grid).
+        foreach (int f in new[] { 0, 10, 100, 200 })
+            Assert.Equal(2 * f * RampScale, buffer[f * Channels], 1e-6);
+    }
+
+    [Fact]
+    public void Resamples_Source_At_Half_Speed()
+    {
+        var reader = new RampPcmReader(Rate, Channels, RampScale);
+        using var mixer = new AudioMixer(Rate, Channels, id => id == A ? reader : null);
+
+        float[] buffer = Mix(mixer, ProjectWith(RetimedTrack(A, new Rational(1, 2))), 256, Timecode.Zero);
+
+        // Output frame f is sampled from source frame f/2 → value ≈ 0.5f × scale.
+        foreach (int f in new[] { 0, 50, 100, 200 })
+            Assert.Equal(0.5 * f * RampScale, buffer[f * Channels], 1e-6);
+    }
+
+    [Fact]
+    public void Retimed_Playback_Streams_Across_Buffers_Without_Reseeking()
+    {
+        var reader = new RampPcmReader(Rate, Channels, RampScale);
+        using var mixer = new AudioMixer(Rate, Channels, id => id == A ? reader : null);
+        Project project = ProjectWith(RetimedTrack(A, new Rational(2, 1)));
+
+        const int frames = 256;
+        float[] b1 = Mix(mixer, project, frames, Timecode.Zero);
+        float[] b2 = Mix(mixer, project, frames, Timecode.FromSamples(frames, Rate));
+
+        // The second buffer continues the ramp seamlessly (source frame 512) with no re-seek — the resampler
+        // carried its window across the buffer boundary (only the initial positioning seek happened).
+        Assert.Single(reader.Seeks);
+        Assert.Equal(2 * frames * RampScale, b2[0], 1e-6);
+        Assert.True(b2[0] > b1[(frames - 1) * Channels], "the ramp must keep rising across the boundary");
+    }
+
     [Fact]
     public void Disposes_Resolved_Readers()
     {

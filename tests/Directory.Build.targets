@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Local-dev convenience for the FFmpeg-dependent test suites (Sprocket.Media/Playback/Export.Tests).
+
+    scripts/release.ps1 extracts the FFmpeg 8 shared natives into ./.ffmpeg-cache/extract-<rid>/.../{bin,lib}
+    (gitignored, persisted between runs). This target copies them into the opted-in test project's output
+    directory so `dotnet test` and the IDE test runner resolve them WITHOUT anyone setting
+    %SPROCKET_FFMPEG8_DIR% by hand — FFmpegLoader searches AppContext.BaseDirectory (the output dir) first.
+
+    Opt in per project with <UsesFFmpegNatives>true</UsesFFmpegNatives>. Best-effort and CI-safe: it no-ops
+    when the cache is absent (CI downloads the natives and sets %SPROCKET_FFMPEG8_DIR% instead, so it never
+    needs the cache). The version-suffixed extract subfolder is matched by the recursive glob, so it keeps
+    working across app-version bumps (it only changes on a new FFmpeg *major*).
+  -->
+  <ItemGroup Condition="'$(UsesFFmpegNatives)' == 'true'">
+    <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/bin/*.dll" />
+    <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/lib/*.so*" />
+    <FFmpegTestNative Include="$(MSBuildThisFileDirectory)../.ffmpeg-cache/extract-*/**/lib/*.dylib" />
+  </ItemGroup>
+
+  <Target Name="CopyFFmpegTestNatives" BeforeTargets="Build"
+          Condition="'$(UsesFFmpegNatives)' == 'true' and '@(FFmpegTestNative)' != ''">
+    <Copy SourceFiles="@(FFmpegTestNative)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

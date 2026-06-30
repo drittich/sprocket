@@ -170,6 +170,60 @@ public sealed class SetClipPlacementCommand : EditCommand
 }
 
 /// <summary>
+/// Moves a clip from one track to another, setting its timeline start in the same step (PLAN.md step 16e —
+/// cross-track drag). The clip object is unchanged apart from its <see cref="Clip.TimelineStart"/>; only which
+/// <see cref="Track.Clips"/> list owns it changes (a clip carries no track reference — its track is the list it
+/// lives in). Undo restores the original track <em>at the original index</em> (z-order safe, like
+/// <see cref="RemoveClipCommand"/>) and the original start. <see cref="Clip.SourceIn"/>/<see cref="Clip.SourceOut"/>
+/// and <see cref="Clip.LinkGroupId"/> are untouched. Not coalescing — a track move is one discrete gesture
+/// (the cross-track drag commits exactly one command on release, so it is already a single undo entry).
+/// </summary>
+public sealed class MoveClipToTrackCommand : EditCommand
+{
+    private readonly Track _from;
+    private readonly Track _to;
+    private readonly Clip _clip;
+    private readonly Timecode _oldStart;
+    private readonly Timecode _newStart;
+    private int _index = -1;
+
+    /// <summary>Captures the clip's current start and records the destination track + new start to apply.</summary>
+    public MoveClipToTrackCommand(Track from, Track to, Clip clip, Timecode newStart, string label = "Move clip to track")
+        : base(label)
+    {
+        ArgumentNullException.ThrowIfNull(from);
+        ArgumentNullException.ThrowIfNull(to);
+        ArgumentNullException.ThrowIfNull(clip);
+        _from = from;
+        _to = to;
+        _clip = clip;
+        _oldStart = clip.TimelineStart;
+        _newStart = newStart;
+    }
+
+    /// <inheritdoc />
+    public override void Apply()
+    {
+        _index = _from.Clips.IndexOf(_clip);
+        if (_index >= 0)
+            _from.Clips.RemoveAt(_index);
+        _clip.TimelineStart = _newStart;
+        _to.Clips.Add(_clip);
+    }
+
+    /// <inheritdoc />
+    public override void Revert()
+    {
+        _to.Clips.Remove(_clip);
+        _clip.TimelineStart = _oldStart;
+        if (_index < 0)
+            _from.Clips.Add(_clip);
+        else
+            _from.Clips.Insert(Math.Min(_index, _from.Clips.Count), _clip);
+    }
+}
+
+/// <summary>
 /// Sets a clip's playback speed (retime, PLAN.md step 21). The selected source span is unchanged; only the
 /// clip's timeline <see cref="Clip.Duration"/> and its time map derive from the new <see cref="Clip.SpeedRatio"/>.
 /// Coalesces with further speed changes of the same clip so dragging the speed control is one undo entry.

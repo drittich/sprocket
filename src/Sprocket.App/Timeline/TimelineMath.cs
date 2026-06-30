@@ -119,6 +119,19 @@ public static class TimelineMath
     }
 
     /// <summary>
+    /// The lane index at an on-screen Y: 0-based from the first lane below the ruler, or -1 when above the
+    /// ruler. <paramref name="laneStride"/> is the per-lane vertical step (track height + gap). Callers
+    /// bound-check the result against the lane count. Mirrors the control's lane layout (PLAN.md step 16e —
+    /// the cross-track drag needs the target lane), kept pure so it is unit-tested headlessly.
+    /// </summary>
+    public static int LaneIndexAtY(double y, double rulerHeight, double laneStride)
+    {
+        if (y < rulerHeight || laneStride <= 0)
+            return -1;
+        return (int)((y - rulerHeight) / laneStride);
+    }
+
+    /// <summary>
     /// Picks a "nice" ruler tick interval (in ticks) so labels land roughly <paramref name="targetPx"/> apart
     /// at the current zoom — stepping through 0.5/1/2/5/10/15/30/60/120/300/600-second intervals.
     /// </summary>

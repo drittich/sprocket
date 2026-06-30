@@ -223,6 +223,36 @@ public class ModelCommandTests
     }
 
     [Fact]
+    public void MoveClipToTrack_Moves_Sets_Start_And_Reverts_To_Original_Track_And_Index()
+    {
+        var v1 = new VideoTrack();
+        var v2 = new VideoTrack();
+        Clip a = MakeClip(), b = MakeClip(), c = MakeClip();
+        v1.Clips.AddRange([a, b, c]);               // b sits in the middle of v1
+        Guid link = Guid.NewGuid();
+        b.LinkGroupId = link;
+        Timecode origStart = b.TimelineStart, origIn = b.SourceIn, origOut = b.SourceOut;
+        var history = new EditHistory();
+
+        history.Execute(new MoveClipToTrackCommand(v1, v2, b, Timecode.FromSeconds(7)));
+        Assert.Equal([a, c], v1.Clips);             // removed from the source track
+        Assert.Same(b, Assert.Single(v2.Clips));    // landed on the target track
+        Assert.Equal(Timecode.FromSeconds(7), b.TimelineStart);
+        Assert.Equal(origIn, b.SourceIn);           // source span + link untouched
+        Assert.Equal(origOut, b.SourceOut);
+        Assert.Equal(link, b.LinkGroupId);
+
+        history.Undo();
+        Assert.Equal([a, b, c], v1.Clips);          // back in the middle (index preserved)
+        Assert.Empty(v2.Clips);
+        Assert.Equal(origStart, b.TimelineStart);
+
+        history.Redo();
+        Assert.Same(b, Assert.Single(v2.Clips));
+        Assert.Equal(Timecode.FromSeconds(7), b.TimelineStart);
+    }
+
+    [Fact]
     public void MoveClip_Via_SetProperty_Coalesces_Across_A_Drag()
     {
         Clip clip = MakeClip();

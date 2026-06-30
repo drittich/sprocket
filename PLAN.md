@@ -881,6 +881,39 @@ requires a redesign. Tags reference the [UI.md §4 checklist](UI.md).
       `positionX`/`positionY` `AnimatableValue`s (each evaluated per-axis) can't express without the redesign the
       additive framing avoids; it slots onto the same `AnimatableValue` + command seam when that 2D-position model
       is introduced.
+16e. **Cross-track clip dragging (move / copy / horizontal-lock).** Extend the timeline Move tool so a clip
+    drags **vertically across tracks**, not only horizontally along time. **Alt/Option-drag copies** (drops a
+    duplicate on the target track, original untouched); **Shift-drag locks the horizontal position** to the
+    origin time (change track only); the modifiers stack (Alt+Shift = copy at the same time). Matches the NLE
+    convention (Premiere/Resolve/FCP use Alt/Option to duplicate; Shift-lock matches Resolve), leaving Ctrl/Cmd
+    free for a future insert edit. Lands on existing seams ([ARCHITECTURE §17](ARCHITECTURE.md)) with no model
+    redesign.
+    - **✅ DONE (`Sprocket.Core/Commands/ModelCommands.cs` + `Sprocket.App/Timeline/{TimelineMath,ClipPlacement,
+      TimelineControl}`; 10 new tests — Core +1, App +9, all green).** Delivered:
+      - **New Core command `MoveClipToTrackCommand`** — removes the clip from its source track, sets its new
+        timeline start, and adds it to the destination track; undo restores the original track **at the original
+        index** (z-order safe, like `RemoveClipCommand`) and the original start. `SourceIn/Out` + `LinkGroupId`
+        untouched. Not coalescing — the gesture commits exactly one command, so it is already one undo entry.
+      - **Move drag reworked to preview-then-commit** (`TimelineControl`). Only the Select tool's clip-body drag
+        changed; **Trim/Slip stay live + coalesced** as before. During the drag the model is **not** mutated — a
+        translucent **ghost** + **target-lane highlight** show where the clip will land (modifiers read live from
+        the pointer gesture: `Alt` → copy cursor, `Shift` → horizontal lock). On release it commits exactly one
+        command: a no-op (no move), `SetClipPlacementCommand` (same-track move), `MoveClipToTrackCommand`
+        (cross-track), or `AddClipCommand` of a `ClipboardOps.Paste` clone (Alt-copy — an independent duplicate,
+        original untouched). **Track-kind is enforced** via the pure `ClipPlacement.CompatibleTrack`
+        (video→video, audio→audio; an incompatible lane keeps the source track). **Linked A/V:** only the dragged
+        clip changes track; companions **shift in time only** (kept on their own tracks) inside a
+        `CompositeCommand`. **Drop collisions allow overlap** (true overwrite/ripple deferred to step 22).
+      - **Pure, tested geometry** (mirroring the step-12 `TimelineMath` split): `TimelineMath.LaneIndexAtY`
+        (extracted from the control's private `LaneAtY`, which now delegates to it) and
+        `ClipPlacement.CompatibleTrack`.
+      - **Tests (10):** Core — `MoveClipToTrackCommand` moves + sets start + reverts to the original track/index,
+        leaving source span + link intact. App — `LaneIndexAtY` Y→lane mapping (incl. above-ruler + degenerate
+        stride) and `CompatibleTrack` (same-kind lane → that track; cross-kind / null lane → null = keep source).
+        The ghost drawing + pointer interaction rest on these + manual verification (the App is a UI-bound
+        `WinExe`). Clean build (0 warnings); a `SPROCKET_APP_SECONDS=5` smoke launch starts the shell and tears
+        down cleanly (exit 0). Full suite: **419 tests green** (Core 140, Media 28, Render 23, Audio 19,
+        Playback 47, Export 10, Persistence 30, App 122).
 17. **Monitors.** Dual **Source / Program** monitors (same render graph, second surface),
     safe-area / framing-grid overlay, **Fit** zoom, and full transport (jump-to-start/end,
     frame-step, play/pause).

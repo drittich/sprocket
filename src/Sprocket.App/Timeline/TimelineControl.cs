@@ -75,12 +75,22 @@ public sealed class TimelineControl : Control
 
     // Active clip-drag gesture state.
     private Clip? _dragClip;
+    private Track? _dragSourceTrack;
     private ClipDragMode _dragMode = ClipDragMode.None;
     private long _dragPressTicks;
     private Timecode _dragOrigIn, _dragOrigOut, _dragOrigStart;
     private long _minDurTicks = 1;
     private IReadOnlyList<long> _snapPoints = [];
     private IDisposable? _coalesce;
+
+    // Move-gesture preview (PLAN.md step 16e). The Select tool's clip-body drag does not mutate the model
+    // live (unlike Trim/Slip, which coalesce); it tracks a ghost across tracks and commits exactly one command
+    // on release, so cross-track + copy (Alt) + horizontal-lock (Shift) are each one undo entry. _movePreview
+    // is set for that gesture; the preview fields hold the target track, snapped start, and copy flag.
+    private bool _movePreview;
+    private long _movePreviewStart;
+    private Track? _movePreviewTrack;
+    private bool _movePreviewCopy;
 
     // Linked companions captured at drag start (their track, clip, and original start) plus the group's
     // minimum original start, so a linked move shifts every member by one locked delta and none goes negative.
@@ -495,13 +505,7 @@ public sealed class TimelineControl : Control
 
     private static double LaneTop(int index) => RulerHeight + index * (TrackHeight + TrackGap);
 
-    private int LaneAtY(double y)
-    {
-        if (y < RulerHeight)
-            return -1;
-        int index = (int)((y - RulerHeight) / (TrackHeight + TrackGap));
-        return index;
-    }
+    private int LaneAtY(double y) => TimelineMath.LaneIndexAtY(y, RulerHeight, TrackHeight + TrackGap);
 
     // ── Rendering ───────────────────────────────────────────────────────────────────────────────────
 
@@ -530,6 +534,7 @@ public sealed class TimelineControl : Control
         DrawHeaders(ctx, lanes);
         DrawPlayhead(ctx, size);
         DrawDropPreview(ctx, size);
+        DrawMovePreview(ctx, size);
     }
 
     // Sequence markers on the ruler (PLAN.md step 20): a coloured flag in the ruler with a faint line down the
@@ -601,6 +606,36 @@ public sealed class TimelineControl : Control
             return;
         var pen = new Pen(Accent, 1.5) { DashStyle = new DashStyle([3, 3], 0) };
         ctx.DrawLine(pen, new Point(x, RulerHeight), new Point(x, size.Height));
+    }
+
+    // The cross-track drag ghost (PLAN.md step 16e): highlights the target lane and draws a translucent block
+    // where the clip will land (its current snapped start + duration), with a "＋" hint while copying (Alt).
+    // The real clip stays drawn in place — the model isn't mutated until release.
+    private void DrawMovePreview(DrawingContext ctx, Size size)
+    {
+        if (!_movePreview || _dragClip is null || _movePreviewTrack is null)
+            return;
+        List<(Track track, bool isVideo)> lanes = Lanes();
+        int laneIndex = lanes.FindIndex(l => ReferenceEquals(l.track, _movePreviewTrack));
+        if (laneIndex < 0)
+            return;
+        bool isVideo = lanes[laneIndex].isVideo;
+
+        Color accent = ((ISolidColorBrush)Accent).Color;
+        ctx.FillRectangle(new ImmutableSolidColorBrush(accent, 0.08),
+            new Rect(_headerWidth, LaneTop(laneIndex), size.Width - _headerWidth, TrackHeight));
+
+        long dur = _dragOrigOut.Ticks - _dragOrigIn.Ticks;
+        double x0 = TimelineMath.XAtTicks(_movePreviewStart, _pxPerSecond, _scrollX, _headerWidth);
+        double x1 = TimelineMath.XAtTicks(_movePreviewStart + dur, _pxPerSecond, _scrollX, _headerWidth);
+
+        using var _ = ctx.PushClip(new Rect(_headerWidth, RulerHeight, size.Width - _headerWidth, size.Height - RulerHeight));
+        var rect = new Rect(x0, LaneTop(laneIndex) + 3, Math.Max(2, x1 - x0), TrackHeight - 6);
+        var rounded = new RoundedRect(rect, 4);
+        Color baseColor = ((ISolidColorBrush)(isVideo ? VideoFill : AudioFill)).Color;
+        ctx.DrawRectangle(new ImmutableSolidColorBrush(baseColor, 0.55), SelectPen, rounded);
+        if (_movePreviewCopy)
+            ctx.DrawText(Label("＋", 13, Brushes.White), new Point(rect.X + 6, rect.Y + 3));
     }
 
     private void DrawRuler(DrawingContext ctx, Size size)
@@ -850,7 +885,7 @@ public sealed class TimelineControl : Control
         }
         if (_dragClip is not null)
         {
-            UpdateClipDrag(p);
+            UpdateClipDrag(p, e.KeyModifiers);
             return;
         }
 
@@ -891,11 +926,19 @@ public sealed class TimelineControl : Control
         _resizingHeader = false;
         if (_dragClip is not null)
         {
-            _coalesce?.Dispose(); // seal the gesture as one undo entry
+            if (_movePreview)
+                CommitMovePreview(); // the Move gesture commits one command here (cross-track / copy / lock)
+            _coalesce?.Dispose();    // seal a live (trim/slip) gesture as one undo entry
             _coalesce = null;
             _dragClip = null;
+            _dragSourceTrack = null;
             _dragMode = ClipDragMode.None;
             _dragLinked = [];
+            _movePreview = false;
+            _movePreviewTrack = null;
+            _movePreviewCopy = false;
+            Cursor = ToolCursor(_activeTool);
+            InvalidateVisual();
         }
         e.Pointer.Capture(null);
     }
@@ -1007,6 +1050,7 @@ public sealed class TimelineControl : Control
     private void BeginClipDrag(Clip clip, ClipDragMode mode, Point p)
     {
         _dragClip = clip;
+        _dragSourceTrack = TrackOf(clip);
         _dragMode = mode;
         _dragPressTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         _dragOrigIn = clip.SourceIn;
@@ -1021,10 +1065,24 @@ public sealed class TimelineControl : Control
         foreach ((Clip _, Timecode origStart) in _dragLinked)
             _dragGroupMinStart = Math.Min(_dragGroupMinStart, origStart.Ticks);
 
-        _coalesce = _history!.BeginCoalescing();
+        // The Move gesture (Select tool, clip body) previews across tracks and commits one command on release
+        // — so copy + cross-track + horizontal-lock are each a single undo entry. Trim/Slip mutate live and
+        // coalesce as before (PLAN.md step 16e).
+        _movePreview = _activeTool != EditTool.Slip && mode == ClipDragMode.Move;
+        if (_movePreview)
+        {
+            _movePreviewStart = _dragOrigStart.Ticks;
+            _movePreviewTrack = _dragSourceTrack;
+            _movePreviewCopy = false;
+            _coalesce = null;
+        }
+        else
+        {
+            _coalesce = _history!.BeginCoalescing();
+        }
     }
 
-    private void UpdateClipDrag(Point p)
+    private void UpdateClipDrag(Point p, KeyModifiers mods)
     {
         long pointerTicks = TimelineMath.TicksAtX(p.X, _pxPerSecond, _scrollX, _headerWidth);
         long delta = pointerTicks - _dragPressTicks;
@@ -1036,17 +1094,18 @@ public sealed class TimelineControl : Control
             return;
         }
 
+        // Move gesture: preview the landing track/time (no live model mutation); commit on release.
+        if (_movePreview)
+        {
+            UpdateMovePreview(p, delta, mods);
+            return;
+        }
+
+        // Otherwise an edge trim: mutate live and coalesce so the whole drag is one undo entry.
         long newIn = _dragOrigIn.Ticks, newOut = _dragOrigOut.Ticks, newStart = _dragOrigStart.Ticks;
-        long dur = _dragOrigOut.Ticks - _dragOrigIn.Ticks;
 
         switch (_dragMode)
         {
-            case ClipDragMode.Move:
-                // Clamp the delta so no group member would cross t=0, then snap the primary's start.
-                delta = Math.Max(delta, -_dragGroupMinStart);
-                newStart = SnapMove(_dragOrigStart.Ticks + delta, dur);
-                break;
-
             case ClipDragMode.TrimEnd:
                 newOut = Math.Max(_dragOrigIn.Ticks + _minDurTicks, _dragOrigOut.Ticks + delta);
                 if (Snapping)
@@ -1075,25 +1134,82 @@ public sealed class TimelineControl : Control
                 break;
         }
 
-        // A linked move shifts every companion by the same actual delta (their source spans unchanged), as one
-        // undo entry. Trims stay per-clip (NLE convention) — only Move propagates across the link group.
-        if (_dragMode == ClipDragMode.Move && _dragLinked.Count > 0)
+        Execute(new SetClipPlacementCommand(
+            _dragClip!, new Timecode(newIn), new Timecode(newOut), new Timecode(newStart), "Trim clip"));
+    }
+
+    // Updates the move-gesture preview (PLAN.md step 16e): snapped landing time (Shift locks it to the origin),
+    // the target track under the cursor (kept on the source track when the lane is an incompatible kind), and
+    // the copy flag (Alt). No model mutation — the commit happens once on pointer release.
+    private void UpdateMovePreview(Point p, long delta, KeyModifiers mods)
+    {
+        bool lockX = mods.HasFlag(KeyModifiers.Shift);
+        _movePreviewCopy = mods.HasFlag(KeyModifiers.Alt);
+
+        if (lockX)
         {
-            long actualDelta = newStart - _dragOrigStart.Ticks;
-            var commands = new List<IEditCommand>
-            {
-                new SetClipPlacementCommand(_dragClip!, new Timecode(newIn), new Timecode(newOut), new Timecode(newStart), "Move clip"),
-            };
-            foreach ((Clip companion, Timecode origStart) in _dragLinked)
-                commands.Add(new SetClipPlacementCommand(
-                    companion, companion.SourceIn, companion.SourceOut, new Timecode(origStart.Ticks + actualDelta), "Move clip"));
-            Execute(new CompositeCommand("Move linked clips", commands));
+            _movePreviewStart = _dragOrigStart.Ticks;
+        }
+        else
+        {
+            // Clamp the delta so no group member would cross t=0, then snap the primary's start.
+            long clamped = Math.Max(delta, -_dragGroupMinStart);
+            long dur = _dragOrigOut.Ticks - _dragOrigIn.Ticks;
+            _movePreviewStart = SnapMove(_dragOrigStart.Ticks + clamped, dur);
+        }
+
+        (Track? laneTrack, _) = TrackAndKindAtY(p.Y);
+        _movePreviewTrack = ClipPlacement.CompatibleTrack(_dragSourceTrack!, laneTrack) ?? _dragSourceTrack;
+
+        Cursor = _movePreviewCopy ? new Cursor(StandardCursorType.DragCopy) : ToolCursor(_activeTool);
+        InvalidateVisual();
+    }
+
+    // Commits the move gesture as exactly one undo entry on pointer release (PLAN.md step 16e):
+    //  • Alt-copy → add an independent duplicate on the target track (original untouched);
+    //  • cross-track move → MoveClipToTrackCommand;
+    //  • same-track move → SetClipPlacementCommand;
+    //  • linked companions shift in time only (they keep their own track), wrapped in a CompositeCommand.
+    private void CommitMovePreview()
+    {
+        if (_dragClip is null || _dragSourceTrack is null)
+            return;
+
+        Clip clip = _dragClip;
+        Track src = _dragSourceTrack;
+        Track dst = _movePreviewTrack ?? src;
+        long newStart = _movePreviewStart;
+        long actualDelta = newStart - _dragOrigStart.Ticks;
+
+        if (_movePreviewCopy)
+        {
+            Clip clone = ClipboardOps.Paste(clip, new Timecode(newStart));
+            Execute(new AddClipCommand(dst, clone));
+            Select(clone);
+            ClipPlaced?.Invoke();
             return;
         }
 
-        string label = _dragMode == ClipDragMode.Move ? "Move clip" : "Trim clip";
-        Execute(new SetClipPlacementCommand(
-            _dragClip!, new Timecode(newIn), new Timecode(newOut), new Timecode(newStart), label));
+        bool trackChanged = !ReferenceEquals(dst, src);
+        if (!trackChanged && actualDelta == 0)
+            return; // pure click / no movement
+
+        var commands = new List<IEditCommand>
+        {
+            trackChanged
+                ? new MoveClipToTrackCommand(src, dst, clip, new Timecode(newStart))
+                : new SetClipPlacementCommand(clip, _dragOrigIn, _dragOrigOut, new Timecode(newStart), "Move clip"),
+        };
+        if (actualDelta != 0)
+            foreach ((Clip companion, Timecode origStart) in _dragLinked)
+                commands.Add(new SetClipPlacementCommand(
+                    companion, companion.SourceIn, companion.SourceOut, new Timecode(origStart.Ticks + actualDelta), "Move clip"));
+
+        Execute(commands.Count == 1
+            ? commands[0]
+            : new CompositeCommand(trackChanged ? "Move clip to track" : "Move linked clips", commands));
+        if (trackChanged)
+            ClipPlaced?.Invoke();
     }
 
     /// <summary>

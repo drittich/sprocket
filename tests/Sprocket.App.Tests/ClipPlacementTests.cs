@@ -121,4 +121,28 @@ public class ClipPlacementTests
         Assert.Null(a.Clips[0].LinkGroupId);
         Assert.Same(a.Clips[0], result.Value.PrimaryClip); // audio lane was primary
     }
+
+    // ── CompatibleTrack (cross-track drag target, PLAN.md step 16e) ──────────────────────────────────
+
+    [Fact]
+    public void CompatibleTrack_Returns_The_Lane_When_It_Is_The_Same_Kind()
+    {
+        var src = new VideoTrack();
+        var lane = new VideoTrack();
+        Assert.Same(lane, ClipPlacement.CompatibleTrack(src, lane));
+
+        var asrc = new AudioTrack();
+        var alane = new AudioTrack();
+        Assert.Same(alane, ClipPlacement.CompatibleTrack(asrc, alane));
+    }
+
+    [Fact]
+    public void CompatibleTrack_Is_Null_For_A_Cross_Kind_Or_Missing_Lane()
+    {
+        var video = new VideoTrack();
+        var audio = new AudioTrack();
+        Assert.Null(ClipPlacement.CompatibleTrack(video, audio)); // video clip can't drop on an audio lane
+        Assert.Null(ClipPlacement.CompatibleTrack(audio, video));
+        Assert.Null(ClipPlacement.CompatibleTrack(video, null)); // no lane under the cursor → keep source
+    }
 }

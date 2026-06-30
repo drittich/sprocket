@@ -126,4 +126,22 @@ public class TimelineMathTests
         // Each chosen interval is a whole number of seconds-or-half-seconds in ticks.
         Assert.True(tight > 0 && loose > 0);
     }
+
+    [Theory]
+    [InlineData(10, -1)]   // above the ruler
+    [InlineData(26, 0)]    // first pixel below the ruler → lane 0
+    [InlineData(60, 0)]    // still inside lane 0 (stride 50)
+    [InlineData(76, 1)]    // start of lane 1
+    [InlineData(180, 3)]   // lane 3
+    public void LaneIndexAtY_Maps_Y_To_Lane(double y, int expected)
+    {
+        // ruler 26px, stride 50px (the control's RulerHeight, TrackHeight + TrackGap).
+        Assert.Equal(expected, TimelineMath.LaneIndexAtY(y, rulerHeight: 26, laneStride: 50));
+    }
+
+    [Fact]
+    public void LaneIndexAtY_Returns_Negative_For_Degenerate_Stride()
+    {
+        Assert.Equal(-1, TimelineMath.LaneIndexAtY(100, rulerHeight: 26, laneStride: 0));
+    }
 }

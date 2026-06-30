@@ -93,4 +93,21 @@ public static class ClipPlacement
         Clip primary = (primaryIsVideo ? videoClip : audioClip) ?? videoClip ?? audioClip!;
         return new PlacementResult(command, primary);
     }
+
+    /// <summary>
+    /// The track a clip may move to for a cross-track drag (PLAN.md step 16e): returns
+    /// <paramref name="laneTrack"/> when it is the same kind (video/audio) as <paramref name="sourceTrack"/>,
+    /// otherwise <see langword="null"/> — a video clip only drops on a video track and audio only on audio. A
+    /// null result tells the caller to keep the clip on its source track (the pointer is over an incompatible
+    /// lane, so the track is unchanged). Pure so it is unit-tested headlessly.
+    /// </summary>
+    public static Track? CompatibleTrack(Track sourceTrack, Track? laneTrack)
+    {
+        ArgumentNullException.ThrowIfNull(sourceTrack);
+        if (laneTrack is null)
+            return null;
+        bool sameKind = (sourceTrack is VideoTrack && laneTrack is VideoTrack)
+            || (sourceTrack is AudioTrack && laneTrack is AudioTrack);
+        return sameKind ? laneTrack : null;
+    }
 }

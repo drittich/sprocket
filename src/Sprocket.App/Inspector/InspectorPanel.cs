@@ -24,14 +24,16 @@ namespace Sprocket.App.Inspector;
 /// </summary>
 public sealed class InspectorPanel : UserControl
 {
-    // Palette (mirrors App.axaml so the code control matches the themed shell).
-    private static readonly IBrush PanelBg = Hex("#16161C");
-    private static readonly IBrush RaisedBg = Hex("#22222B");
-    private static readonly IBrush Edge = Hex("#2A2A33");
-    private static readonly IBrush TextBrush = Hex("#D5DBE6");
-    private static readonly IBrush MutedText = Hex("#9AA4B2");
-    private static readonly IBrush FaintText = Hex("#6A7180");
-    private static readonly IBrush Accent = Hex("#6C5CE7");
+    // Core tokens come from the shared Palette (Palette.cs) so this code control can't drift from the shell.
+    // FaintText used to be a darker #6A7180 here, which failed WCAG AA at the 11–12px label sizes it draws
+    // at; Palette.FaintText is the AA-safe value.
+    private static readonly IBrush PanelBg = Palette.PanelBgBrush;
+    private static readonly IBrush RaisedBg = Palette.RaisedBgBrush;
+    private static readonly IBrush Edge = Palette.EdgeBrush;
+    private static readonly IBrush TextBrush = Palette.TextBrush;
+    private static readonly IBrush MutedText = Palette.MutedTextBrush;
+    private static readonly IBrush FaintText = Palette.FaintTextBrush;
+    private static readonly IBrush Accent = Palette.AccentBrush;
 
     private Project? _project;
     private EditHistory? _history;
@@ -576,6 +578,4 @@ public sealed class InspectorPanel : UserControl
 
     private static string FormatSeconds(Timecode t) =>
         $"{t.ToSeconds().ToString("0.00", CultureInfo.InvariantCulture)}s";
-
-    private static IBrush Hex(string hex) => new SolidColorBrush(Color.Parse(hex));
 }

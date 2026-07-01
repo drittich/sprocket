@@ -26,16 +26,16 @@ namespace Sprocket.App.MediaBrowser;
 /// </summary>
 public sealed class MediaBrowserPanel : UserControl
 {
-    // Palette (mirrors App.axaml so the code control matches the themed shell).
-    private static readonly IBrush PanelBg = Hex("#16161C");
-    private static readonly IBrush RaisedBg = Hex("#22222B");
-    private static readonly IBrush PosterBg = Hex("#0E0E12");
-    private static readonly IBrush Edge = Hex("#2A2A33");
-    private static readonly IBrush TextBrush = Hex("#D5DBE6");
-    private static readonly IBrush MutedText = Hex("#9AA4B2");
-    private static readonly IBrush FaintText = Hex("#6A7180");
-    private static readonly IBrush Accent = Hex("#6C5CE7");
-    private static readonly IBrush BadgeBg = Hex("#2E2E38");
+    // Core tokens come from the shared Palette (Palette.cs) so this code control can't drift from the shell.
+    private static readonly IBrush PanelBg = Palette.PanelBgBrush;
+    private static readonly IBrush RaisedBg = Palette.RaisedBgBrush;
+    private static readonly IBrush PosterBg = Palette.WindowBgBrush;
+    private static readonly IBrush Edge = Palette.EdgeBrush;
+    private static readonly IBrush TextBrush = Palette.TextBrush;
+    private static readonly IBrush MutedText = Palette.MutedTextBrush;
+    private static readonly IBrush FaintText = Palette.FaintTextBrush;
+    private static readonly IBrush Accent = Palette.AccentBrush;
+    private static readonly IBrush BadgeBg = Hex("#2E2E38"); // media-badge chip — component-specific, stays local
 
     private const double TileWidth = 116;
     private const int PosterW = 104;

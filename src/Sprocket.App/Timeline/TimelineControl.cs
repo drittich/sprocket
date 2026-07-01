@@ -48,17 +48,30 @@ public sealed class TimelineControl : Control
     private static readonly IBrush MulticamFill = Brush("#5C3A6B"); // multicam clips (violet, distinct from media/nest)
     private static readonly IBrush ClipDetail = Brush("#4A567E");
     private static readonly IBrush AudioDetail = Brush("#4F7A60");
-    private static readonly IBrush Text = Brush("#C9D1DA");
-    private static readonly IBrush MutedText = Brush("#8A93A2");
-    private static readonly IBrush FaintText = Brush("#6A7180");
-    private static readonly IBrush Accent = Brush("#6C5CE7");
-    private static readonly IBrush ToggleOn = Brush("#6C5CE7");
-    private static readonly IBrush ToggleOff = Brush("#2A2A33");
+    // Core tokens from the shared Palette (Palette.cs). Text/MutedText were a touch dimmer here (#C9D1DA /
+    // #8A93A2) and FaintText was #6A7180 (which failed WCAG AA at the ruler/label sizes) — all unified to the
+    // shell values so this control can't drift from the rest of the app.
+    private static readonly IBrush Text = Palette.TextBrush;
+    private static readonly IBrush MutedText = Palette.MutedTextBrush;
+    private static readonly IBrush FaintText = Palette.FaintTextBrush;
+    private static readonly IBrush Accent = Palette.AccentBrush;
+    private static readonly IBrush ToggleOn = Palette.AccentBrush;
+    private static readonly IBrush ToggleOff = Palette.EdgeBrush;
     private static readonly Pen GridPen = new(Brush("#24242E"), 1);
     private static readonly IBrush MarkerLine = Brush("#33FFFFFF");
-    private static readonly Pen EdgePen = new(Brush("#2A2A33"), 1);
-    private static readonly Pen PlayheadPen = new(Brush("#6C5CE7"), 1.5);
-    private static readonly Pen SelectPen = new(Brush("#6C5CE7"), 2);
+    private static readonly Pen EdgePen = new(Palette.EdgeBrush, 1);
+    private static readonly Pen PlayheadPen = new(Palette.AccentBrush, 1.5);
+    private static readonly Pen SelectPen = new(Palette.AccentBrush, 2);
+
+    // Cached translucent overlays for the draw path — fixed colour + opacity, hoisted out of the per-frame
+    // render so no brush/pen is allocated on every redraw (audit #4): accent-tinted move/transition
+    // decorations, plus 0.55 ghosts of the two clip fills used by the cross-track move preview.
+    private static readonly IBrush MovePreviewLaneFill = new ImmutableSolidColorBrush(Palette.Accent, 0.08);
+    private static readonly IBrush TransitionFill = new ImmutableSolidColorBrush(Palette.Accent, 0.22);
+    private static readonly Pen TransitionXPen = new(new ImmutableSolidColorBrush(Palette.Accent, 0.85), 1.5);
+    private static readonly Pen TransitionBorderPen = new(new ImmutableSolidColorBrush(Palette.Accent, 0.8), 1);
+    private static readonly IBrush VideoGhostFill = new ImmutableSolidColorBrush(((ISolidColorBrush)VideoFill).Color, 0.55);
+    private static readonly IBrush AudioGhostFill = new ImmutableSolidColorBrush(((ISolidColorBrush)AudioFill).Color, 0.55);
 
     private Project? _project;
     private EditHistory? _history;
@@ -442,6 +455,20 @@ public sealed class TimelineControl : Control
     private static readonly IBrush PurpleMarker = Brush("#9A6CE7");
     private static readonly IBrush WhiteMarker = Brush("#E6EAF0");
 
+    // 0.18-opacity band drawn behind a span marker — cached per colour (built once from the brushes above)
+    // so the ruler draw path doesn't allocate a brush per marker per frame (audit #4).
+    private static readonly Dictionary<MarkerColor, IBrush> MarkerHighlights = BuildMarkerHighlights();
+
+    private static Dictionary<MarkerColor, IBrush> BuildMarkerHighlights()
+    {
+        var map = new Dictionary<MarkerColor, IBrush>();
+        foreach (MarkerColor c in Enum.GetValues<MarkerColor>())
+            map[c] = new ImmutableSolidColorBrush(((ISolidColorBrush)MarkerBrush(c)).Color, 0.18);
+        return map;
+    }
+
+    public static IBrush MarkerHighlightBrush(MarkerColor color) => MarkerHighlights[color];
+
     /// <summary>
     /// Adds a sequence marker at the playhead (the Premiere 'M' convention), undoable through the command stack.
     /// Returns the new marker (so the caller can offer to name it) or <see langword="null"/> when not ready.
@@ -824,7 +851,7 @@ public sealed class TimelineControl : Control
             if (marker.IsSpan)
             {
                 double xEnd = TimelineMath.XAtTicks(marker.End.Ticks, _pxPerSecond, _scrollX, _headerWidth);
-                ctx.FillRectangle(new ImmutableSolidColorBrush(((ISolidColorBrush)brush).Color, 0.18),
+                ctx.FillRectangle(MarkerHighlightBrush(marker.Color),
                     new Rect(x, 0, Math.Max(1, xEnd - x), RulerHeight));
             }
 
@@ -891,8 +918,7 @@ public sealed class TimelineControl : Control
             return;
         bool isVideo = lanes[laneIndex].isVideo;
 
-        Color accent = ((ISolidColorBrush)Accent).Color;
-        ctx.FillRectangle(new ImmutableSolidColorBrush(accent, 0.08),
+        ctx.FillRectangle(MovePreviewLaneFill,
             new Rect(_headerWidth, LaneTop(laneIndex), size.Width - _headerWidth, TrackHeight));
 
         long dur = _dragOrigOut.Ticks - _dragOrigIn.Ticks;
@@ -902,8 +928,7 @@ public sealed class TimelineControl : Control
         using var _ = ctx.PushClip(new Rect(_headerWidth, RulerHeight, size.Width - _headerWidth, size.Height - RulerHeight));
         var rect = new Rect(x0, LaneTop(laneIndex) + 3, Math.Max(2, x1 - x0), TrackHeight - 6);
         var rounded = new RoundedRect(rect, 4);
-        Color baseColor = ((ISolidColorBrush)(isVideo ? VideoFill : AudioFill)).Color;
-        ctx.DrawRectangle(new ImmutableSolidColorBrush(baseColor, 0.55), SelectPen, rounded);
+        ctx.DrawRectangle(isVideo ? VideoGhostFill : AudioGhostFill, SelectPen, rounded);
         if (_movePreviewCopy)
             ctx.DrawText(Label("＋", 13, Brushes.White), new Point(rect.X + 6, rect.Y + 3));
     }
@@ -978,10 +1003,9 @@ public sealed class TimelineControl : Control
     private void DrawTransitions(DrawingContext ctx, Size size, List<(Track track, bool isVideo)> lanes)
     {
         using var _ = ctx.PushClip(new Rect(_headerWidth, RulerHeight, size.Width - _headerWidth, size.Height - RulerHeight));
-        Color accent = ((ISolidColorBrush)Accent).Color;
-        var fill = new ImmutableSolidColorBrush(accent, 0.22);
-        var xPen = new Pen(new ImmutableSolidColorBrush(accent, 0.85), 1.5);
-        var borderPen = new Pen(new ImmutableSolidColorBrush(accent, 0.8), 1);
+        IBrush fill = TransitionFill;
+        Pen xPen = TransitionXPen;
+        Pen borderPen = TransitionBorderPen;
 
         for (int i = 0; i < lanes.Count; i++)
         {

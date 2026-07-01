@@ -187,7 +187,7 @@
             BorderBrush="{DynamicResource Edge}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="Auto,*,Auto" Margin="12,0">
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="6">
-          <Ellipse x:Name="StateDot" Width="8" Height="8" Fill="#3FB950" VerticalAlignment="Center" />
+          <Ellipse x:Name="StateDot" Width="8" Height="8" Fill="{DynamicResource Good}" VerticalAlignment="Center" />
           <TextBlock x:Name="EngineStateText" Foreground="{DynamicResource MutedText}" FontSize="11"
                      VerticalAlignment="Center" Text="Ready" />
         </StackPanel>
@@ -274,7 +274,19 @@
                 <TextBlock x:Name="PositionText" Grid.Column="7" Margin="14,0,10,0" VerticalAlignment="Center"
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource Text}"
                            Text="0:00.00" />
-                <Slider x:Name="Scrubber" Grid.Column="8" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center" />
+                <Slider x:Name="Scrubber" Grid.Column="8" Minimum="0" Maximum="1" Value="0" VerticalAlignment="Center">
+                  <!-- Match the themed transport: accent-tint the played (value) portion, and let the thumb read
+                       as the accent on interaction. Overrides the Fluent Slider theme brushes in the control's
+                       own scope (keys verified present in the Avalonia 12.0.5 Fluent theme). -->
+                  <Slider.Resources>
+                    <SolidColorBrush x:Key="SliderTrackValueFill" Color="{x:Static local:Palette.Accent}" />
+                    <SolidColorBrush x:Key="SliderTrackValueFillPointerOver" Color="{x:Static local:Palette.Accent}" />
+                    <SolidColorBrush x:Key="SliderTrackValueFillPressed" Color="{x:Static local:Palette.AccentHover}" />
+                    <SolidColorBrush x:Key="SliderThumbBackground" Color="{x:Static local:Palette.Text}" />
+                    <SolidColorBrush x:Key="SliderThumbBackgroundPointerOver" Color="{x:Static local:Palette.Accent}" />
+                    <SolidColorBrush x:Key="SliderThumbBackgroundPressed" Color="{x:Static local:Palette.AccentHover}" />
+                  </Slider.Resources>
+                </Slider>
                 <TextBlock x:Name="DurationText" Grid.Column="9" Margin="10,0,0,0" VerticalAlignment="Center"
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource MutedText}"
                            Text="0:00.00" />

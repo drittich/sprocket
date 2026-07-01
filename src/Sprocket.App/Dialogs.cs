@@ -15,20 +15,11 @@ using Sprocket.Export;
 
 namespace Sprocket.App;
 
-/// <summary>
-/// Small modal dialogs for the menu surface (PLAN.md step 16c): an About box and a discard-unsaved-changes
-/// confirmation. Built in code (like <see cref="Timeline.TimelineControl"/> / the panels) against the shell's
-/// dark palette, so there is no extra XAML. Dialog look/behaviour rests on manual verification (the App is a
-/// UI-bound WinExe); the logic that decides *whether* to show them lives in testable helpers.
-/// </summary>
-internal static class Palette
-{
-    public static readonly IBrush WindowBg = new SolidColorBrush(Color.Parse("#0E0E12"));
-    public static readonly IBrush PanelBg = new SolidColorBrush(Color.Parse("#16161C"));
-    public static readonly IBrush Text = new SolidColorBrush(Color.Parse("#D5DBE6"));
-    public static readonly IBrush MutedText = new SolidColorBrush(Color.Parse("#9AA4B2"));
-    public static readonly IBrush Accent = new SolidColorBrush(Color.Parse("#4227a3"));
-}
+// Small modal dialogs for the menu surface (PLAN.md step 16c): an About box and a discard-unsaved-changes
+// confirmation. Built in code (like Timeline.TimelineControl / the panels) against the shell's dark palette —
+// the shared Palette in Palette.cs, so there is no extra XAML and no per-dialog color copies. Dialog
+// look/behaviour rests on manual verification (the App is a UI-bound WinExe); the logic that decides *whether*
+// to show them lives in testable helpers.
 
 /// <summary>The app icon, loaded once from the embedded avares resource and shared by the About box and any
 /// code-built dialog windows. (MainWindow / its taskbar icon are wired directly in MainWindow.axaml.)</summary>
@@ -66,7 +57,7 @@ internal static class AboutDialog
             HorizontalAlignment = HorizontalAlignment.Center,
             Padding = new Thickness(18, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -78,7 +69,7 @@ internal static class AboutDialog
             Height = 270,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new StackPanel
             {
                 Margin = new Thickness(24),
@@ -87,10 +78,10 @@ internal static class AboutDialog
                 Children =
                 {
                     logo,
-                    Centered("Sprocket", 20, FontWeight.SemiBold, Palette.Text),
-                    Centered($"Version {Program.AppVersion}", 12, FontWeight.Normal, Palette.MutedText),
-                    Centered($"Media engine: {ffmpeg}", 12, FontWeight.Normal, Palette.MutedText),
-                    Centered("A cross-platform, non-destructive video editor. Free and open source.", 12, FontWeight.Normal, Palette.MutedText),
+                    Centered("Sprocket", 20, FontWeight.SemiBold, Palette.TextBrush),
+                    Centered($"Version {Program.AppVersion}", 12, FontWeight.Normal, Palette.MutedTextBrush),
+                    Centered($"Media engine: {ffmpeg}", 12, FontWeight.Normal, Palette.MutedTextBrush),
+                    Centered("A cross-platform, non-destructive video editor. Free and open source.", 12, FontWeight.Normal, Palette.MutedTextBrush),
                     close,
                 },
             },
@@ -123,15 +114,15 @@ internal static class ConfirmDialog
             Content = confirmText,
             Padding = new Thickness(16, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
         var cancel = new Button
         {
             Content = cancelText,
             Padding = new Thickness(16, 5),
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -143,7 +134,7 @@ internal static class ConfirmDialog
             Height = 170,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new DockPanel
             {
                 Margin = new Thickness(22),
@@ -161,7 +152,7 @@ internal static class ConfirmDialog
                     new TextBlock
                     {
                         Text = message,
-                        Foreground = Palette.Text,
+                        Foreground = Palette.TextBrush,
                         FontSize = 13,
                         TextWrapping = TextWrapping.Wrap,
                         VerticalAlignment = VerticalAlignment.Center,
@@ -187,7 +178,7 @@ internal static class MessageDialog
             Content = buttonText,
             Padding = new Thickness(18, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -199,7 +190,7 @@ internal static class MessageDialog
             Height = 180,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new DockPanel
             {
                 Margin = new Thickness(22),
@@ -216,7 +207,7 @@ internal static class MessageDialog
                     new TextBlock
                     {
                         Text = message,
-                        Foreground = Palette.Text,
+                        Foreground = Palette.TextBrush,
                         FontSize = 13,
                         TextWrapping = TextWrapping.Wrap,
                         VerticalAlignment = VerticalAlignment.Center,
@@ -244,8 +235,8 @@ internal static class SpeedDialog
         {
             Text = SpeedFormat.ToPercentString(current),
             Width = 90,
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             VerticalAlignment = VerticalAlignment.Center,
         };
 
@@ -257,8 +248,8 @@ internal static class SpeedDialog
             {
                 Content = $"{p}%",
                 Padding = new Thickness(10, 4),
-                Foreground = Palette.Text,
-                Background = Palette.PanelBg,
+                Foreground = Palette.TextBrush,
+                Background = Palette.PanelBgBrush,
                 CornerRadius = new CornerRadius(4),
             };
             b.Click += (_, _) => box.Text = p.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -270,15 +261,15 @@ internal static class SpeedDialog
             Content = "Apply",
             Padding = new Thickness(16, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
         var cancel = new Button
         {
             Content = "Cancel",
             Padding = new Thickness(16, 5),
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -290,7 +281,7 @@ internal static class SpeedDialog
             Height = 210,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new DockPanel
             {
                 Margin = new Thickness(22),
@@ -310,7 +301,7 @@ internal static class SpeedDialog
                         Spacing = 6,
                         Children =
                         {
-                            new TextBlock { Text = "Speed", Foreground = Palette.MutedText, FontSize = 12 },
+                            new TextBlock { Text = "Speed", Foreground = Palette.MutedTextBrush, FontSize = 12 },
                             new StackPanel
                             {
                                 Orientation = Orientation.Horizontal,
@@ -318,7 +309,7 @@ internal static class SpeedDialog
                                 Children =
                                 {
                                     box,
-                                    new TextBlock { Text = "%", Foreground = Palette.Text, VerticalAlignment = VerticalAlignment.Center },
+                                    new TextBlock { Text = "%", Foreground = Palette.TextBrush, VerticalAlignment = VerticalAlignment.Center },
                                 },
                             },
                             presets,
@@ -353,8 +344,8 @@ internal static class SequenceSettingsDialog
         var nameBox = new TextBox
         {
             Text = sequence.Name,
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             VerticalAlignment = VerticalAlignment.Center,
         };
 
@@ -367,15 +358,15 @@ internal static class SequenceSettingsDialog
             Content = "Apply",
             Padding = new Thickness(16, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
         var cancel = new Button
         {
             Content = "Cancel",
             Padding = new Thickness(16, 5),
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -387,7 +378,7 @@ internal static class SequenceSettingsDialog
             Height = 220,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new DockPanel
             {
                 Margin = new Thickness(22),
@@ -407,10 +398,10 @@ internal static class SequenceSettingsDialog
                         Spacing = 6,
                         Children =
                         {
-                            new TextBlock { Text = "Name", Foreground = Palette.MutedText, FontSize = 12 },
+                            new TextBlock { Text = "Name", Foreground = Palette.MutedTextBrush, FontSize = 12 },
                             nameBox,
-                            new TextBlock { Text = "Format", Foreground = Palette.MutedText, FontSize = 12, Margin = new Thickness(0, 10, 0, 0) },
-                            new TextBlock { Text = format, Foreground = Palette.Text, FontSize = 13 },
+                            new TextBlock { Text = "Format", Foreground = Palette.MutedTextBrush, FontSize = 12, Margin = new Thickness(0, 10, 0, 0) },
+                            new TextBlock { Text = format, Foreground = Palette.TextBrush, FontSize = 13 },
                         },
                     },
                 },
@@ -447,7 +438,7 @@ internal static class ExportSettingsDialog
         ComboBox qualityBox = MakeCombo(["High (larger file)", "Medium", "Low (smaller file)"]);
         qualityBox.SelectedIndex = 0;
 
-        var resText = new TextBlock { Foreground = Palette.MutedText, FontSize = 12 };
+        var resText = new TextBlock { Foreground = Palette.MutedTextBrush, FontSize = 12 };
         (int w, int h) = VideoExporter.ComputeExportResolution(sequenceWidth, sequenceHeight);
         resText.Text = (w == sequenceWidth && h == sequenceHeight)
             ? $"Output resolution: {w}×{h}"
@@ -477,15 +468,15 @@ internal static class ExportSettingsDialog
             Content = "Export…",
             Padding = new Thickness(16, 5),
             Foreground = Brushes.White,
-            Background = Palette.Accent,
+            Background = Palette.AccentBrush,
             CornerRadius = new CornerRadius(5),
         };
         var cancel = new Button
         {
             Content = "Cancel",
             Padding = new Thickness(16, 5),
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             CornerRadius = new CornerRadius(5),
         };
 
@@ -497,7 +488,7 @@ internal static class ExportSettingsDialog
             Height = 320,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Palette.WindowBg,
+            Background = Palette.WindowBgBrush,
             Content = new DockPanel
             {
                 Margin = new Thickness(22),
@@ -548,8 +539,8 @@ internal static class ExportSettingsDialog
     {
         ItemsSource = items.ToList(),
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        Foreground = Palette.Text,
-        Background = Palette.PanelBg,
+        Foreground = Palette.TextBrush,
+        Background = Palette.PanelBgBrush,
     };
 
     private static StackPanel LabeledRow(string label, Control control) => new()
@@ -557,7 +548,7 @@ internal static class ExportSettingsDialog
         Spacing = 3,
         Children =
         {
-            new TextBlock { Text = label, Foreground = Palette.MutedText, FontSize = 12 },
+            new TextBlock { Text = label, Foreground = Palette.MutedTextBrush, FontSize = 12 },
             control,
         },
     };
@@ -589,13 +580,13 @@ internal sealed class ExportProgressDialog : Window
         Height = 160;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = Palette.WindowBg;
+        Background = Palette.WindowBgBrush;
 
         _bar = new ProgressBar { Minimum = 0, Maximum = 100, Value = 0, Height = 16 };
         _percent = new TextBlock
         {
             Text = "0%",
-            Foreground = Palette.MutedText,
+            Foreground = Palette.MutedTextBrush,
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -603,8 +594,8 @@ internal sealed class ExportProgressDialog : Window
         {
             Content = "Cancel",
             Padding = new Thickness(16, 5),
-            Foreground = Palette.Text,
-            Background = Palette.PanelBg,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
             CornerRadius = new CornerRadius(5),
         };
         _cancel.Click += (_, _) => RequestCancel();
@@ -623,7 +614,7 @@ internal sealed class ExportProgressDialog : Window
                 new TextBlock
                 {
                     Text = $"Exporting {fileName}…",
-                    Foreground = Palette.Text,
+                    Foreground = Palette.TextBrush,
                     FontSize = 13,
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 },

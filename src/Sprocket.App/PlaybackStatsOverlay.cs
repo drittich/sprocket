@@ -27,10 +27,10 @@ namespace Sprocket.App;
 /// </remarks>
 internal sealed class PlaybackStatsOverlay : Window
 {
-    // Health palette: matches the status-bar state dot (#3FB950) for "good".
-    private static readonly IBrush Good = new SolidColorBrush(Color.Parse("#3FB950"));
-    private static readonly IBrush Warn = new SolidColorBrush(Color.Parse("#D29922"));
-    private static readonly IBrush Bad = new SolidColorBrush(Color.Parse("#F85149"));
+    // Health palette from the shared Palette (Palette.cs); Good matches the status-bar state dot.
+    private static readonly IBrush Good = Palette.GoodBrush;
+    private static readonly IBrush Warn = Palette.WarnBrush;
+    private static readonly IBrush Bad = Palette.BadBrush;
     private static readonly FontFamily Mono = new("Cascadia Code,Consolas,monospace");
 
     private readonly Func<PlaybackEngine?> _engine;
@@ -67,7 +67,7 @@ internal sealed class PlaybackStatsOverlay : Window
         ShowInTaskbar = false;
         ShowActivated = false; // don't steal focus from the editor (Space keeps toggling play)
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Background = Palette.WindowBg;
+        Background = Palette.WindowBgBrush;
 
         var grid = new Grid
         {
@@ -119,7 +119,7 @@ internal sealed class PlaybackStatsOverlay : Window
             Text = "Amber video decode = CPU/software path (the usual 1080p stutter cause); green = GPU. Dropped "
                  + "frames climb when the preview can't keep pace, and gen-0 GC should stay flat — frame pixels "
                  + "never touch the managed heap.",
-            Foreground = Palette.MutedText,
+            Foreground = Palette.MutedTextBrush,
             FontSize = 10.5,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 12, 0, 0),
@@ -223,17 +223,17 @@ internal sealed class PlaybackStatsOverlay : Window
         if (engine is null)
         {
             _state.Text = "no media";
-            _state.Foreground = Palette.MutedText;
+            _state.Foreground = Palette.MutedTextBrush;
             _position.Text = _decode.Text = _targetFps.Text = _previewFps.Text = _dropped.Text
                 = _presented.Text = _pumpRate.Text = "—";
-            _previewFps.Foreground = _dropped.Foreground = _decode.Foreground = Palette.Text;
+            _previewFps.Foreground = _dropped.Foreground = _decode.Foreground = Palette.TextBrush;
             return;
         }
 
         PlaybackState state = engine.State;
         bool playing = state == PlaybackState.Playing;
         _state.Text = state.ToString();
-        _state.Foreground = playing ? Good : Palette.Text;
+        _state.Foreground = playing ? Good : Palette.TextBrush;
 
         _position.Text = $"{FormatTime(engine.Position)} / {FormatTime(engine.Duration)}";
 
@@ -249,7 +249,7 @@ internal sealed class PlaybackStatsOverlay : Window
         else
         {
             _decode.Text = "—";
-            _decode.Foreground = Palette.Text;
+            _decode.Foreground = Palette.TextBrush;
         }
 
         double target = Fps(engine.FrameRate);
@@ -261,14 +261,14 @@ internal sealed class PlaybackStatsOverlay : Window
         if (fps < 0)
         {
             _previewFps.Text = "measuring…";
-            _previewFps.Foreground = Palette.MutedText;
+            _previewFps.Foreground = Palette.MutedTextBrush;
         }
         else
         {
             _previewFps.Text = $"{fps:0.0} fps";
             // Only judge the rate against target while playing — a paused/stopped engine presents ~0 fps by design.
-            _previewFps.Foreground = !playing ? Palette.Text
-                : target <= 0 ? Palette.Text
+            _previewFps.Foreground = !playing ? Palette.TextBrush
+                : target <= 0 ? Palette.TextBrush
                 : fps >= target * 0.95 ? Good
                 : fps >= target * 0.80 ? Warn
                 : Bad;
@@ -294,7 +294,7 @@ internal sealed class PlaybackStatsOverlay : Window
         if (cpuRate < 0)
         {
             _cpu.Text = "measuring…";
-            _cpu.Foreground = Palette.MutedText;
+            _cpu.Foreground = Palette.MutedTextBrush;
         }
         else
         {
@@ -308,7 +308,7 @@ internal sealed class PlaybackStatsOverlay : Window
 
         string collections = $"{GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}";
         _gcCollections.Text = gen0Rate > 0.05 ? $"{collections}  (+{gen0Rate:0.0} g0/s)" : collections;
-        _gcCollections.Foreground = gen0Rate > 0.05 ? Warn : Palette.Text;
+        _gcCollections.Foreground = gen0Rate > 0.05 ? Warn : Palette.TextBrush;
 
         _threads.Text = _process.Threads.Count.ToString();
     }
@@ -322,7 +322,7 @@ internal sealed class PlaybackStatsOverlay : Window
         var labelBlock = new TextBlock
         {
             Text = label,
-            Foreground = Palette.MutedText,
+            Foreground = Palette.MutedTextBrush,
             FontSize = 12,
             Margin = new Thickness(0, 3, 16, 3),
             VerticalAlignment = VerticalAlignment.Center,
@@ -334,7 +334,7 @@ internal sealed class PlaybackStatsOverlay : Window
         var value = new TextBlock
         {
             Text = "—",
-            Foreground = Palette.Text,
+            Foreground = Palette.TextBrush,
             FontFamily = Mono,
             FontSize = 12,
             Margin = new Thickness(0, 3),

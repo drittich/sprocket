@@ -1,17 +1,26 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:app="clr-namespace:Sprocket.App"
              x:Class="Sprocket.App.App"
              RequestedThemeVariant="Dark">
   <Application.Resources>
-    <!-- Palette (UI.md §1): near-black surfaces + a single indigo/violet accent. -->
-    <SolidColorBrush x:Key="WindowBg" Color="#0E0E12" />
-    <SolidColorBrush x:Key="PanelBg" Color="#16161C" />
-    <SolidColorBrush x:Key="RaisedBg" Color="#22222B" />
-    <SolidColorBrush x:Key="Edge" Color="#2A2A33" />
-    <SolidColorBrush x:Key="Text" Color="#D5DBE6" />
-    <SolidColorBrush x:Key="MutedText" Color="#9AA4B2" />
-    <SolidColorBrush x:Key="FaintText" Color="#8A93A3" />
-    <SolidColorBrush x:Key="Accent" Color="#4227a3" />
+    <!-- Palette (UI.md §1): near-black surfaces + a single indigo/violet accent. All values come from the
+         Palette class (Palette.cs) so the shell and the custom-drawn Skia surfaces share one source. -->
+    <SolidColorBrush x:Key="WindowBg" Color="{x:Static app:Palette.WindowBg}" />
+    <SolidColorBrush x:Key="PanelBg" Color="{x:Static app:Palette.PanelBg}" />
+    <SolidColorBrush x:Key="RaisedBg" Color="{x:Static app:Palette.RaisedBg}" />
+    <SolidColorBrush x:Key="Edge" Color="{x:Static app:Palette.Edge}" />
+    <SolidColorBrush x:Key="Text" Color="{x:Static app:Palette.Text}" />
+    <SolidColorBrush x:Key="MutedText" Color="{x:Static app:Palette.MutedText}" />
+    <SolidColorBrush x:Key="FaintText" Color="{x:Static app:Palette.FaintText}" />
+    <SolidColorBrush x:Key="Accent" Color="{x:Static app:Palette.Accent}" />
+    <SolidColorBrush x:Key="AccentHover" Color="{x:Static app:Palette.AccentHover}" />
+    <SolidColorBrush x:Key="Danger" Color="{x:Static app:Palette.Danger}" />
+
+    <!-- Semantic status (status-bar dot; playback-stats health). -->
+    <SolidColorBrush x:Key="Good" Color="{x:Static app:Palette.Good}" />
+    <SolidColorBrush x:Key="Warn" Color="{x:Static app:Palette.Warn}" />
+    <SolidColorBrush x:Key="Bad" Color="{x:Static app:Palette.Bad}" />
 
     <!-- Compact Fluent control metrics (space-at-a-premium density): smaller radio bullets and slider
          thumb than the Fluent defaults (20px). All RadioButtons in the shell are the tool/monitor palette. -->
@@ -21,7 +30,7 @@
     <CornerRadius x:Key="SliderThumbCornerRadius">7</CornerRadius>
 
     <!-- Placeholder text must clear WCAG AA (≥4.5:1) on the dark input surface — Fluent's default is too dim. -->
-    <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#8A93A3" />
+    <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="{x:Static app:Palette.FaintText}" />
   </Application.Resources>
 
   <Application.Styles>
@@ -78,7 +87,7 @@
       <Setter Property="Foreground" Value="{DynamicResource Text}" />
     </Style>
     <Style Selector="Button.close:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="#C0392B" />
+      <Setter Property="Background" Value="{DynamicResource Danger}" />
       <Setter Property="Foreground" Value="White" />
     </Style>
 
@@ -93,7 +102,7 @@
       <Setter Property="CornerRadius" Value="5" />
     </Style>
     <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="#7D6FF0" />
+      <Setter Property="Background" Value="{DynamicResource AccentHover}" />
     </Style>
 
     <!-- Tool-palette radio buttons (Select / Blade / Slip / Hand / Zoom): the checked one shows white. -->
@@ -138,7 +147,7 @@
       <Setter Property="Foreground" Value="White" />
     </Style>
     <Style Selector="Button.transport.play:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="#7D6FF0" />
+      <Setter Property="Background" Value="{DynamicResource AccentHover}" />
       <Setter Property="Foreground" Value="White" />
     </Style>
     <Style Selector="Button.transport.play:pressed /template/ ContentPresenter">

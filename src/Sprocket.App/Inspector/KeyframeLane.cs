@@ -40,15 +40,17 @@ public sealed class KeyframeLane : Control
     private static readonly IBrush KeyHold = Brush("#C9893F");   // held keyframes (square)
     private static readonly IBrush KeyEase = Brush("#4FB286");   // eased keyframes (circle)
     private static readonly IBrush KeyBezier = Brush("#5AA9E6"); // custom Bezier keyframes (hexagon)
-    private static readonly IBrush Accent = Brush("#6C5CE7");
+    // Accent + frame edge come from the shared Palette (Palette.cs); the keyframe/handle hues above are
+    // component-specific and stay local.
+    private static readonly IBrush Accent = Palette.AccentBrush;
     private static readonly IBrush CurveBrush = Brush("#7E8796");
     private static readonly IBrush HandleBrush = Brush("#5AA9E6");
-    private static readonly Pen PlayheadPen = new(Brush("#6C5CE7"), 1);
-    private static readonly Pen Frame = new(Brush("#2A2A33"), 1);
-    private static readonly Pen SelectPen = new(Brush("#6C5CE7"), 1.5);
+    private static readonly Pen PlayheadPen = new(Palette.AccentBrush, 1);
+    private static readonly Pen Frame = new(Palette.EdgeBrush, 1);
+    private static readonly Pen SelectPen = new(Palette.AccentBrush, 1.5);
     private static readonly Pen HandlePen = new(Brush("#3E6E96"), 1);
-    private static readonly IBrush RubberFill = new ImmutableSolidColorBrush(Color.Parse("#6C5CE7"), 0.15);
-    private static readonly Pen RubberPen = new(Brush("#6C5CE7"), 1) { DashStyle = new DashStyle([3, 3], 0) };
+    private static readonly IBrush RubberFill = new ImmutableSolidColorBrush(Palette.Accent, 0.15);
+    private static readonly Pen RubberPen = new(Palette.AccentBrush, 1) { DashStyle = new DashStyle([3, 3], 0) };
 
     private AnimatableValue _value = AnimatableValue.Constant(0);
     private long _rangeStart, _rangeEnd, _playhead;

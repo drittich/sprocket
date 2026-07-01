@@ -603,11 +603,9 @@ internal static class ExportSettingsDialog
             {
                 LabeledRow("Preset", BurnInRow(presetBox, savePreset)),
                 LabeledRow("Format", containerBox),
-                LabeledRow("Video codec", videoBox),
-                LabeledRow("Audio codec", audioBox),
+                TwoColumnRow("Video codec", videoBox, "Audio codec", audioBox),
                 LabeledRow("Quality", qualityBox),
-                LabeledRow("Resolution", resolutionBox),
-                LabeledRow("Frame rate", fpsBox),
+                TwoColumnRow("Resolution", resolutionBox, "Frame rate", fpsBox),
                 resText,
                 new TextBlock { Text = "Burn-ins", Foreground = Palette.MutedTextBrush, FontSize = 12, Margin = new Thickness(0, 8, 0, 0) },
                 BurnInRow(tcCheck, tcPos),
@@ -621,8 +619,8 @@ internal static class ExportSettingsDialog
         {
             Title = "Export Settings",
             Icon = AppIcon.Window,
-            Width = 440,
-            Height = 640,
+            Width = 460,
+            Height = 680,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Palette.WindowBgBrush,
@@ -863,6 +861,20 @@ internal static class ExportSettingsDialog
             control,
         },
     };
+
+    /// <summary>Two labeled controls side by side, each taking half the width with a gap between — for naturally
+    /// paired fields (video/audio codec, resolution/frame-rate) so the form stays compact and organised.</summary>
+    private static Grid TwoColumnRow(string leftLabel, Control leftControl, string rightLabel, Control rightControl)
+    {
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,12,*") };
+        StackPanel left = LabeledRow(leftLabel, leftControl);
+        StackPanel right = LabeledRow(rightLabel, rightControl);
+        left.SetValue(Grid.ColumnProperty, 0);
+        right.SetValue(Grid.ColumnProperty, 2);
+        grid.Children.Add(left);
+        grid.Children.Add(right);
+        return grid;
+    }
 }
 
 /// <summary>

@@ -145,6 +145,9 @@ pwsh scripts/gh-release.ps1 -Rids win-x64,win-arm64,linux-x64,linux-arm64
 # A single runtime
 pwsh scripts/release.ps1 -Rids win-x64
 
+# A single runtime, no zip and no ready-to-run
+pwsh scripts/release.ps1 -Rids win-x64 -NoZip -NoReadyToRun
+
 # Stamp a version into the artifact names
 pwsh scripts/release.ps1 -Version 0.3.0
 ```

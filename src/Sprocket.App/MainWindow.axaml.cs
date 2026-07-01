@@ -1148,6 +1148,14 @@ public partial class MainWindow : Window
         // its own media. (_active is non-null only once the transport is wired.)
         if (_active is not null && ReferenceEquals(_active, _program))
             RefreshTransportForActive();
+
+        // Refresh the monitor for edits that only change how the current frame composites — a track's visibility
+        // (the eye toggle), an effect parameter (a Color/Brightness slider drag), opacity/blend. While playing the
+        // pump repaints every frame, but while paused it only presents on a decode or a seek, so these edits would
+        // otherwise not show until the next scrub/play. The surface recomposites from live model state on each draw
+        // (it honours track.Enabled and resolves each clip's effects at the playhead) over the already-held native
+        // frames, so a repaint alone reflects the edit with no re-decode. (Null until the transport is wired.)
+        _preview?.InvalidateVisual();
     }
 
     // ── Sequences: multiple sequences + nested/compound clips (PLAN.md step 23) ─────────────────────

@@ -1,11 +1,10 @@
-using Sprocket.Core.Timing;
-
-namespace Sprocket.Persistence.Interchange;
+namespace Sprocket.Core.Timing;
 
 /// <summary>
 /// Pure conversion between Sprocket's tick-based <see cref="Timecode"/> and SMPTE wall-clock timecode
-/// (<c>HH:MM:SS:FF</c>, or <c>HH:MM:SS;FF</c> for drop-frame), used by the EDL exporter (PLAN.md step 28). Kept
-/// separate from any I/O so it is unit-testable headlessly and correct for the NTSC rational rates.
+/// (<c>HH:MM:SS:FF</c>, or <c>HH:MM:SS;FF</c> for drop-frame). Shared by the interchange exporters (EDL / Final
+/// Cut XML, PLAN.md step 28) and the export timecode burn-in (PLAN.md step 29) so both label frames the same way.
+/// Kept in Core, free of any I/O, so it is unit-testable headlessly and correct for the NTSC rational rates.
 /// </summary>
 /// <remarks>
 /// A timecode is a labelling of frame indices. The <b>FF</b> field counts in the <see cref="NominalRate"/> (the real

@@ -20,6 +20,12 @@ namespace Sprocket.Export;
 /// <param name="GopSize">Keyframe interval in frames, or <c>0</c> for the encoder default.</param>
 /// <param name="PixelFormat">An explicit encoder pixel-format name, or <see langword="null"/> to use the codec's
 /// default (yuv420p for most; yuv422p10le for ProRes).</param>
+/// <param name="HandleFrames">Export <b>handles</b> (PLAN.md step 29): extra frames rendered before the range's
+/// in-point and after its out-point, for review / conform outputs. Clamped to the timeline, so handles only reach
+/// media that exists there; with no in-out range (a whole-timeline export) there is nothing to extend into.</param>
+/// <param name="BurnIns">Optional burn-in overlays (timecode / clip name / watermark) baked onto every exported
+/// frame (PLAN.md step 29). <see langword="null"/> or empty means no burn-ins. These touch only the deterministic
+/// export render, never the preview hot path (ARCHITECTURE.md §5/§7).</param>
 public readonly record struct ExportOptions(
     ExportFormat Format = default,
     ExportQuality Quality = ExportQuality.High,
@@ -27,7 +33,9 @@ public readonly record struct ExportOptions(
     long VideoBitRate = 0,
     long AudioBitRate = 0,
     int GopSize = 0,
-    string? PixelFormat = null);
+    string? PixelFormat = null,
+    int HandleFrames = 0,
+    IReadOnlyList<BurnIn>? BurnIns = null);
 
 /// <summary>
 /// Renders a <see cref="Project"/> offline to a full-resolution movie in the chosen container/codec matrix
@@ -109,10 +117,22 @@ public static class VideoExporter
         // duration, sampling the timeline at rangeIn + offset; encoder timestamps start at zero (a slice becomes a
         // file that plays from 0). A null range exports the whole timeline (the pre-step-29 behaviour).
         ExportRange effectiveRange = (range ?? ExportRange.Whole(fullDuration)).ClampTo(fullDuration);
+
+        // Handles (PLAN.md step 29): grow the range by N frames each side for review / conform outputs, then
+        // re-clamp — handles can only reach media that exists on the timeline, so a whole-timeline export is
+        // unaffected and a slice extends only as far as its surrounding frames allow.
+        if (options.HandleFrames > 0)
+        {
+            Timecode handle = Timecode.FromFrames(options.HandleFrames, fps);
+            effectiveRange = effectiveRange.WithHandles(handle, handle).ClampTo(fullDuration);
+        }
+
         Timecode rangeIn = effectiveRange.In;
         Timecode duration = effectiveRange.Duration;
         if (duration <= Timecode.Zero)
             throw new ArgumentException("The export range is empty — nothing to export.", nameof(range));
+
+        IReadOnlyList<BurnIn>? burnIns = options.BurnIns is { Count: > 0 } ? options.BurnIns : null;
 
         // Cap the delivery resolution at 4K (export-side limit only — the timeline/canvas are unrestricted,
         // PLAN.md step 27), scaling down to fit while preserving aspect. Then round down to even (≤ 1px) so a
@@ -181,7 +201,7 @@ public static class VideoExporter
                 // Emit whichever stream's next packet sits earlier on the timeline, so the muxer interleaves cleanly.
                 if (!videoDone && (audioDone || videoTick <= audioTick))
                 {
-                    RenderVideoFrame(project, sequence, rangeIn, nextVideoIndex, fps, surface, pipeline, fullRect, providers);
+                    RenderVideoFrame(project, sequence, rangeIn, nextVideoIndex, fps, surface, pipeline, fullRect, providers, burnIns);
                     using SKPixmap pixels = surface.PeekPixels();
                     encoder.WriteVideoFrame(pixels.GetPixels(), pixels.RowBytes, nextVideoIndex);
                     nextVideoIndex++;
@@ -255,14 +275,38 @@ public static class VideoExporter
     private static void RenderVideoFrame(
         Project project, Sequence sequence, Timecode rangeIn, long frameIndex, Rational fps,
         SKSurface surface, SkiaEffectPipeline pipeline, SKRect fullRect,
-        Dictionary<MediaRefId, ExportFrameProvider?> providers)
+        Dictionary<MediaRefId, ExportFrameProvider?> providers,
+        IReadOnlyList<BurnIn>? burnIns)
     {
         Timecode t = rangeIn + Timecode.FromFrames(frameIndex, fps);
         VideoFramePlan plan = RenderGraph.PlanVideoFrame(project, sequence, t);
 
         surface.Canvas.Clear(SKColors.Black);
         CompositePlan(project, plan, surface, pipeline, fullRect, providers);
+
+        // Burn-ins are baked last, over the finished composite (PLAN.md step 29): the timecode shows the record
+        // (timeline) time t, so a conform/review output's TC matches the project regardless of the export range.
+        if (burnIns is not null)
+            DrawBurnIns(surface.Canvas, fullRect, burnIns, project, sequence, t);
+
         surface.Canvas.Flush();
+    }
+
+    /// <summary>Resolves each burn-in to its display string at timeline time <paramref name="t"/> (Core) and draws
+    /// the non-empty lines over the frame (Render). Kept off the preview path — export only.</summary>
+    private static void DrawBurnIns(
+        SKCanvas canvas, SKRect frame, IReadOnlyList<BurnIn> burnIns,
+        Project project, Sequence sequence, Timecode t)
+    {
+        var lines = new List<(BurnInPosition Position, string Text)>(burnIns.Count);
+        foreach (BurnIn item in burnIns)
+        {
+            string text = BurnInResolver.Resolve(item, project, sequence, t);
+            if (!string.IsNullOrEmpty(text))
+                lines.Add((item.Position, text));
+        }
+        if (lines.Count > 0)
+            BurnInRenderer.Draw(canvas, frame, lines);
     }
 
     /// <summary>

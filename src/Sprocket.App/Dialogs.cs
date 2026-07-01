@@ -463,6 +463,30 @@ internal static class ExportSettingsDialog
         containerBox.SelectedIndex = 0;
         RepopulateCodecs(); // ensure populated even though setting index 0 (already 0) fires no change
 
+        // Burn-ins & handles (PLAN.md step 29). Burn-ins are opt-in overlays baked onto the export (timecode /
+        // clip name / watermark) with a nine-point position each; handles add extra frames around an in-out range
+        // for review / conform outputs. Defaults keep the pre-step-29 behaviour (no burn-ins, no handles).
+        BurnInPosition[] positions = Enum.GetValues<BurnInPosition>();
+        var tcCheck = MakeCheck("Timecode");
+        ComboBox tcPos = MakePositionCombo((int)BurnInPosition.BottomCenter);
+        var nameCheck = MakeCheck("Clip name");
+        ComboBox namePos = MakePositionCombo((int)BurnInPosition.TopLeft);
+        var watermarkBox = new TextBox
+        {
+            PlaceholderText = "Watermark text…",
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        ComboBox watermarkPos = MakePositionCombo((int)BurnInPosition.BottomRight);
+        var handlesBox = new TextBox
+        {
+            Text = "0",
+            Width = 70,
+            Foreground = Palette.TextBrush,
+            Background = Palette.PanelBgBrush,
+        };
+
         var export = new Button
         {
             Content = "Export…",
@@ -480,12 +504,30 @@ internal static class ExportSettingsDialog
             CornerRadius = new CornerRadius(5),
         };
 
+        var settings = new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                LabeledRow("Format", containerBox),
+                LabeledRow("Video codec", videoBox),
+                LabeledRow("Audio codec", audioBox),
+                LabeledRow("Quality", qualityBox),
+                resText,
+                new TextBlock { Text = "Burn-ins", Foreground = Palette.MutedTextBrush, FontSize = 12, Margin = new Thickness(0, 8, 0, 0) },
+                BurnInRow(tcCheck, tcPos),
+                BurnInRow(nameCheck, namePos),
+                BurnInRow(watermarkBox, watermarkPos),
+                LabeledRow("Handles (frames before / after the range)", handlesBox),
+            },
+        };
+
         var dialog = new Window
         {
             Title = "Export Settings",
             Icon = AppIcon.Window,
-            Width = 420,
-            Height = 320,
+            Width = 440,
+            Height = 560,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Background = Palette.WindowBgBrush,
@@ -503,17 +545,10 @@ internal static class ExportSettingsDialog
                         Margin = new Thickness(0, 16, 0, 0),
                         Children = { cancel, export },
                     },
-                    new StackPanel
+                    new ScrollViewer
                     {
-                        Spacing = 8,
-                        Children =
-                        {
-                            LabeledRow("Format", containerBox),
-                            LabeledRow("Video codec", videoBox),
-                            LabeledRow("Audio codec", audioBox),
-                            LabeledRow("Quality", qualityBox),
-                            resText,
-                        },
+                        HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                        Content = settings,
                     },
                 },
             },
@@ -528,7 +563,25 @@ internal static class ExportSettingsDialog
                 videoCodecs[videoBox.SelectedIndex],
                 audioCodecs[audioBox.SelectedIndex]);
             var quality = (ExportQuality)Math.Max(0, qualityBox.SelectedIndex);
-            dialog.Close(new ExportOptions(Format: format, Quality: quality));
+
+            var burnIns = new List<BurnIn>();
+            if (tcCheck.IsChecked == true)
+                burnIns.Add(new BurnIn(BurnInField.Timecode, positions[Math.Max(0, tcPos.SelectedIndex)]));
+            if (nameCheck.IsChecked == true)
+                burnIns.Add(new BurnIn(BurnInField.ClipName, positions[Math.Max(0, namePos.SelectedIndex)]));
+            string watermark = (watermarkBox.Text ?? string.Empty).Trim();
+            if (watermark.Length > 0)
+                burnIns.Add(new BurnIn(BurnInField.Text, positions[Math.Max(0, watermarkPos.SelectedIndex)], watermark));
+
+            int handles = 0;
+            if (int.TryParse((handlesBox.Text ?? string.Empty).Trim(), out int parsed))
+                handles = Math.Max(0, parsed);
+
+            dialog.Close(new ExportOptions(
+                Format: format,
+                Quality: quality,
+                HandleFrames: handles,
+                BurnIns: burnIns.Count > 0 ? burnIns : null));
         };
         cancel.Click += (_, _) => dialog.Close((ExportOptions?)null);
 
@@ -542,6 +595,44 @@ internal static class ExportSettingsDialog
         Foreground = Palette.TextBrush,
         Background = Palette.PanelBgBrush,
     };
+
+    /// <summary>A nine-point burn-in position picker, preselected to <paramref name="defaultIndex"/>.</summary>
+    private static ComboBox MakePositionCombo(int defaultIndex)
+    {
+        ComboBox combo = MakeCombo(
+        [
+            "Top Left", "Top Center", "Top Right",
+            "Middle Left", "Center", "Middle Right",
+            "Bottom Left", "Bottom Center", "Bottom Right",
+        ]);
+        combo.Width = 130;
+        combo.HorizontalAlignment = HorizontalAlignment.Right;
+        combo.SelectedIndex = defaultIndex;
+        return combo;
+    }
+
+    private static CheckBox MakeCheck(string label) => new()
+    {
+        Content = label,
+        Foreground = Palette.TextBrush,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    /// <summary>A burn-in row: the enable control (checkbox or watermark textbox) on the left, its position picker
+    /// pinned right.</summary>
+    private static Grid BurnInRow(Control enable, Control position)
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+        };
+        enable.SetValue(Grid.ColumnProperty, 0);
+        position.SetValue(Grid.ColumnProperty, 1);
+        enable.Margin = new Thickness(0, 0, 8, 0);
+        grid.Children.Add(enable);
+        grid.Children.Add(position);
+        return grid;
+    }
 
     private static StackPanel LabeledRow(string label, Control control) => new()
     {

@@ -1715,8 +1715,8 @@ Tags reference the [UI.md §4 checklist](UI.md).
     - **✅ Export-queue strand DONE (`Sprocket.Export`: `ExportQueue`/`ExportJob`/`ExportRange` + `VideoExporter`
       sequence/range overload; `Sprocket.Core` + `Sprocket.Audio` sequence-audio overloads; `Sprocket.App`:
       `ExportQueueWindow` + File ▸ Export Queue…; 20 new tests — Export 26 → 44, Audio 21 → 23; full suite 597 → 617).**
-      The queue is one of the five strands of step 29 (the others — burn-ins & handles, user-definable/persisted
-      presets, hardware export encoders, and status-bar telemetry — **remain**). Delivered, all on the existing
+      The queue is one of the five strands of step 29 (with burn-ins & handles now also done below; the others —
+      user-definable/persisted presets, hardware export encoders, and status-bar telemetry — **remain**). Delivered, all on the existing
       seams (ARCHITECTURE.md §5/§17 — only the orchestration around the render graph is new, the render is unchanged):
       - **`ExportQueue` + `ExportJob` (Export).** A sequential batch runner: jobs run one-at-a-time on a background
         worker (so only one in-process libav* muxer is ever live — concurrent muxing crashes the native encoder,
@@ -1755,6 +1755,45 @@ Tags reference the [UI.md §4 checklist](UI.md).
         the new overload mixes the given one. Clean build (0 warnings); a `SPROCKET_APP_SECONDS` smoke launch starts
         the shell with the queue menu item wired and tears down cleanly (exit 0). Full suite: **617 tests green**
         (Core 209, Media 30, Render 33, Audio 23, Playback 52, Export 44, Persistence 90, App 136).
+    - **✅ Burn-ins & handles strand DONE (`Sprocket.Core`: `BurnIn`/`BurnInField`/`BurnInPosition` + `BurnInResolver`,
+      `SmpteTimecode` moved into `Core.Timing`; `Sprocket.Render`: `BurnInRenderer`; `Sprocket.Export`: `ExportOptions`
+      `BurnIns`/`HandleFrames` + `ExportRange.WithHandles`; `Sprocket.App`: `ExportSettingsDialog` burn-in/handles
+      controls; 27 new tests — Core 209 → 215, Render 33 → 50, Export 44 → 48; full suite 617 → 644).** The third of
+      the five strands (presets, hardware export encoders, and status-bar telemetry **remain**). Everything lands on
+      the deterministic export render (ARCHITECTURE.md §5/§7) — burn-ins are baked *after* compositing and never
+      touch the preview hot path or allocate pixels (§1):
+      - **Burn-in model (Core).** `BurnIn(Field, Position, Text?)` is pure delivery data that flows with
+        `ExportOptions` through the queue. `BurnInField` = Timecode / ClipName / Text (watermark); `BurnInPosition`
+        is a nine-point alignment grid (matching Resolve/Premiere). `BurnInResolver` turns a burn-in + timeline time
+        into the string to draw — timecode via the shared `SmpteTimecode`, or the **topmost content clip's** name
+        (media file name / nested-sequence name / generator label; adjustment layers skipped, a gap → ""). Resolution
+        is pure model so it is unit-tested headlessly. **`SmpteTimecode` moved from `Persistence.Interchange` into
+        `Core.Timing`** (its existing tests still pass) so the EDL/FCXML exporters and the burn-in share one
+        drop-frame-correct formatter rather than duplicating it.
+      - **`BurnInRenderer` (Render).** A pure post-composite overlay like `MonitorOverlay`: it draws the resolved
+        strings white over a translucent pill (legible on any content) at the nine anchor points, inset from the
+        edge. The layout (`ComputeTextTopLeft`) is pure/testable; the exporter calls it after `CompositePlan` and
+        before pixel readback. The timecode shows the **record (timeline) time**, so a conform/review TC matches the
+        project regardless of the export range.
+      - **Handles + burn-ins in the exporter (Export).** `ExportOptions` gains `HandleFrames` (extra frames before /
+        after the in-out range for review/conform outputs) and `BurnIns`; both flow through the queue unchanged.
+        `ExportRange.WithHandles(head, tail)` grows the range (negatives clamp to zero), then the exporter re-clamps
+        to the timeline — so handles reach only media that exists there and a whole-timeline export is unaffected.
+        The delegating original `Export` signatures are unchanged. Handles = the timeline-range (conform) reading;
+        per-clip media-management handles (one file per clip) are the natural deferred extension.
+      - **UI (App).** `ExportSettingsDialog` gains a **Burn-ins** section — Timecode / Clip name checkboxes and a
+        Watermark textbox, each with a nine-point position picker — plus a **Handles (frames)** field, wrapped in a
+        `ScrollViewer`. Because both the single **Export** and **Export Queue ▸ Add…** already read their options from
+        this one dialog, both paths carry burn-ins/handles for free. Defaults reproduce the pre-step-29 behaviour.
+      - **Tests (27).** `BurnInTests` (Core, 6): timecode format at the sequence rate, topmost-clip-name over the
+        clip / "" over a gap / topmost-track wins / adjustment-layer skipped / generator labels, literal watermark.
+        `BurnInRendererTests` (Render, 17): the nine anchor points land in the right column/row with the margin,
+        centring is exact, degenerate/empty draws no-op. `BurnInAndHandlesExportTests` (Export, 4, real encode): a
+        top-left timecode burn-in brightens that corner over a black matte and stays localised; handles extend an
+        in-out range (more frames) but never past the timeline; whole-timeline handles add nothing; `WithHandles`
+        math. Clean build (0 warnings); a `SPROCKET_APP_SECONDS` smoke launch starts the shell and tears down cleanly
+        (exit 0). Full suite: **644 tests green** (Core 215, Media 30, Render 50, Audio 23, Playback 52, Export 48,
+        Persistence 90, App 136).
 30. **Audio loudness metering, normalization & editorial audio polish.** The delivery-grade audio
     visibility that effects alone don't provide — the first of the two audio-post layers (the second is
     plugin hosting + deeper DSP, step 31):

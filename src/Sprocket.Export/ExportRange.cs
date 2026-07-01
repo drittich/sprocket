@@ -34,4 +34,18 @@ public readonly record struct ExportRange(Timecode In, Timecode Out)
 
     /// <summary>The whole timeline as a range (<c>[0, <paramref name="timelineDuration"/>)</c>).</summary>
     public static ExportRange Whole(Timecode timelineDuration) => new(Timecode.Zero, timelineDuration);
+
+    /// <summary>
+    /// This range grown by <paramref name="head"/> before <see cref="In"/> and <paramref name="tail"/> after
+    /// <see cref="Out"/> — export <b>handles</b> (PLAN.md step 29): extra frames around the selection so a review /
+    /// conform output carries room to adjust the cut downstream. Not clamped here; the exporter pins the result to
+    /// the timeline with <see cref="ClampTo"/> (a handle can only reach media that actually exists on the timeline).
+    /// Negative handles are treated as zero.
+    /// </summary>
+    public ExportRange WithHandles(Timecode head, Timecode tail)
+    {
+        Timecode h = Timecode.Max(Timecode.Zero, head);
+        Timecode t = Timecode.Max(Timecode.Zero, tail);
+        return new ExportRange(In - h, Out + t);
+    }
 }

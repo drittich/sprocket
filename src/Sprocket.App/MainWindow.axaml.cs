@@ -67,6 +67,8 @@ public partial class MainWindow : Window
 
     private bool _suppressSeek;        // guards programmatic scrubber updates from re-triggering a seek
     private bool _exporting;
+    private Export.ExportQueue? _exportQueue;         // lazily built on first Export Queue use (PLAN.md step 29)
+    private ExportQueueWindow? _exportQueueWindow;    // the (reused) queue window, or null when closed
     private int _savedUndoCount;       // history depth at the last save; document is clean while it matches
     private string _projectName = "Untitled";
     private string? _currentProjectPath; // the file this project was loaded from / last saved to (null = untitled)
@@ -242,6 +244,7 @@ public partial class MainWindow : Window
         this.FindControl<MenuItem>("ImportMenuItem")!.Click += (_, _) => _ = ImportDialogAsync();
         this.FindControl<MenuItem>("RelinkMenuItem")!.Click += (_, _) => _ = RelinkMediaAsync();
         this.FindControl<MenuItem>("ExportMenuItem")!.Click += (_, _) => _ = ExportAsync();
+        this.FindControl<MenuItem>("ExportQueueMenuItem")!.Click += (_, _) => OpenExportQueue();
         this.FindControl<MenuItem>("ExportEdlMenuItem")!.Click += (_, _) => _ = ExportInterchangeAsync(InterchangeKind.Edl);
         this.FindControl<MenuItem>("ExportFcpXmlMenuItem")!.Click += (_, _) => _ = ExportInterchangeAsync(InterchangeKind.FinalCutXml);
         this.FindControl<MenuItem>("ExitMenuItem")!.Click += (_, _) => Close();
@@ -371,6 +374,7 @@ public partial class MainWindow : Window
         if (ctrl && e.Key == Key.O) { _ = OpenProjectAsync(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == Key.S) { _ = SaveAsAsync(); e.Handled = true; return; }
         if (ctrl && e.Key == Key.S) { Save(); e.Handled = true; return; }
+        if (ctrl && shift && e.Key == Key.E) { OpenExportQueue(); e.Handled = true; return; }
         if (ctrl && e.Key == Key.E) { _ = ExportAsync(); e.Handled = true; return; }
         if (ctrl && e.Key == Key.I) { _ = ImportDialogAsync(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == Key.Z) { _history.Redo(); e.Handled = true; return; }
@@ -1346,6 +1350,8 @@ public partial class MainWindow : Window
     /// one audio track) from the composition root (PLAN.md step 16c).</summary>
     private async void NewProject()
     {
+        if (BlockedByExport())
+            return;
         if (!await ConfirmDiscardIfDirty())
             return;
 
@@ -1363,6 +1369,8 @@ public partial class MainWindow : Window
     /// </summary>
     private async void OpenSampleProject()
     {
+        if (BlockedByExport())
+            return;
         if (!await ConfirmDiscardIfDirty())
             return;
 
@@ -1387,6 +1395,8 @@ public partial class MainWindow : Window
     /// it. Load is offline-tolerant (§15); a parse/schema error is surfaced rather than thrown at the user.</summary>
     private async Task OpenProjectAsync()
     {
+        if (BlockedByExport())
+            return;
         if (!await ConfirmDiscardIfDirty())
             return;
 
@@ -1640,6 +1650,124 @@ public partial class MainWindow : Window
         }
     }
 
+    // ── Export queue (PLAN.md step 29) ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// File ▸ Export Queue… (Ctrl+Shift+E): opens the batch-export window (PLAN.md step 29). The queue runs jobs
+    /// sequentially on the same background export path the single Export command uses; jobs can differ in output
+    /// path, delivery format/quality, and target sequence. One reusable window + queue is kept per session.
+    /// </summary>
+    private void OpenExportQueue()
+    {
+        if (_project is null)
+            return;
+
+        EnsureExportQueue();
+        if (_exportQueueWindow is null)
+        {
+            _exportQueueWindow = new ExportQueueWindow(_exportQueue!, AddToQueueAsync, RunExportQueueAsync);
+            _exportQueueWindow.Closed += (_, _) => _exportQueueWindow = null;
+            _exportQueueWindow.Show(this);
+        }
+        else
+        {
+            _exportQueueWindow.Activate();
+        }
+    }
+
+    /// <summary>Builds the session's export queue on first use. The runner renders each job through
+    /// <see cref="VideoExporter"/> over the current project — the same deterministic path the single Export uses,
+    /// honouring the job's target sequence and in-out range.</summary>
+    private void EnsureExportQueue()
+    {
+        _exportQueue ??= new Export.ExportQueue((job, progress, ct) =>
+            VideoExporter.Export(_project!, job.OutputPath, job.Options, job.SequenceId, job.Range, progress, ct));
+    }
+
+    /// <summary>The queue window's "Add…" action: pick a delivery format then an output file, and enqueue a job for
+    /// the active sequence. Repeating after switching the active sequence queues a different sequence — the job
+    /// captures the sequence id, so each runs against its own sequence.</summary>
+    private async Task AddToQueueAsync()
+    {
+        if (_project is null)
+            return;
+
+        Window owner = (Window?)_exportQueueWindow ?? this;
+        Sequence sequence = _project.ActiveSequence;
+        if (sequence.Timeline.Duration <= Timecode.Zero)
+        {
+            await MessageDialog.Show(owner, "Nothing to Queue",
+                "The active sequence is empty — add a clip before queuing an export.");
+            return;
+        }
+
+        Resolution res = sequence.Timeline.Resolution;
+        if (await ExportSettingsDialog.Show(owner, res.Width, res.Height) is not { } options)
+            return;
+
+        ExportFormat format = options.Format;
+        string extension = format.FileExtension;
+        var fileType = new FilePickerFileType($"{ExportCodecs.Container(format.Container).DisplayName} video")
+        {
+            Patterns = ["*" + extension],
+            MimeTypes = [format.MimeType],
+        };
+        string baseName = _currentProjectPath is null ? _projectName : ProjectDisplayName(_currentProjectPath);
+        IStorageFile? target = await owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Queue Export",
+            SuggestedFileName = $"{baseName} - {sequence.Name}{extension}",
+            DefaultExtension = extension.TrimStart('.'),
+            FileTypeChoices = [fileType],
+        });
+        if (target?.TryGetLocalPath() is not { } outputPath)
+            return;
+
+        EnsureExportQueue();
+        string name = $"{sequence.Name} · {ExportCodecs.Container(format.Container).DisplayName}";
+        _exportQueue!.Enqueue(outputPath, options, sequenceId: sequence.Id, range: null, name: name);
+        SetStatus($"Queued export → {Path.GetFileName(outputPath)}");
+    }
+
+    /// <summary>The queue window's "Start" action: quiesce every in-process decode pipeline (as the single export
+    /// does — a second concurrent libav* pipeline crashes the muxer), run the queue to completion on the background
+    /// export path, then resume. Guarded so a run never overlaps another export.</summary>
+    private async Task RunExportQueueAsync()
+    {
+        if (_project is null || _exportQueue is null || _exporting || !_exportQueue.HasPending)
+            return;
+
+        _exporting = true;
+        SetEnabled(false);
+
+        bool sourceWasActive = ReferenceEquals(_active, _source);
+        _source?.Deactivate();
+        if (_engine is not null)
+            await _engine.SuspendAsync();
+
+        try
+        {
+            await _exportQueue.RunAsync();
+        }
+        finally
+        {
+            _engine?.Resume();
+            if (sourceWasActive)
+                _source?.Activate();
+            _exporting = false;
+            SetEnabled(true);
+        }
+
+        IReadOnlyList<ExportJob> jobs = _exportQueue.Jobs;
+        int done = jobs.Count(j => j.Status == ExportJobStatus.Succeeded);
+        int failed = jobs.Count(j => j.Status == ExportJobStatus.Failed);
+        int cancelled = jobs.Count(j => j.Status == ExportJobStatus.Cancelled);
+        string summary = $"Export queue finished — {done} exported";
+        if (failed > 0) summary += $", {failed} failed";
+        if (cancelled > 0) summary += $", {cancelled} cancelled";
+        SetStatus(summary);
+    }
+
     private enum InterchangeKind { Edl, FinalCutXml }
 
     /// <summary>
@@ -1789,6 +1917,17 @@ public partial class MainWindow : Window
     {
         if (_statusText is not null)
             _statusText.Text = text;
+    }
+
+    /// <summary>Whether an export (single or a queue run) is in flight — swapping the session (New / Open) while a
+    /// background export reads the current project would tear its engine/media out from under it, so those actions
+    /// no-op with a hint until the export finishes or is cancelled.</summary>
+    private bool BlockedByExport()
+    {
+        if (!_exporting)
+            return false;
+        SetStatus("An export is in progress — cancel or wait for it to finish first.");
+        return true;
     }
 
     private static double Fps(Rational r) => r.Den > 0 ? (double)r.Num / r.Den : 0;

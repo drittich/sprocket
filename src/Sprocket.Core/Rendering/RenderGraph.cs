@@ -182,13 +182,26 @@ public static class RenderGraph
     public static AudioBufferPlan PlanAudioBuffer(Project project, Timecode bufferStart, Timecode bufferDuration)
     {
         ArgumentNullException.ThrowIfNull(project);
+        return PlanAudioBuffer(project, project.ActiveSequence, bufferStart, bufferDuration);
+    }
+
+    /// <summary>
+    /// Resolves the audio buffer plan for <paramref name="sequence"/> over the half-open range
+    /// <c>[<paramref name="bufferStart"/>, bufferStart + <paramref name="bufferDuration"/>)</c>. Same resolution as
+    /// the active-sequence overload but for an arbitrary sequence — export can render any sequence, not just the one
+    /// open for editing (PLAN.md step 29 export queue). The project master gain still applies once at the root.
+    /// </summary>
+    public static AudioBufferPlan PlanAudioBuffer(Project project, Sequence sequence, Timecode bufferStart, Timecode bufferDuration)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(sequence);
         if (bufferDuration.Ticks < 0)
             throw new ArgumentOutOfRangeException(nameof(bufferDuration), "Buffer duration must be non-negative.");
 
         // The project master gain is applied once, at the root; nested sub-mixes carry unity master gain.
         return PlanAudioBufferCore(
-            project, project.ActiveSequence, bufferStart, bufferDuration,
-            DbToLinear(project.Settings.MasterGainDb), [project.ActiveSequence.Id], depth: 0);
+            project, sequence, bufferStart, bufferDuration,
+            DbToLinear(project.Settings.MasterGainDb), [sequence.Id], depth: 0);
     }
 
     private static AudioBufferPlan PlanAudioBufferCore(

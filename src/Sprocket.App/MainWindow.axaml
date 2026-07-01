@@ -50,6 +50,7 @@
             <MenuItem x:Name="ImportMenuItem" Header="_Import Media…" InputGesture="Ctrl+I" />
             <MenuItem x:Name="RelinkMenuItem" Header="_Relink Media…" />
             <MenuItem x:Name="ExportMenuItem" Header="_Export…" InputGesture="Ctrl+E" />
+            <MenuItem x:Name="ExportQueueMenuItem" Header="Export _Queue…" InputGesture="Ctrl+Shift+E" />
             <MenuItem Header="Export I_nterchange">
               <MenuItem x:Name="ExportEdlMenuItem" Header="_EDL (CMX3600)…" />
               <MenuItem x:Name="ExportFcpXmlMenuItem" Header="_Final Cut XML…" />

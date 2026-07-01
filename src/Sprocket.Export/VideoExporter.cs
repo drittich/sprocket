@@ -51,8 +51,8 @@ public readonly record struct ExportOptions(
 public static class VideoExporter
 {
     /// <summary>
-    /// Exports <paramref name="project"/> to <paramref name="outputPath"/> (an <c>.mp4</c>). Reports progress in
-    /// [0, 1] over the timeline and honours <paramref name="cancellationToken"/> between frames. Throws
+    /// Exports the project's active sequence to <paramref name="outputPath"/>. Reports progress in [0, 1] over the
+    /// timeline and honours <paramref name="cancellationToken"/> between frames. Throws
     /// <see cref="ArgumentException"/> for an empty timeline.
     /// </summary>
     public static void Export(
@@ -61,9 +61,30 @@ public static class VideoExporter
         ExportOptions options = default,
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
+        => Export(project, outputPath, options, sequenceId: null, range: null, progress, cancellationToken);
+
+    /// <summary>
+    /// Exports one sequence — or a sub-range of it — to <paramref name="outputPath"/> (PLAN.md step 29 export queue).
+    /// <paramref name="sequenceId"/> selects which sequence (<see langword="null"/> = the project's active sequence);
+    /// <paramref name="range"/> selects a half-open <c>[In, Out)</c> timeline slice (<see langword="null"/> = the
+    /// whole timeline). The exported file's own timestamps start at zero regardless of the range start. Reports
+    /// progress in [0, 1] over the exported range and honours <paramref name="cancellationToken"/> between frames.
+    /// </summary>
+    public static void Export(
+        Project project,
+        string outputPath,
+        ExportOptions options,
+        SequenceId? sequenceId,
+        ExportRange? range,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrEmpty(outputPath);
+
+        Sequence sequence = sequenceId is { } id
+            ? project.GetSequence(id) ?? throw new ArgumentException($"No sequence with id {id} in the project.", nameof(sequenceId))
+            : project.ActiveSequence;
 
         // `default(ExportOptions)` leaves Channels = 0; treat that as the documented stereo default.
         int channels = options.Channels > 0 ? options.Channels : 2;
@@ -75,14 +96,23 @@ public static class VideoExporter
                 $"is not a valid combination for the {ExportCodecs.Container(format.Container).DisplayName} container.",
                 nameof(options));
 
-        Timeline timeline = project.Timeline;
-        Timecode duration = timeline.Duration;
-        if (duration <= Timecode.Zero)
+        Timeline timeline = sequence.Timeline;
+        Timecode fullDuration = timeline.Duration;
+        if (fullDuration <= Timecode.Zero)
             throw new ArgumentException("The timeline is empty — nothing to export.", nameof(project));
 
         Rational fps = timeline.FrameRate;
         if (fps.Num <= 0 || fps.Den <= 0)
             throw new ArgumentException("The timeline has no valid frame rate.", nameof(project));
+
+        // Resolve the export sub-range, clamped to the sequence. The frame/sample loops below run over the range
+        // duration, sampling the timeline at rangeIn + offset; encoder timestamps start at zero (a slice becomes a
+        // file that plays from 0). A null range exports the whole timeline (the pre-step-29 behaviour).
+        ExportRange effectiveRange = (range ?? ExportRange.Whole(fullDuration)).ClampTo(fullDuration);
+        Timecode rangeIn = effectiveRange.In;
+        Timecode duration = effectiveRange.Duration;
+        if (duration <= Timecode.Zero)
+            throw new ArgumentException("The export range is empty — nothing to export.", nameof(range));
 
         // Cap the delivery resolution at 4K (export-side limit only — the timeline/canvas are unrestricted,
         // PLAN.md step 27), scaling down to fit while preserving aspect. Then round down to even (≤ 1px) so a
@@ -92,7 +122,7 @@ public static class VideoExporter
             throw new ArgumentException("The timeline resolution is too small to export.", nameof(project));
         int sampleRate = timeline.SampleRate > 0 ? timeline.SampleRate : 48000;
 
-        bool wantAudio = HasAudibleAudio(project);
+        bool wantAudio = HasAudibleAudio(project, sequence);
 
         VideoCodecInfo videoCodec = ExportCodecs.Video(format.VideoCodec);
         var video = new VideoEncoderSettings(
@@ -151,7 +181,7 @@ public static class VideoExporter
                 // Emit whichever stream's next packet sits earlier on the timeline, so the muxer interleaves cleanly.
                 if (!videoDone && (audioDone || videoTick <= audioTick))
                 {
-                    RenderVideoFrame(project, nextVideoIndex, fps, surface, pipeline, fullRect, providers);
+                    RenderVideoFrame(project, sequence, rangeIn, nextVideoIndex, fps, surface, pipeline, fullRect, providers);
                     using SKPixmap pixels = surface.PeekPixels();
                     encoder.WriteVideoFrame(pixels.GetPixels(), pixels.RowBytes, nextVideoIndex);
                     nextVideoIndex++;
@@ -160,7 +190,7 @@ public static class VideoExporter
                 {
                     int chunk = (int)Math.Min(encoder.AudioFrameSize, totalSamples - nextSample);
                     Span<float> buffer = mixBuffer.AsSpan(0, chunk * channels);
-                    mixer!.MixInto(buffer, Timecode.FromSamples(nextSample, sampleRate), project);
+                    mixer!.MixInto(buffer, rangeIn + Timecode.FromSamples(nextSample, sampleRate), project, sequence);
                     encoder.WriteAudioFrame(buffer, nextSample);
                     nextSample += chunk;
                 }
@@ -218,15 +248,17 @@ public static class VideoExporter
         return (w, h);
     }
 
-    /// <summary>Composites the frame at index <paramref name="frameIndex"/> onto <paramref name="surface"/>:
-    /// clear to black, then draw each resolved layer bottom→top with its effect chain, opacity, and blend.</summary>
+    /// <summary>Composites the frame at output index <paramref name="frameIndex"/> onto <paramref name="surface"/>:
+    /// clear to black, then draw each resolved layer bottom→top with its effect chain, opacity, and blend. The
+    /// timeline time sampled is <paramref name="rangeIn"/> + the frame's offset, so a sub-range export starts at the
+    /// range's in-point while the output frame index (and thus the file) starts at zero.</summary>
     private static void RenderVideoFrame(
-        Project project, long frameIndex, Rational fps,
+        Project project, Sequence sequence, Timecode rangeIn, long frameIndex, Rational fps,
         SKSurface surface, SkiaEffectPipeline pipeline, SKRect fullRect,
         Dictionary<MediaRefId, ExportFrameProvider?> providers)
     {
-        Timecode t = Timecode.FromFrames(frameIndex, fps);
-        VideoFramePlan plan = RenderGraph.PlanVideoFrame(project, t);
+        Timecode t = rangeIn + Timecode.FromFrames(frameIndex, fps);
+        VideoFramePlan plan = RenderGraph.PlanVideoFrame(project, sequence, t);
 
         surface.Canvas.Clear(SKColors.Black);
         CompositePlan(project, plan, surface, pipeline, fullRect, providers);
@@ -445,10 +477,11 @@ public static class VideoExporter
         }
     }
 
-    /// <summary>Whether the export will have audible audio — any enabled audio track (in the active sequence or,
-    /// recursively, a nested one) carrying a clip whose source has audio (PLAN.md step 23).</summary>
-    private static bool HasAudibleAudio(Project project) =>
-        SequenceHasAudio(project, project.ActiveSequence, []);
+    /// <summary>Whether the export will have audible audio — any enabled audio track (in the exported
+    /// <paramref name="sequence"/> or, recursively, a nested one) carrying a clip whose source has audio
+    /// (PLAN.md step 23).</summary>
+    private static bool HasAudibleAudio(Project project, Sequence sequence) =>
+        SequenceHasAudio(project, sequence, []);
 
     private static bool SequenceHasAudio(Project project, Sequence sequence, HashSet<SequenceId> path)
     {

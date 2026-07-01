@@ -1712,6 +1712,49 @@ Tags reference the [UI.md §4 checklist](UI.md).
     - **Status-bar telemetry.** Surface engine state, GPU / hardware-accel status, live fps, resolution,
       and duration ([ARCHITECTURE §15](ARCHITECTURE.md)) — **no framework/runtime text** in the UI
       ([UI.md §3.7](UI.md)).
+    - **✅ Export-queue strand DONE (`Sprocket.Export`: `ExportQueue`/`ExportJob`/`ExportRange` + `VideoExporter`
+      sequence/range overload; `Sprocket.Core` + `Sprocket.Audio` sequence-audio overloads; `Sprocket.App`:
+      `ExportQueueWindow` + File ▸ Export Queue…; 20 new tests — Export 26 → 44, Audio 21 → 23; full suite 597 → 617).**
+      The queue is one of the five strands of step 29 (the others — burn-ins & handles, user-definable/persisted
+      presets, hardware export encoders, and status-bar telemetry — **remain**). Delivered, all on the existing
+      seams (ARCHITECTURE.md §5/§17 — only the orchestration around the render graph is new, the render is unchanged):
+      - **`ExportQueue` + `ExportJob` (Export).** A sequential batch runner: jobs run one-at-a-time on a background
+        worker (so only one in-process libav* muxer is ever live — concurrent muxing crashes the native encoder,
+        the same hazard the single Export quiesces for), each reporting its own progress and cancellable
+        individually, with a queue-wide **Stop**. Jobs enqueued mid-run are picked up. It is **decoupled from the
+        encoder by an injected `ExportJobRunner`** — the queue owns ordering / status transitions / cancellation,
+        not rendering — so it unit-tests without FFmpeg and the composition root binds the runner to `VideoExporter`.
+        `ExportJob` splits an immutable spec (output path, `ExportOptions`, target `SequenceId?`, `ExportRange?`)
+        from the runtime `Status`/`Progress`/`Error` the queue drives; `ExportJobStatus` = Queued/Running/Succeeded/
+        Cancelled/Failed. Thread-safe surface (list + state under a lock; `Changed` raised outside it, so a UI
+        subscriber marshals).
+      - **`VideoExporter` sequence + in-out range (Export).** A new overload
+        `Export(project, path, options, SequenceId?, ExportRange?, …)` renders **any** sequence (not just the active
+        one) and an optional half-open `[In, Out)` timeline slice; the delegating original signature is byte-for-byte
+        unchanged. A sub-range samples the timeline at `rangeIn + offset` while the encoded file's own timestamps
+        start at zero (a slice plays from 0). `ExportRange` (clamp-to-timeline, validity, `Whole`) is the pure
+        range type. The render graph already planned per-sequence **video**; this adds the matching per-sequence
+        **audio**: `RenderGraph.PlanAudioBuffer(project, sequence, …)` (Core) + `AudioMixer.MixInto(…, sequence)`
+        (Audio) overloads, so an exported sequence's audio mixes correctly regardless of which sequence is open.
+      - **`ExportQueueWindow` + wiring (App).** File ▸ **Export Queue…** (Ctrl+Shift+E) opens a live job list — name,
+        format, status, per-job progress bar — with **Add… / Start / Stop / Clear Finished** and per-row Cancel /
+        Remove. **Add…** reuses the step-27 `ExportSettingsDialog` + a Save picker and captures the **active
+        sequence's id**, so switching sequences between adds queues different sequences; **Start** quiesces the
+        Program/Source decode pipelines (as the single export does) and runs the queue to completion on the
+        background path, then resumes. Rows update **in place** on each progress tick (the tree only rebuilds when
+        the job set/order changes), so a running encode's frequent progress reports don't rebuild the list. Session
+        swaps (New / Open) are blocked while an export is in flight so the worker's project/engine isn't torn out.
+      - **Tests (20).** `ExportQueueTests` (11, fake runner, no FFmpeg): sequential in-order run, progress
+        forwarding + terminal status, a failing job → Failed with message + queue continues, cancel-queued (skipped)
+        / cancel-running (Cancelled, next runs) / Stop-all, Remove guards (queued yes, running no), mid-run enqueue
+        picked up, ClearCompleted, Changed fires, defaults. `ExportRangeTests` (7, real encode→decode): `ExportRange`
+        duration/validity/clamp math; sub-range exports fewer frames + shorter duration than the whole; empty range
+        + unknown sequence id throw; **exporting a non-active sequence by id** renders that sequence (white matte ≫
+        active black); a **queue end-to-end** runs a whole-timeline + a sub-range job through the real `VideoExporter`
+        runner and writes both files. `SequenceAudioMixerTests` (2): the default `MixInto` mixes the active sequence,
+        the new overload mixes the given one. Clean build (0 warnings); a `SPROCKET_APP_SECONDS` smoke launch starts
+        the shell with the queue menu item wired and tears down cleanly (exit 0). Full suite: **617 tests green**
+        (Core 209, Media 30, Render 33, Audio 23, Playback 52, Export 44, Persistence 90, App 136).
 30. **Audio loudness metering, normalization & editorial audio polish.** The delivery-grade audio
     visibility that effects alone don't provide — the first of the two audio-post layers (the second is
     plugin hosting + deeper DSP, step 31):

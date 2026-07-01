@@ -76,10 +76,18 @@ public sealed class AudioMixer : IDisposable
     /// <c><paramref name="destinationInterleaved"/>.Length / Channels</c> sample-frames into the destination
     /// (fully overwritten — silence where no clip plays).
     /// </summary>
-    public void MixInto(Span<float> destinationInterleaved, Timecode timelineStart, Project project)
+    public void MixInto(Span<float> destinationInterleaved, Timecode timelineStart, Project project) =>
+        MixInto(destinationInterleaved, timelineStart, project, project.ActiveSequence);
+
+    /// <summary>
+    /// Mixes a specific <paramref name="sequence"/>'s audio (rather than the project's active sequence) into
+    /// <paramref name="destinationInterleaved"/> — export can render any sequence (PLAN.md step 29 export queue).
+    /// </summary>
+    public void MixInto(Span<float> destinationInterleaved, Timecode timelineStart, Project project, Sequence sequence)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(project);
+        ArgumentNullException.ThrowIfNull(sequence);
 
         destinationInterleaved.Clear();
 
@@ -88,7 +96,7 @@ public sealed class AudioMixer : IDisposable
             return;
 
         Timecode duration = Timecode.FromSamples(frames, SampleRate);
-        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, timelineStart, duration);
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, sequence, timelineStart, duration);
 
         // Sum the plan (recursing into nested sub-mixes), applying each plan's master gain; then hard-limit once
         // at the very top so nested layers aren't clamped (and distorted) before they're summed.

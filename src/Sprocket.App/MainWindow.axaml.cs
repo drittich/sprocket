@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -207,7 +208,11 @@ public partial class MainWindow : Window
             // inset the content so nothing is clipped under the screen edges / taskbar.
             _root.Margin = WindowState == WindowState.Maximized ? OffScreenMargin : default;
             if (_maxButton is not null)
-                _maxButton.Content = WindowState == WindowState.Maximized ? "❐" : "▢";
+            {
+                bool maximized = WindowState == WindowState.Maximized;
+                _maxButton.Content = maximized ? "❐" : "▢";
+                AutomationProperties.SetName(_maxButton, maximized ? "Restore" : "Maximize");
+            }
             if (WindowState != WindowState.Minimized)
                 _lastNonMinimizedState = WindowState; // remember the real state to persist (not a transient minimize)
         }
@@ -660,9 +665,21 @@ public partial class MainWindow : Window
         {
             if (!ReferenceEquals(_active, monitor))
                 return;
-            _playPause!.Content = state == PlaybackState.Playing ? "❚❚" : "▶";
+            SetPlayPauseGlyph(state == PlaybackState.Playing);
             _engineStateText!.Text = state == PlaybackState.Playing ? "Playing" : "Paused";
         });
+    }
+
+    /// <summary>
+    /// Keeps the Play/Pause button's glyph and its screen-reader name in sync: while playing it shows the
+    /// pause glyph and announces "Pause"; while paused it shows the play glyph and announces "Play".
+    /// </summary>
+    private void SetPlayPauseGlyph(bool playing)
+    {
+        if (_playPause is null)
+            return;
+        _playPause.Content = playing ? "❚❚" : "▶";
+        AutomationProperties.SetName(_playPause, playing ? "Pause" : "Play");
     }
 
     /// <summary>Attaches the active monitor's current engine to the shared surface at its logical frame size, or
@@ -739,7 +756,7 @@ public partial class MainWindow : Window
         _suppressSeek = false;
         _positionText!.Text = FormatTime(m.Position);
         _durationText!.Text = FormatTime(m.Duration);
-        _playPause!.Content = m.State == PlaybackState.Playing ? "❚❚" : "▶";
+        SetPlayPauseGlyph(m.State == PlaybackState.Playing);
         _engineStateText!.Text = m.State == PlaybackState.Playing ? "Playing" : "Paused";
     }
 

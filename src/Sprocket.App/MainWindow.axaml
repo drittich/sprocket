@@ -134,9 +134,13 @@
         </StackPanel>
 
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Top">
-          <Button x:Name="MinButton" Classes="caption" Content="—" />
-          <Button x:Name="MaxButton" Classes="caption" Content="▢" />
-          <Button x:Name="CloseButton" Classes="caption close" Content="✕" />
+          <Button x:Name="MinButton" Classes="caption" Content="—"
+                  AutomationProperties.Name="Minimize" ToolTip.Tip="Minimize" />
+          <!-- MaxButton's glyph + accessible name toggle Maximize/Restore in OnPropertyChanged. -->
+          <Button x:Name="MaxButton" Classes="caption" Content="▢"
+                  AutomationProperties.Name="Maximize" ToolTip.Tip="Maximize" />
+          <Button x:Name="CloseButton" Classes="caption close" Content="✕"
+                  AutomationProperties.Name="Close" ToolTip.Tip="Close" />
         </StackPanel>
       </Grid>
     </Border>
@@ -250,15 +254,23 @@
                    frame-step forward, jump-to-end — plus jump-to-previous/next-keyframe (◆◀ ▶◆, PLAN.md
                    step 16d). Drives whichever monitor (Program/Source) is active. -->
               <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto" VerticalAlignment="Center">
-                <Button x:Name="JumpStartButton" Grid.Column="0" Classes="transport" Content="⏮" />
-                <Button x:Name="StepBackButton" Grid.Column="1" Classes="transport" Content="◀◀" Margin="4,0,0,0" />
-                <Button x:Name="PlayPauseButton" Grid.Column="2" Classes="transport play" Content="▶" Margin="4,0,0,0" />
-                <Button x:Name="StepForwardButton" Grid.Column="3" Classes="transport" Content="▶▶" Margin="4,0,0,0" />
-                <Button x:Name="JumpEndButton" Grid.Column="4" Classes="transport" Content="⏭" Margin="4,0,0,0" />
+                <Button x:Name="JumpStartButton" Grid.Column="0" Classes="transport" Content="⏮"
+                        AutomationProperties.Name="Jump to start" ToolTip.Tip="Jump to start" />
+                <Button x:Name="StepBackButton" Grid.Column="1" Classes="transport" Content="◀◀" Margin="4,0,0,0"
+                        AutomationProperties.Name="Step back one frame" ToolTip.Tip="Step back one frame" />
+                <!-- PlayPauseButton's glyph + accessible name toggle Play/Pause as playback state changes. -->
+                <Button x:Name="PlayPauseButton" Grid.Column="2" Classes="transport play" Content="▶" Margin="4,0,0,0"
+                        AutomationProperties.Name="Play" ToolTip.Tip="Play / Pause (Space)" />
+                <Button x:Name="StepForwardButton" Grid.Column="3" Classes="transport" Content="▶▶" Margin="4,0,0,0"
+                        AutomationProperties.Name="Step forward one frame" ToolTip.Tip="Step forward one frame" />
+                <Button x:Name="JumpEndButton" Grid.Column="4" Classes="transport" Content="⏭" Margin="4,0,0,0"
+                        AutomationProperties.Name="Jump to end" ToolTip.Tip="Jump to end" />
                 <Button x:Name="PrevKeyframeButton" Grid.Column="5" Classes="transport" Content="◆◀" Margin="12,0,0,0"
-                        ToolTip.Tip="Jump to previous keyframe of the selected clip" />
+                        AutomationProperties.Name="Previous keyframe"
+                        ToolTip.Tip="Jump to previous keyframe of the selected clip — press [" />
                 <Button x:Name="NextKeyframeButton" Grid.Column="6" Classes="transport" Content="▶◆" Margin="4,0,0,0"
-                        ToolTip.Tip="Jump to next keyframe of the selected clip" />
+                        AutomationProperties.Name="Next keyframe"
+                        ToolTip.Tip="Jump to next keyframe of the selected clip — press ]" />
                 <TextBlock x:Name="PositionText" Grid.Column="7" Margin="14,0,10,0" VerticalAlignment="Center"
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource Text}"
                            Text="0:00.00" />
@@ -300,12 +312,14 @@
               <TextBlock x:Name="TimelineHeader" Classes="title" Text="Timeline" />
               <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
                           Margin="0,0,10,0">
-                <Button x:Name="ZoomOutButton" Padding="6,3" VerticalAlignment="Center" ToolTip.Tip="Zoom Out (Ctrl+-)">
+                <Button x:Name="ZoomOutButton" Padding="6,3" VerticalAlignment="Center"
+                        AutomationProperties.Name="Zoom out" ToolTip.Tip="Zoom Out (Ctrl+-)">
                   <Path Data="M12,7 A5,5 0 1,1 2,7 A5,5 0 1,1 12,7 M10.9,10.9 L15,15 M4,7 L10,7"
                         Stroke="{DynamicResource MutedText}" StrokeThickness="1.4"
                         StrokeLineCap="Round" Width="16" Height="16" Stretch="None" />
                 </Button>
-                <Button x:Name="ZoomInButton" Padding="6,3" VerticalAlignment="Center" ToolTip.Tip="Zoom In (Ctrl+=)">
+                <Button x:Name="ZoomInButton" Padding="6,3" VerticalAlignment="Center"
+                        AutomationProperties.Name="Zoom in" ToolTip.Tip="Zoom In (Ctrl+=)">
                   <Path Data="M12,7 A5,5 0 1,1 2,7 A5,5 0 1,1 12,7 M10.9,10.9 L15,15 M4,7 L10,7 M7,4 L7,10"
                         Stroke="{DynamicResource MutedText}" StrokeThickness="1.4"
                         StrokeLineCap="Round" Width="16" Height="16" Stretch="None" />

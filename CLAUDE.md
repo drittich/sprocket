@@ -26,6 +26,16 @@ cross-platform packaging (steps 24–25) remain.
 Do not commit `.NET` build artifacts: never add any `/bin` or `/obj` directory, or anything under
 them, to version control.
 
+## Markdown authoring
+
+**Fenced code blocks must start at column 0 — never put leading whitespace before the opening or
+closing fence line (`` ``` ``).** An indented fence is not valid GitHub-flavored markdown and renders
+as broken output on GitHub. This matters most for release notes: `RELEASE_NOTES.md` is shipped
+verbatim as the GitHub release body by `scripts/gh-release.ps1`. To put a code block inside a
+numbered/bulleted list, restructure so the fence sits at column 0 (e.g. a bold step label —
+`**1. Unzip**` — followed by a top-level fenced block) instead of indenting the fence to align with
+the list item.
+
 ## Commands
 
 ```bash

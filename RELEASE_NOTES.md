@@ -6,7 +6,13 @@
   git commit log and PREPENDED above this content at release time; the full roadmap/status lives in
   PLAN.md. Only edit this file to change the standing guidance below (bug reporting, running the app,
   macOS setup, known limitations, licensing).
+
+  FORMATTING: fenced code blocks (``` lines) MUST start at column 0 — no leading whitespace on the
+  opening or closing fence. GitHub renders an indented fence as broken output. To show a code block
+  as a step, use a bold label (e.g. "**1. Unzip**") followed by a top-level fence, not a list item
+  with the fence indented under it.
 -->
+
 # Sprocket — Alpha
 
 Sprocket is a cross-platform (Windows 11 · Linux · macOS), non-destructive video editor built on
@@ -61,20 +67,22 @@ Some releases may omit macOS downloads entirely. If a release has no `osx-x64` o
 attached, macOS is not published for that release yet.
 
 When a macOS archive does not bundle FFmpeg 8 yet, install it with Homebrew and point Sprocket at the
-Homebrew `lib` directory before launch:
+Homebrew `lib` directory before launch.
 
-1. **Unzip** the download, then in Terminal `cd` into the unzipped folder and run:
-   ```bash
-  brew install ffmpeg@8
-  export SPROCKET_FFMPEG8_DIR="$(brew --prefix ffmpeg@8)/lib"
-   chmod +x Sprocket
-   xattr -dr com.apple.quarantine .   # clear Gatekeeper's quarantine (the build isn't notarized yet)
-   ```
+**1. Unzip** the download, then in Terminal `cd` into the unzipped folder and run:
 
-2. **Launch it:**
-   ```bash
-   ./Sprocket
-   ```
+```bash
+brew install ffmpeg@8
+export SPROCKET_FFMPEG8_DIR="$(brew --prefix ffmpeg@8)/lib"
+chmod +x Sprocket
+xattr -dr com.apple.quarantine .   # clear Gatekeeper's quarantine (the build isn't notarized yet)
+```
+
+**2. Launch it:**
+
+```bash
+./Sprocket
+```
 
 Apple Silicon and Intel Macs are both supported (use the `osx-arm64` or `osx-x64` download
 respectively). A signed, notarized `.app` so even the `xattr` step isn't needed is planned for a later

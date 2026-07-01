@@ -1,3 +1,4 @@
+using Sprocket.Core.Audio;
 using Sprocket.Core.Model;
 using Sprocket.Core.Rendering;
 using Sprocket.Core.Timing;
@@ -329,5 +330,141 @@ public class AudioPlanTests
         project.Settings.MasterGainDb = -6.0206;
         AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, Timecode.Zero, Timecode.FromSeconds(0.1));
         Assert.Equal(0.5, plan.MasterGainLinear, 3);
+    }
+
+    // ---- clip gain + measurement scope (PLAN.md step 30 loudness normalization) ---------------------------
+
+    [Fact]
+    public void Clip_Gain_Folds_Into_Layer_Gain()
+    {
+        Project project = ProjectWithAudio(0, out _, out Clip clip);
+        clip.GainDb = -6.0206;
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, Timecode.Zero, Timecode.FromSeconds(0.1));
+        Assert.Equal(0.5, Assert.Single(plan.Layers).GainStartLinear, 3);
+    }
+
+    [Fact]
+    public void Clip_And_Track_Gain_Multiply()
+    {
+        Project project = ProjectWithAudio(-6.0206, out _, out Clip clip);
+        clip.GainDb = -6.0206;
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, Timecode.Zero, Timecode.FromSeconds(0.1));
+        Assert.Equal(0.25, Assert.Single(plan.Layers).GainStartLinear, 3); // 0.5 × 0.5
+    }
+
+    [Fact]
+    public void Scope_Only_Track_Isolates_One_Track_Ignoring_Solo()
+    {
+        Project project = ProjectWithAudio(0, out AudioTrack track1, out _);
+        var track2 = new AudioTrack();
+        track2.Clips.Add(new Clip(MediaRefId.New(), Timecode.Zero, Timecode.FromSeconds(10), Timecode.Zero));
+        project.Timeline.Tracks.Add(track2);
+        track1.Solo = true; // even with another track soloed, the scope measures the requested track
+
+        var scope = new AudioPlanScope(OnlyTrack: track2);
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, project.ActiveSequence, Timecode.Zero, Timecode.FromSeconds(0.1), scope);
+        AudioLayer layer = Assert.Single(plan.Layers);
+        Assert.Equal(track2.Clips[0].MediaRefId, layer.MediaRefId);
+    }
+
+    [Fact]
+    public void Scope_Unity_Track_And_Master_Gain_Measure_Raw()
+    {
+        Project project = ProjectWithAudio(-6.0206, out AudioTrack track, out _);
+        project.Settings.MasterGainDb = -6.0206;
+
+        var scope = new AudioPlanScope(OnlyTrack: track, UnityTrackGain: true, UnityMasterGain: true);
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, project.ActiveSequence, Timecode.Zero, Timecode.FromSeconds(0.1), scope);
+        Assert.Equal(1.0, Assert.Single(plan.Layers).GainStartLinear, 6); // track gain forced to unity
+        Assert.Equal(1.0, plan.MasterGainLinear, 6);                       // master gain forced to unity
+    }
+
+    [Fact]
+    public void Centre_Pan_Leaves_Both_Channels_At_Unity()
+    {
+        Project project = ProjectWithAudio(0, out _, out _);
+        AudioLayer layer = Assert.Single(RenderGraph.PlanAudioBuffer(project, Timecode.Zero, Timecode.FromSeconds(0.1)).Layers);
+        Assert.Equal(1.0, layer.PanLeft, 6);
+        Assert.Equal(1.0, layer.PanRight, 6);
+    }
+
+    [Fact]
+    public void Hard_Right_Pan_Silences_The_Left_Channel()
+    {
+        Project project = ProjectWithAudio(0, out AudioTrack track, out _);
+        track.Pan = 1.0;
+        AudioLayer layer = Assert.Single(RenderGraph.PlanAudioBuffer(project, Timecode.Zero, Timecode.FromSeconds(0.1)).Layers);
+        Assert.Equal(0.0, layer.PanLeft, 6);
+        Assert.Equal(1.0, layer.PanRight, 6);
+    }
+}
+
+/// <summary>The stereo balance law (PLAN.md step 30).</summary>
+public class PanLawTests
+{
+    [Fact]
+    public void Centre_Is_Unity_On_Both()
+    {
+        (double l, double r) = PanLaw.Balance(0);
+        Assert.Equal(1.0, l, 6);
+        Assert.Equal(1.0, r, 6);
+    }
+
+    [Theory]
+    [InlineData(-1.0, 1.0, 0.0)] // hard left  → right silent
+    [InlineData(1.0, 0.0, 1.0)]  // hard right → left silent
+    [InlineData(-0.5, 1.0, 0.5)] // half left  → right at 0.5
+    public void Panning_Attenuates_The_Opposite_Channel(double pan, double expectedLeft, double expectedRight)
+    {
+        (double l, double r) = PanLaw.Balance(pan);
+        Assert.Equal(expectedLeft, l, 6);
+        Assert.Equal(expectedRight, r, 6);
+    }
+
+    [Fact]
+    public void Out_Of_Range_Is_Clamped()
+    {
+        Assert.Equal(PanLaw.Balance(1.0), PanLaw.Balance(5.0));
+        Assert.Equal(PanLaw.Balance(-1.0), PanLaw.Balance(-5.0));
+    }
+}
+
+/// <summary>Pure loudness-normalization gain math (PLAN.md step 30).</summary>
+public class LoudnessNormalizationTests
+{
+    [Fact]
+    public void Quiet_Signal_Is_Turned_Up_To_Target()
+    {
+        double gain = LoudnessNormalization.ComputeGainDb(-20.0, double.NegativeInfinity, -14.0);
+        Assert.Equal(6.0, gain, 6);
+    }
+
+    [Fact]
+    public void Loud_Signal_Is_Turned_Down_To_Target()
+    {
+        double gain = LoudnessNormalization.ComputeGainDb(-10.0, double.NegativeInfinity, -14.0);
+        Assert.Equal(-4.0, gain, 6);
+    }
+
+    [Fact]
+    public void Silence_Is_Left_Alone()
+    {
+        Assert.Equal(0.0, LoudnessNormalization.ComputeGainDb(double.NegativeInfinity, -3.0, -14.0), 6);
+    }
+
+    [Fact]
+    public void True_Peak_Ceiling_Caps_The_Boost()
+    {
+        // Want +6 to reach target, but only +1 of true-peak head-room to the -1 dBTP ceiling.
+        double gain = LoudnessNormalization.ComputeGainDb(-20.0, -2.0, -14.0, truePeakCeilingDbtp: -1.0);
+        Assert.Equal(1.0, gain, 6);
+    }
+
+    [Fact]
+    public void True_Peak_Ceiling_Forces_A_Cut_When_Already_Over()
+    {
+        // Quiet but already 1 dB over the ceiling → must be cut to -1 dBTP even though loudness says boost.
+        double gain = LoudnessNormalization.ComputeGainDb(-20.0, 0.0, -14.0, truePeakCeilingDbtp: -1.0);
+        Assert.Equal(-1.0, gain, 6);
     }
 }

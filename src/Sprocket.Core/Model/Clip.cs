@@ -138,6 +138,13 @@ public sealed class Clip
     /// <summary>Where the clip sits on the timeline.</summary>
     public Timecode TimelineStart { get; set; }
 
+    /// <summary>
+    /// Per-clip audio gain in decibels (0 dB = unity), applied to the clip's audio on top of any fade and the
+    /// track gain (PLAN.md step 30). This is the model gain that clip-scope loudness normalization sets. Audio
+    /// only — it has no effect on a video/generator/adjustment clip's pixels.
+    /// </summary>
+    public double GainDb { get; set; }
+
     private Rational _speedRatio = Rational.One;
 
     /// <summary>
@@ -202,5 +209,5 @@ public sealed class Clip
     /// </summary>
     internal Clip CloneContentForSpan(Timecode sourceIn, Timecode sourceOut, Timecode timelineStart) =>
         new(Kind, MediaRefId, Generator?.Clone(), SourceSequenceId, SourceMulticamId, sourceIn, sourceOut, timelineStart)
-        { SpeedRatio = _speedRatio, ActiveAngle = ActiveAngle };
+        { SpeedRatio = _speedRatio, ActiveAngle = ActiveAngle, GainDb = GainDb };
 }

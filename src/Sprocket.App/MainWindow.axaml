@@ -85,6 +85,11 @@
             <MenuItem x:Name="ClipSpeedMenuItem" Header="_Speed / Duration…" IsEnabled="False" /> <!-- enabled when a clip is selected -->
 
             <Separator />
+            <!-- Loudness-normalize the selected clip's audio to the mixer's target (PLAN.md step 30); enabled when
+                 the selected clip references an audio-bearing source. Applying it to each clip matches their loudness. -->
+            <MenuItem x:Name="ClipNormalizeMenuItem" Header="_Normalize Audio" IsEnabled="False" />
+
+            <Separator />
             <!-- Multicam (PLAN.md step 24): build a synced angle group from the stacked video tracks. Switch the
                  active angle with the 1–9 keys or the Inspector. Create enables when ≥2 video tracks carry a clip. -->
             <MenuItem x:Name="CreateMulticamMenuItem" Header="Create _Multicam Source" IsEnabled="False" />

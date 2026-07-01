@@ -1,3 +1,4 @@
+using Sprocket.Audio.Loudness;
 using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
 
@@ -30,6 +31,7 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
     private readonly int _sampleRate;
     private readonly int _bufferFrames;
     private readonly float[] _mixBuffer;
+    private readonly LoudnessMeter _meter;
 
     private readonly object _gate = new();
     private readonly CancellationTokenSource _stop = new();
@@ -57,8 +59,16 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
         _sampleRate = output.SampleRate;
         _bufferFrames = bufferFrames ?? DefaultBufferFrames;
         _mixBuffer = new float[_bufferFrames * output.Channels];
+        _meter = new LoudnessMeter(output.SampleRate, output.Channels);
         _feeder = Task.Run(() => FeedLoopAsync(_stop.Token));
     }
+
+    /// <summary>
+    /// The current EBU R128 / BS.1770 loudness read-out of the mixed program (what the device plays). Safe to read
+    /// from any thread; updates ~10× per second while playing and freezes when paused (PLAN.md step 30). The
+    /// integrated measurement restarts on <see cref="Seek"/>.
+    /// </summary>
+    public LoudnessSnapshot CurrentLoudness => _meter.TakeSnapshot();
 
     /// <inheritdoc />
     public Timecode Now
@@ -113,6 +123,7 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
             _anchorPlayedFrames = _output.PlayedFrames;
             _pausedAt = position;
             _generation++;
+            _meter.RequestReset(); // restart the integrated measurement from the new position
         }
     }
 
@@ -158,15 +169,22 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
 
                 _mixer.MixInto(_mixBuffer, pos, _project); // mixing/decoding happens off the lock
 
+                bool enqueued;
                 lock (_gate)
                 {
-                    if (gen == _generation && _running)
+                    enqueued = gen == _generation && _running;
+                    if (enqueued)
                     {
                         _output.Enqueue(_mixBuffer);
                         _writeCursor = pos + advance;
                     }
                     // else: a seek superseded this buffer — drop it; the next tick mixes the new position.
                 }
+
+                // Meter only what was actually queued for playback, and off the lock (the K-weighting/true-peak
+                // DSP must not stall Now/transport). RequestReset (from Seek) is honoured inside Process.
+                if (enqueued)
+                    _meter.Process(_mixBuffer);
             }
         }
         catch (OperationCanceledException)

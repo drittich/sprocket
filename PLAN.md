@@ -1921,6 +1921,110 @@ Tags reference the [UI.md §4 checklist](UI.md).
       mixer already does gain/fade, step 5), undoable.
     - **Editorial audio polish.** Audio meters, per-track gain / pan controls, and the **Audio** tab /
       mixer surface ([UI.md §3.3](UI.md)) brought to editorial completeness.
+    - **✅ Loudness-metering strand DONE (`Sprocket.Audio/Loudness`: `KWeightingFilter`, `TruePeakMeter`,
+      `LoudnessMeter` + `LoudnessSnapshot`; tapped into `AudioEngine`; 15 new tests — Audio 23 → 38; full suite
+      684 → 699).** The first of step 30's three strands. Real-time EBU R128 / ITU-R BS.1770-4 loudness is now
+      measured on the [ARCHITECTURE §6](ARCHITECTURE.md) audio path with **zero per-buffer managed allocation**
+      (§1); the read-out is ready for the meters UI, which lands with the editorial-audio-polish strand. The
+      **normalization** and **editorial polish** strands remain. Delivered:
+      - **`KWeightingFilter` (Audio).** The two-stage BS.1770 K-weighting pre-filter (high-shelf "head model" +
+        RLB high-pass) as cascaded Transposed-Direct-Form-II biquads, one state set per channel. Coefficients are
+        computed from the analog prototypes for **any** sample rate (the libebur128 mapping — not just the 48 kHz
+        table in the standard), so 44.1/48/96 kHz projects all measure correctly; verified against the curve
+        (DC removed, ~0 dB at 1 kHz, +~4 dB high-shelf plateau, strong sub-bass roll-off).
+      - **`TruePeakMeter` (Audio).** True peak (dBTP) by **4× oversampling** with a Hann-windowed-sinc polyphase
+        FIR (BS.1770-4 Annex 2), each branch normalised to unity DC gain; per-channel history rings + a peak-hold
+        running max keep it allocation-free. Catches inter-sample overshoot the sampled peak misses (a full-scale
+        fs/4 sine phased onto ±0.707 samples reconstructs to ~0 dBTP).
+      - **`LoudnessMeter` + `LoudnessSnapshot` (Audio).** Accumulates K-weighted energy in 100 ms segments; a
+        fixed ring of the last 30 gives the **momentary** (400 ms) and **short-term** (3 s) sliding windows, and
+        overlapping 400 ms gating blocks feed a **bounded 0.1-LU histogram** for the **gated integrated** loudness
+        (absolute −70 LUFS + relative −10 LU gates, computed with the standard two-pass mean-of-energy). Also
+        tracks true peak and per-channel sample peak. `Process` is feeder-thread-confined and lock-free except a
+        tiny publish at each 100 ms boundary; `TakeSnapshot` reads the published values from the UI thread;
+        `RequestReset` (thread-safe flag) restarts the integrated measurement. `Flush` closes the final partial
+        segment so a finite offline stream's tail is measured (reused by normalization next).
+      - **`AudioEngine` tap.** The feeder meters **only the buffers actually enqueued** for playback (a
+        superseded-generation mix is dropped, not metered) and does so **off the transport lock** so the DSP never
+        stalls `Now`; `Seek` calls `RequestReset`. `AudioEngine.CurrentLoudness` exposes the snapshot to the UI.
+      - **Tests (15, headless, no device).** K-weighting DC-block / 1 kHz-unity / 10 kHz-shelf / sub-bass
+        roll-off; true-peak inter-sample overshoot + ≥ sample-peak; and loudness invariants: silence → −∞, DC far
+        quieter than a tone (RLB), **+6.02 LU per amplitude doubling**, **+3.01 LU stereo-vs-mono**, full-scale
+        1 kHz calibration band, **absolute gate** ignores a near-silent tail, **relative gate** ignores a much
+        quieter section, momentary window shorter than short-term, and reset restarts integrated. Full suite:
+        **699 tests green** (Core 215, Media 34, Render 50, Audio 38, Playback 52, Export 77, Persistence 90,
+        App 143).
+    - **✅ Normalization-engine strand DONE (`Sprocket.Core`: `Clip.GainDb`, `AudioPlanScope` + scoped/clip-gain
+      `PlanAudioBuffer`, `Audio.LoudnessNormalization`; `Sprocket.Audio`: `LoudnessAnalyzer` + `LoudnessMeasurement`,
+      scoped `AudioMixer.MixInto`; `Sprocket.Persistence`: additive `ClipDto.GainDb`; 16 new tests — Core 215 → 224,
+      Audio 38 → 44, Persistence 90 → 91; full suite 699 → 715).** The second of step 30's three strands: the loudness
+      normalization **engine** (measurement + gain math + per-clip model gain + measurement scoping), all on the
+      existing audio path. The **undoable Normalize actions + target UI + per-clip gain-match** land with the
+      editorial-audio-polish strand (the mixer/Audio-tab surface where they belong, as the metering DSP shipped
+      ahead of its meters UI); the editorial-polish strand is what **remains** of step 30. Delivered:
+      - **`Clip.GainDb` (Core).** A per-clip audio gain (dB, 0 = unity) folded into the audio plan alongside track
+        gain and the fade envelope (`RenderGraph.PlanAudioBuffer` — media, multicam, and nested-sequence layers),
+        cloned by blade-split, and **persisted additively** (`ClipDto.GainDb`, `WhenWritingNull` — unity writes
+        nothing, so pre-30 files load at unity and un-gained projects serialize byte-identically). This is the model
+        gain clip-scope normalization sets; no mixer change (it already ramps the plan's per-layer gain).
+      - **`AudioPlanScope` (Core).** An optional measurement scope on `PlanAudioBuffer` (and a matching scoped
+        `AudioMixer.MixInto`): isolate one track (ignoring its mute/solo so its content is measurable) and/or force
+        unity track / master gain, applied only at the measured sequence's top level. It lets a clip / track /
+        master scope's **raw** loudness be measured, so normalization is an absolute set (`gain = target −
+        measuredRaw`) rather than a fragile delta. The full-mix (null-scope) path is byte-for-byte unchanged.
+      - **`LoudnessNormalization` (Core, pure).** Delivery targets (−14 / −16 streaming, −23 EBU R128) + a default
+        −1 dBTP ceiling, and `ComputeGainDb(measuredLufs, measuredTruePeakDbtp, target, ceiling)` = the gain to hit
+        the target, **reduced so the true peak stays under the ceiling** (true-peak limiting only ever cuts below
+        target; silence returns 0). Dependency-free numbers, so commands/tests use it without the Audio layer.
+      - **`LoudnessAnalyzer` + `LoudnessMeasurement` (Audio).** Offline (faster-than-real-time) measurement through
+        a private `LoudnessMeter`: `MeasureSource` (one PCM reader over a clip's used span → clip scope) and
+        `MeasureMix` (a mixed sequence with an optional scope → master / track scope). One reusable buffer, no
+        per-chunk allocation, and it never touches the live playback meter.
+      - **Tests (21, headless, no FFmpeg).** Core: clip gain folds into the layer gain and multiplies with track
+        gain; scope isolates a track (ignoring solo) and forces unity track/master gain; `ComputeGainDb`
+        turn-up/turn-down/silence/ceiling-caps-boost/ceiling-forces-cut. Audio (`SinePcmReader`): `MeasureSource`
+        finite loudness + **+6 LU per amplitude doubling** + zero-duration silent; `MeasureMix` two identical tracks
+        **+6 LU** over one (scoped) and unity-master scope ignores master gain; and an **end-to-end normalize** —
+        measure a tone, compute the gain to −23 LUFS, boost, re-measure → lands on target. Persistence: clip audio
+        gain round-trips. Full suite: **715 tests green** (Core 224, Media 34, Render 50, Audio 44, Playback 52,
+        Export 77, Persistence 91, App 143).
+    - **✅ Editorial-audio-polish strand DONE — step 30 now complete** (`Sprocket.Core`: `AudioTrack.Pan` + `Audio.PanLaw`
+      + pan in the audio plan; `Sprocket.Audio`: pan in the mixer; `Sprocket.Persistence`: additive `TrackDto.Pan`;
+      `Sprocket.App`: `MixerFormat`, `Mixer/MixerView`, mixer hosting in the Project panel's Audio tab, live-loudness
+      wiring, and track/master/clip **Normalize** actions; 29 new tests — Core 224 → 231, Audio 44 → 46, App 143 → 163;
+      full suite 715 → 744). The third and final strand brings the meters + per-track controls + normalization to the
+      UI (UI.md §3.3). The Avalonia surfaces rest on build + a `SPROCKET_APP_SECONDS` smoke launch (the App is a
+      UI-bound `WinExe`); the pure model / formatting is unit-tested. Delivered:
+      - **Pan / stereo balance (Core + Audio + Persistence).** `AudioTrack.Pan` in [-1, 1] (clamped) with a linear
+        **balance** law (`PanLaw.Balance`): centre = unity on both channels — so a centred track mixes byte-identically
+        to the pre-pan behaviour — and panning attenuates the opposite channel to silence at the extreme. It folds into
+        the audio plan as per-layer `AudioLayer.PanLeft/PanRight` (default 1/1 = unchanged) and the mixer's `SumWithRamp`
+        applies it per channel on a stereo output (a no-op for mono). Additive `TrackDto.Pan` (`WhenWritingNull`) keeps
+        un-panned projects byte-identical.
+      - **`MixerFormat` (App, pure).** Gain (`+3.0 dB` / `-∞ dB`), pan (`C` / `L50` / `R100`), LUFS / dBTP read-outs,
+        and the 0–1 meter fill fraction — free of any Avalonia control (mirrors `StatusBarFormat`), so all strings and
+        fractions are unit-tested.
+      - **`MixerView` (App).** The Audio tab is now a mixer: a **master strip** with the live EBU R128 read-out
+        (integrated / short-term / momentary LUFS + true peak) and **L/R peak meters** (green→amber→red, peak-hold),
+        plus a master fader; and a **channel strip per audio track** with a gain fader, pan/balance, and mute / solo.
+        Every edit routes through `EditHistory` — faders open one `BeginCoalescing()` scope for the drag so a whole
+        gesture is a single undo entry (the timeline's pattern), mute/solo issue `SetPropertyCommand<bool>` — and undo
+        refreshes the widgets without re-issuing commands. The meters poll `AudioEngine.CurrentLoudness` on a ~15 Hz
+        `DispatcherTimer` that runs **only while the Audio tab is on screen** (started/stopped on attach/detach), so an
+        idle or hidden mixer costs nothing (§1). The live loudness is surfaced by carrying the `AudioEngine` on
+        `MediaBootstrap.Result` (a non-owning reference; the engine still owns it) through to the shell.
+      - **Loudness normalization actions (App).** A **Normalize to** target picker (−14 / −16 / −23 LUFS) drives
+        per-track and master **Normalize** buttons (measure the scope's raw loudness at unity via `LoudnessAnalyzer`
+        + a `MediaBootstrap.CreateAnalysisMixer`, compute the true-peak-limited gain via `LoudnessNormalization`, set
+        the model gain as one undoable edit), and **Clip ▸ Normalize Audio** normalizes the selected clip's
+        `Clip.GainDb` over its used source span to the same target — applied clip-by-clip it is the gain-match pass.
+      - **Notes.** Pan is a stereo balance (centre-unity, non-disruptive) rather than a −3 dB constant-power pan, so
+        existing centred mixes are unchanged. The strips carry controls but not per-track live meters — the single
+        engine meter measures the mixed master (its L/R bars are the required channel meters); per-track live metering
+        would need per-track metering in the engine and is a natural later refinement. Clean build (0 warnings); a
+        `SPROCKET_APP_SECONDS` smoke launch with the sample clip (audio wired → the mixer's meters live) starts and
+        tears down cleanly (exit 0). Full suite: **744 tests green** (Core 231, Media 34, Render 50, Audio 46,
+        Playback 52, Export 77, Persistence 91, App 163). **Step 30 is complete.**
 31. **Audio effects & plugin hosting (VST3 / AU).** The deeper audio-post layer (loudness
     metering/normalization is the earlier step 30). Give audio an effect chain mirroring video's
     `IVideoEffect` stack: a new Core **`IAudioEffect`** seam and an audio effect chain on audio **clips,

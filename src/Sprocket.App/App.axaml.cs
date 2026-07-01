@@ -28,18 +28,20 @@ public partial class App : Application
             // and hand the shell to the lifetime, which shows it. MediaBootstrap.Create degrades to an empty
             // project rather than throwing, so this can't strand the user.
             MediaBootstrap.Result result = MediaBootstrap.Create(desktop.Args ?? []);
-            desktop.MainWindow = BuildWindow(result.Engine, result.Project, result.Status, projectPath: null, result.Proxy);
+            desktop.MainWindow = BuildWindow(result.Engine, result.Project, result.Status, projectPath: null, result.Proxy, result.AudioClock);
         }
 
         base.OnFrameworkInitializationCompleted();
     }
 
     /// <summary>Builds a shell window over a session and tracks the session engine + proxy service for teardown / reload.</summary>
-    private MainWindow BuildWindow(PlaybackEngine? engine, Project? project, string status, string? projectPath, ProxyService? proxy)
+    private MainWindow BuildWindow(
+        PlaybackEngine? engine, Project? project, string status, string? projectPath, ProxyService? proxy,
+        Sprocket.Audio.AudioEngine? audioClock)
     {
         _engine = engine;
         _proxy = proxy;
-        var window = new MainWindow(engine, project, status, projectPath, proxy);
+        var window = new MainWindow(engine, project, status, projectPath, proxy, audioClock);
         window.SessionRequested += OnSessionRequested;
         return window;
     }
@@ -59,7 +61,7 @@ public partial class App : Application
         ProxyService? oldProxy = _proxy;
 
         MediaBootstrap.Result result = MediaBootstrap.CreateForProject(request.Project, request.Status);
-        MainWindow window = BuildWindow(result.Engine, result.Project, request.Status, request.ProjectPath, result.Proxy);
+        MainWindow window = BuildWindow(result.Engine, result.Project, request.Status, request.ProjectPath, result.Proxy, result.AudioClock);
         _desktop.MainWindow = window;
         window.Show();
 

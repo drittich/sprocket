@@ -89,6 +89,34 @@ public class AudioMixerTests
     }
 
     [Fact]
+    public void Hard_Right_Pan_Silences_The_Left_Channel()
+    {
+        using AudioMixer mixer = MixerFor((A, 0.5f));
+        AudioTrack track = TrackOver(A);
+        track.Pan = 1.0;
+        float[] buffer = Mix(mixer, ProjectWith(track), 256, Timecode.Zero);
+        for (int i = 0; i < buffer.Length; i += 2) // interleaved: even = L, odd = R
+        {
+            Assert.Equal(0f, buffer[i], 0.0001);       // left silenced
+            Assert.Equal(0.5f, buffer[i + 1], 0.0001); // right unchanged
+        }
+    }
+
+    [Fact]
+    public void Half_Left_Pan_Attenuates_The_Right_Channel()
+    {
+        using AudioMixer mixer = MixerFor((A, 0.5f));
+        AudioTrack track = TrackOver(A);
+        track.Pan = -0.5;
+        float[] buffer = Mix(mixer, ProjectWith(track), 256, Timecode.Zero);
+        for (int i = 0; i < buffer.Length; i += 2)
+        {
+            Assert.Equal(0.5f, buffer[i], 0.0001);      // left unchanged
+            Assert.Equal(0.25f, buffer[i + 1], 0.0001); // right at half
+        }
+    }
+
+    [Fact]
     public void Applies_Master_Gain()
     {
         using AudioMixer mixer = MixerFor((A, 1.0f));

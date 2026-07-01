@@ -124,7 +124,10 @@ internal sealed record TrackDto(
     List<ClipDto> Clips,
     // Transitions on the track's cuts (PLAN.md step 25). Additive + nullable: a track with no transitions writes
     // null (WhenWritingNull), so pre-25 files load with none and a transition-free project serializes byte-identically.
-    List<TransitionDto>? Transitions = null);
+    List<TransitionDto>? Transitions = null,
+    // Audio track stereo balance (PLAN.md step 30). Additive + nullable: a centred track writes null
+    // (WhenWritingNull), so pre-30 files load centred and un-panned projects serialize byte-identically.
+    double? Pan = null);
 
 /// <summary>A transition on a cut (PLAN.md step 25): its type id, the cut it sits on, its length, alignment, and
 /// any type parameters (null when there are none — the v1 built-ins).</summary>
@@ -166,7 +169,10 @@ internal sealed record ClipDto(
     // Multicam source + active angle (PLAN.md step 24). Present only on a Kind == Multicam clip; null/absent
     // otherwise, so non-multicam projects serialize byte-identically (WhenWritingNull).
     Guid? SourceMulticamId = null,
-    int? ActiveAngle = null);
+    int? ActiveAngle = null,
+    // Per-clip audio gain in dB (PLAN.md step 30). Additive + nullable: unity (0 dB) writes null (WhenWritingNull),
+    // so pre-30 files load at unity and un-gained projects serialize byte-identically.
+    double? GainDb = null);
 
 /// <summary>A marker (PLAN.md step 20): a time, optional name/comment, colour band, and an optional span
 /// (<see cref="DurationTicks"/> &gt; 0). Colour serializes as a string enum.</summary>

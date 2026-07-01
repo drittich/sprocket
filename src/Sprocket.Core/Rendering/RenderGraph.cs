@@ -1,3 +1,4 @@
+using Sprocket.Core.Audio;
 using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
 
@@ -191,7 +192,8 @@ public static class RenderGraph
     /// the active-sequence overload but for an arbitrary sequence — export can render any sequence, not just the one
     /// open for editing (PLAN.md step 29 export queue). The project master gain still applies once at the root.
     /// </summary>
-    public static AudioBufferPlan PlanAudioBuffer(Project project, Sequence sequence, Timecode bufferStart, Timecode bufferDuration)
+    public static AudioBufferPlan PlanAudioBuffer(
+        Project project, Sequence sequence, Timecode bufferStart, Timecode bufferDuration, AudioPlanScope? scope = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(sequence);
@@ -199,33 +201,49 @@ public static class RenderGraph
             throw new ArgumentOutOfRangeException(nameof(bufferDuration), "Buffer duration must be non-negative.");
 
         // The project master gain is applied once, at the root; nested sub-mixes carry unity master gain.
+        double masterGain = scope?.UnityMasterGain == true ? 1.0 : DbToLinear(project.Settings.MasterGainDb);
         return PlanAudioBufferCore(
             project, sequence, bufferStart, bufferDuration,
-            DbToLinear(project.Settings.MasterGainDb), [sequence.Id], depth: 0);
+            masterGain, [sequence.Id], depth: 0, scope);
     }
 
     private static AudioBufferPlan PlanAudioBufferCore(
         Project project, Sequence sequence, Timecode bufferStart, Timecode bufferDuration,
-        double masterGainLinear, HashSet<SequenceId> path, int depth)
+        double masterGainLinear, HashSet<SequenceId> path, int depth, AudioPlanScope? scope = null)
     {
         Timecode bufferEnd = bufferStart + bufferDuration;
         bool anySolo = sequence.Timeline.AudioTracks.Any(at => at is { Enabled: true, Solo: true });
 
+        // Scope applies only at the top level of the measured sequence; nested sub-mixes always use full gains.
+        AudioPlanScope? active = depth == 0 ? scope : null;
+
         var layers = new List<AudioLayer>();
         foreach (AudioTrack track in sequence.Timeline.AudioTracks)
         {
-            if (!track.Enabled || track.Muted)
-                continue;
-            if (anySolo && !track.Solo)
-                continue;
+            if (active?.OnlyTrack is { } only)
+            {
+                // Measuring one track: include only it, ignoring its own mute/solo/enabled so its content is
+                // measurable regardless of the current mix state.
+                if (!ReferenceEquals(track, only))
+                    continue;
+            }
+            else
+            {
+                if (!track.Enabled || track.Muted)
+                    continue;
+                if (anySolo && !track.Solo)
+                    continue;
+            }
 
             Clip? clip = track.ResolveActiveClip(bufferStart);
             if (clip is null)
                 continue;
 
-            double trackGain = DbToLinear(track.GainDb);
-            double gainStart = trackGain * FadeGain(clip, bufferStart);
-            double gainEnd = trackGain * FadeGain(clip, bufferEnd);
+            double trackGain = active?.UnityTrackGain == true ? 1.0 : DbToLinear(track.GainDb);
+            double clipGain = DbToLinear(clip.GainDb);
+            double gainStart = trackGain * clipGain * FadeGain(clip, bufferStart);
+            double gainEnd = trackGain * clipGain * FadeGain(clip, bufferEnd);
+            (double panL, double panR) = PanLaw.Balance(track.Pan);
 
             if (clip.Kind == ClipKind.Sequence)
             {
@@ -233,7 +251,7 @@ public static class RenderGraph
                 // nested clip's audio is deferred — the child sub-mix plays at 1×; see PLAN.md step 23.)
                 AudioBufferPlan? nested = PlanNestedAudio(project, clip, bufferStart, bufferDuration, path, depth);
                 if (nested is not null)
-                    layers.Add(new AudioLayer(default, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio, nested));
+                    layers.Add(new AudioLayer(default, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio, nested, panL, panR));
             }
             else if (clip.Kind == ClipKind.Multicam)
             {
@@ -242,11 +260,11 @@ public static class RenderGraph
                 if (ResolveMulticamAngle(project, clip) is { } angle)
                     layers.Add(new AudioLayer(
                         angle.EffectiveAudioRefId, ClipSync.AngleSourceTime(angle, clip.MapToSource(bufferStart)),
-                        gainStart, gainEnd, clip.SpeedRatio));
+                        gainStart, gainEnd, clip.SpeedRatio, PanLeft: panL, PanRight: panR));
             }
             else
             {
-                layers.Add(new AudioLayer(clip.MediaRefId, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio));
+                layers.Add(new AudioLayer(clip.MediaRefId, clip.MapToSource(bufferStart), gainStart, gainEnd, clip.SpeedRatio, PanLeft: panL, PanRight: panR));
             }
         }
 

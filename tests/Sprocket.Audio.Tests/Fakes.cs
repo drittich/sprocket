@@ -150,3 +150,43 @@ internal sealed class RampPcmReader : IPcmReader
 
     public void Dispose() { }
 }
+
+/// <summary>
+/// A synthetic <see cref="IPcmReader"/> that generates an endless sine of a given frequency and amplitude on every
+/// channel — a realistic loudness test signal (unlike the DC-like <see cref="FakePcmReader"/>, which the
+/// K-weighting high-pass would treat as silence). Used to exercise <c>LoudnessAnalyzer</c> without FFmpeg.
+/// </summary>
+internal sealed class SinePcmReader : IPcmReader
+{
+    private readonly double _freq;
+    private readonly double _amp;
+    private long _frame;
+
+    public SinePcmReader(int sampleRate, int channels, double freq, double amp)
+    {
+        SampleRate = sampleRate;
+        Channels = channels;
+        _freq = freq;
+        _amp = amp;
+    }
+
+    public int Channels { get; }
+    public int SampleRate { get; }
+
+    public int Read(Span<float> destinationInterleaved)
+    {
+        int frames = destinationInterleaved.Length / Channels;
+        for (int f = 0; f < frames; f++)
+        {
+            double s = _amp * Math.Sin(2.0 * Math.PI * _freq * _frame / SampleRate);
+            for (int ch = 0; ch < Channels; ch++)
+                destinationInterleaved[f * Channels + ch] = (float)s;
+            _frame++;
+        }
+        return frames;
+    }
+
+    public void SeekTo(Timecode sourceTime) => _frame = sourceTime.ToSampleIndex(SampleRate);
+
+    public void Dispose() { }
+}

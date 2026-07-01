@@ -48,6 +48,7 @@ public sealed class MediaBrowserPanel : UserControl
 
     private string _search = string.Empty;
     private Tab _activeTab = Tab.Media;
+    private Control? _mixer; // the audio mixer installed by the shell (PLAN.md step 30); null → the audio-media list
 
     // Built-once chrome.
     private readonly TextBox _searchBox;
@@ -201,15 +202,27 @@ public sealed class MediaBrowserPanel : UserControl
             b.FontWeight = t == tab ? FontWeight.SemiBold : FontWeight.Normal;
         }
 
-        _searchBox.IsVisible = tab is Tab.Media or Tab.Audio;
+        _searchBox.IsVisible = tab == Tab.Media || (tab == Tab.Audio && _mixer is null);
         _content.Child = tab switch
         {
             Tab.Media => _mediaView,
             Tab.Effects => _effectsView,
             Tab.Transitions => _transitionsView,
-            Tab.Audio => _audioView,
+            Tab.Audio => (Control?)_mixer ?? _audioView,
             _ => _mediaView,
         };
+    }
+
+    /// <summary>Installs the audio <b>mixer</b> as the Audio tab's body (PLAN.md step 30, UI.md §3.3), replacing the
+    /// audio-media list. Null-safe to call before/after tab selection; swaps in immediately if the Audio tab is open.</summary>
+    public void SetMixer(Control mixer)
+    {
+        _mixer = mixer;
+        if (_activeTab == Tab.Audio)
+        {
+            _content.Child = mixer;
+            _searchBox.IsVisible = false;
+        }
     }
 
     // ── Media / Audio grids ───────────────────────────────────────────────────────────────────────────

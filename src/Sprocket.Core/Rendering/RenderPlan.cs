@@ -138,13 +138,33 @@ public sealed record VideoFramePlan(Resolution Resolution, Timecode Time, IReadO
 /// <param name="NestedPlan">The child sequence's resolved audio plan (a nested-sequence layer, PLAN.md step 23):
 /// the mixer mixes it recursively, then applies this layer's gain envelope. <see langword="null"/> for an
 /// ordinary media layer.</param>
+/// <param name="PanLeft">Left-channel pan/balance gain in [0, 1] (PLAN.md step 30). 1.0 (the default) is the
+/// centred / mono case — applied by the mixer on top of the gain ramp for a stereo output.</param>
+/// <param name="PanRight">Right-channel pan/balance gain in [0, 1] (PLAN.md step 30). 1.0 = centred.</param>
 public sealed record AudioLayer(
     MediaRefId MediaRefId,
     Timecode SourceStart,
     double GainStartLinear,
     double GainEndLinear,
     Rational SpeedRatio,
-    AudioBufferPlan? NestedPlan = null);
+    AudioBufferPlan? NestedPlan = null,
+    double PanLeft = 1.0,
+    double PanRight = 1.0);
+
+/// <summary>
+/// Restricts an audio buffer plan to a measurement scope (PLAN.md step 30 loudness normalization). With the
+/// defaults the plan is the normal full mix; a non-default scope isolates one track and/or forces unity gain at
+/// a level so a scope's <em>raw</em> loudness can be measured (then normalized by setting that level's gain).
+/// Applies only at the top level of the measured sequence — nested sub-mixes always use their full gains.
+/// </summary>
+/// <param name="OnlyTrack">If set, only this audio track contributes (its own mute/solo/enabled are ignored so
+/// the track's content can be measured regardless of the current mix state).</param>
+/// <param name="UnityTrackGain">If true, track gain is forced to 0 dB (measure a track's content before its gain).</param>
+/// <param name="UnityMasterGain">If true, the project master gain is forced to 0 dB (measure before the master).</param>
+public sealed record AudioPlanScope(
+    AudioTrack? OnlyTrack = null,
+    bool UnityTrackGain = false,
+    bool UnityMasterGain = false);
 
 /// <summary>
 /// A pure description of how to fill one audio output buffer: which source spans to sum and at what

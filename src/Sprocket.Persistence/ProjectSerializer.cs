@@ -222,7 +222,7 @@ public static class ProjectSerializer
         return track switch
         {
             VideoTrack v => new TrackDto(TrackKind.Video, v.Name, v.Enabled, v.Opacity, v.BlendMode, 0, false, false, clips, transitions),
-            AudioTrack a => new TrackDto(TrackKind.Audio, a.Name, a.Enabled, 1.0, BlendMode.Normal, a.GainDb, a.Muted, a.Solo, clips, transitions),
+            AudioTrack a => new TrackDto(TrackKind.Audio, a.Name, a.Enabled, 1.0, BlendMode.Normal, a.GainDb, a.Muted, a.Solo, clips, transitions, a.Pan != 0 ? a.Pan : null),
             _ => throw new NotSupportedException($"Unknown track type {track.GetType().Name}."),
         };
     }
@@ -269,7 +269,8 @@ public static class ProjectSerializer
             c.LinkGroupId, kind, generator, ToMarkerList(c.Markers),
             retimed ? c.SpeedRatio.Num : null, retimed ? c.SpeedRatio.Den : null,
             c.SourceSequenceId?.Value,
-            multicam ? c.SourceMulticamId?.Value : null, multicam ? c.ActiveAngle : null);
+            multicam ? c.SourceMulticamId?.Value : null, multicam ? c.ActiveAngle : null,
+            c.GainDb != 0 ? c.GainDb : null);
     }
 
     private static GeneratorDto ToDto(GeneratorSpec g)
@@ -407,7 +408,7 @@ public static class ProjectSerializer
         Track track = t.Kind switch
         {
             TrackKind.Video => new VideoTrack { Name = t.Name, Enabled = t.Enabled, Opacity = t.Opacity, BlendMode = t.BlendMode },
-            TrackKind.Audio => new AudioTrack { Name = t.Name, Enabled = t.Enabled, GainDb = t.GainDb, Muted = t.Muted, Solo = t.Solo },
+            TrackKind.Audio => new AudioTrack { Name = t.Name, Enabled = t.Enabled, GainDb = t.GainDb, Muted = t.Muted, Solo = t.Solo, Pan = t.Pan ?? 0 },
             _ => throw new InvalidDataException($"Unknown track kind {t.Kind}."),
         };
         foreach (ClipDto c in t.Clips)
@@ -452,6 +453,7 @@ public static class ProjectSerializer
         // Speed absent ⇒ 1/1 (pre-21 files / normal-speed clips).
         if (c.SpeedNum is int speedNum && c.SpeedDen is int speedDen)
             clip.SpeedRatio = new Rational(speedNum, speedDen);
+        clip.GainDb = c.GainDb ?? 0; // GainDb absent ⇒ 0 dB (pre-30 files / un-gained clips)
         foreach (EffectDto e in c.Effects)
             clip.Effects.Add(FromDto(e));
         AddMarkers(clip.Markers, c.Markers);

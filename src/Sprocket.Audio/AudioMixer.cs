@@ -83,7 +83,17 @@ public sealed class AudioMixer : IDisposable
     /// Mixes a specific <paramref name="sequence"/>'s audio (rather than the project's active sequence) into
     /// <paramref name="destinationInterleaved"/> — export can render any sequence (PLAN.md step 29 export queue).
     /// </summary>
-    public void MixInto(Span<float> destinationInterleaved, Timecode timelineStart, Project project, Sequence sequence)
+    public void MixInto(Span<float> destinationInterleaved, Timecode timelineStart, Project project, Sequence sequence) =>
+        MixInto(destinationInterleaved, timelineStart, project, sequence, scope: null);
+
+    /// <summary>
+    /// Mixes <paramref name="sequence"/>'s audio restricted to an optional measurement <paramref name="scope"/>
+    /// (PLAN.md step 30 loudness normalization): a non-null scope isolates one track and/or forces unity gain at a
+    /// level so a clip/track/master scope's raw loudness can be measured. A null scope is the full mix.
+    /// </summary>
+    public void MixInto(
+        Span<float> destinationInterleaved, Timecode timelineStart, Project project, Sequence sequence,
+        AudioPlanScope? scope)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(project);
@@ -96,7 +106,7 @@ public sealed class AudioMixer : IDisposable
             return;
 
         Timecode duration = Timecode.FromSamples(frames, SampleRate);
-        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, sequence, timelineStart, duration);
+        AudioBufferPlan plan = RenderGraph.PlanAudioBuffer(project, sequence, timelineStart, duration, scope);
 
         // Sum the plan (recursing into nested sub-mixes), applying each plan's master gain; then hard-limit once
         // at the very top so nested layers aren't clamped (and distorted) before they're summed.
@@ -121,7 +131,7 @@ public sealed class AudioMixer : IDisposable
                 // A nested-sequence layer: mix the child plan into the per-depth scratch, then sum it in under
                 // this layer's (the nesting clip's) gain envelope. (Retimed nested audio plays at 1× — step 23.)
                 MixPlanInto(layer, nested, frames, depth + 1);
-                SumWithRamp(dest, layer, frames, al.GainStartLinear, al.GainEndLinear);
+                SumWithRamp(dest, layer, frames, al.GainStartLinear, al.GainEndLinear, al.PanLeft, al.PanRight);
                 continue;
             }
 
@@ -142,7 +152,7 @@ public sealed class AudioMixer : IDisposable
                 ReadResampled(state, layer, frames, al.SpeedRatio.ToDouble());
             }
 
-            SumWithRamp(dest, layer, frames, al.GainStartLinear, al.GainEndLinear);
+            SumWithRamp(dest, layer, frames, al.GainStartLinear, al.GainEndLinear, al.PanLeft, al.PanRight);
         }
 
         ApplyGain(dest, plan.MasterGainLinear);
@@ -232,17 +242,32 @@ public sealed class AudioMixer : IDisposable
     }
 
     /// <summary>Sums <paramref name="layer"/> into <paramref name="mix"/>, scaling by a per-frame gain that
-    /// ramps linearly from <paramref name="gainStart"/> to <paramref name="gainEnd"/> across the buffer.</summary>
-    private void SumWithRamp(Span<float> mix, ReadOnlySpan<float> layer, int frames, double gainStart, double gainEnd)
+    /// ramps linearly from <paramref name="gainStart"/> to <paramref name="gainEnd"/> across the buffer, with a
+    /// static per-channel pan/balance gain (<paramref name="panLeft"/>/<paramref name="panRight"/>). Pan applies
+    /// only to a stereo output; a centred layer passes <c>panLeft == panRight == 1</c> and is unchanged.</summary>
+    private void SumWithRamp(
+        Span<float> mix, ReadOnlySpan<float> layer, int frames, double gainStart, double gainEnd,
+        double panLeft = 1.0, double panRight = 1.0)
     {
         double step = frames > 1 ? (gainEnd - gainStart) / frames : 0.0;
         int c = Channels;
+        bool stereoPan = c == 2 && (panLeft != 1.0 || panRight != 1.0);
+        var pl = (float)panLeft;
+        var pr = (float)panRight;
         for (int f = 0; f < frames; f++)
         {
             float gain = (float)(gainStart + step * f);
             int baseIndex = f * c;
-            for (int ch = 0; ch < c; ch++)
-                mix[baseIndex + ch] += layer[baseIndex + ch] * gain;
+            if (stereoPan)
+            {
+                mix[baseIndex] += layer[baseIndex] * gain * pl;
+                mix[baseIndex + 1] += layer[baseIndex + 1] * gain * pr;
+            }
+            else
+            {
+                for (int ch = 0; ch < c; ch++)
+                    mix[baseIndex + ch] += layer[baseIndex + ch] * gain;
+            }
         }
     }
 

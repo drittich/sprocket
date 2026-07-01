@@ -40,8 +40,8 @@ public class ProjectSerializerTests
             ])));
         video.Clips.Add(clip);
 
-        var audio = new AudioTrack { Name = "A1", Enabled = true, GainDb = -3.0, Muted = true, Solo = false };
-        audio.Clips.Add(new Clip(AudioId, Timecode.Zero, Timecode.FromSeconds(10), Timecode.Zero) { LinkGroupId = LinkGroup });
+        var audio = new AudioTrack { Name = "A1", Enabled = true, GainDb = -3.0, Muted = true, Solo = false, Pan = -0.25 };
+        audio.Clips.Add(new Clip(AudioId, Timecode.Zero, Timecode.FromSeconds(10), Timecode.Zero) { LinkGroupId = LinkGroup, GainDb = -4.5 });
 
         // Track order is z-order and must be preserved exactly.
         timeline.Tracks.Add(video);
@@ -115,6 +115,7 @@ public class ProjectSerializerTests
                 Assert.Equal(-3.0, a.GainDb);
                 Assert.True(a.Muted);
                 Assert.False(a.Solo);
+                Assert.Equal(-0.25, a.Pan);
             });
     }
 
@@ -140,6 +141,13 @@ public class ProjectSerializerTests
         Assert.Equal(LinkGroup, audio.LinkGroupId);
         // The relation survives: the loaded clips are each other's companion.
         Assert.Same(audio, Assert.Single(loaded.ClipsLinkedTo(video)).Clip);
+    }
+
+    [Fact]
+    public void Round_Trips_Clip_Audio_Gain()
+    {
+        Clip audio = RoundTrip(BuildRichProject()).Timeline.AudioTracks.First().Clips.Single();
+        Assert.Equal(-4.5, audio.GainDb);
     }
 
     [Fact]

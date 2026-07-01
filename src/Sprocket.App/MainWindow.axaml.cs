@@ -17,8 +17,11 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Sprocket.App.Inspector;
 using Sprocket.App.MediaBrowser;
+using Sprocket.Audio;
+using Sprocket.Core.Audio;
 using Sprocket.Core.Commands;
 using Sprocket.Core.Model;
+using Sprocket.Core.Rendering;
 using Sprocket.Core.Timing;
 using Sprocket.Export;
 using Sprocket.Persistence;
@@ -43,11 +46,13 @@ public partial class MainWindow : Window
     private readonly PlaybackEngine? _engine;
     private readonly Project? _project;
     private readonly Proxy.ProxyService? _proxy; // session proxy service (PLAN.md step 18); owned by App
+    private readonly Sprocket.Audio.AudioEngine? _audioClock; // live loudness source for the mixer meters (PLAN.md step 30); owned by the engine
     private readonly EditHistory _history = new();
     private AutosaveService? _autosave; // periodic debounced autosave (PLAN.md step 20)
 
     private ThumbnailService? _thumbnails;
     private MediaBrowserPanel? _mediaBrowser;
+    private Mixer.MixerView? _mixer; // audio mixer hosted in the Project panel's Audio tab (PLAN.md step 30)
     private InspectorPanel? _inspector;
     private TimelineControl? _timeline;
     private Clip? _selectedClip; // the timeline selection (keyframe navigation targets its keyframes, step 16d)
@@ -95,6 +100,7 @@ public partial class MainWindow : Window
     private MenuItem? _cutMenuItem, _copyMenuItem, _pasteMenuItem, _deleteMenuItem, _rippleDeleteMenuItem;
     private MenuItem? _unlinkMenuItem, _nudgeLeftMenuItem, _nudgeRightMenuItem, _clipSpeedMenuItem;
     private MenuItem? _createMulticamMenuItem; // Clip ▸ Create Multicam Source (PLAN.md step 24)
+    private MenuItem? _clipNormalizeMenuItem;  // Clip ▸ Normalize Audio (PLAN.md step 30)
     private MenuItem? _nestMenuItem, _openSequenceMenuItem; // Sequence menu (PLAN.md step 23)
     private MenuItem? _snappingMenuItem, _guidesMenuItem, _showProjectMenuItem, _showInspectorMenuItem, _showStatsMenuItem;
     private PlaybackStatsOverlay? _statsOverlay; // floating playback-diagnostics window (View ▸ Playback Statistics)
@@ -138,12 +144,13 @@ public partial class MainWindow : Window
     public MainWindow() : this(null, null, string.Empty, null) { }
 
     public MainWindow(PlaybackEngine? engine, Project? project, string status, string? projectPath = null,
-        Proxy.ProxyService? proxy = null)
+        Proxy.ProxyService? proxy = null, Sprocket.Audio.AudioEngine? audioClock = null)
     {
         AvaloniaXamlLoader.Load(this);
         _engine = engine;
         _project = project;
         _proxy = proxy;
+        _audioClock = audioClock;
         _currentProjectPath = projectPath;
 
         _root = this.FindControl<Control>("Root");
@@ -317,6 +324,8 @@ public partial class MainWindow : Window
         _clipSpeedMenuItem.Click += async (_, _) => await ShowSpeedDialogAsync();
         _createMulticamMenuItem = this.FindControl<MenuItem>("CreateMulticamMenuItem")!;
         _createMulticamMenuItem.Click += (_, _) => CreateMulticamSource();
+        _clipNormalizeMenuItem = this.FindControl<MenuItem>("ClipNormalizeMenuItem")!;
+        _clipNormalizeMenuItem.Click += (_, _) => NormalizeSelectedClip();
         this.FindControl<MenuItem>("ClipMenu")!.SubmenuOpened += (_, _) => RefreshClipMenu();
 
         // ── Clip ▸ Insert (generators + adjustment layer, PLAN.md step 19) ──
@@ -666,6 +675,56 @@ public partial class MainWindow : Window
         // Double-clicking a transition in the browser applies it to the selected clip's cut (PLAN.md step 25).
         browser.TransitionActivated += id => _timeline?.ApplyTransitionToSelectedCut(id);
         browser.Attach(_project, _history, _thumbnails);
+
+        WireMixer(browser);
+    }
+
+    /// <summary>
+    /// Installs the audio mixer into the Project panel's Audio tab (PLAN.md step 30, UI.md §3.3): per-track gain /
+    /// pan / mute / solo + a master strip with the live loudness meters, and loudness-normalization to a target at
+    /// track / master scope. The meters read the audio engine's live loudness (null on the software clock);
+    /// normalization measures a scope's raw loudness offline through the same decode plumbing.
+    /// </summary>
+    private void WireMixer(MediaBrowserPanel browser)
+    {
+        if (_project is null)
+            return;
+
+        _mixer = new Mixer.MixerView();
+        Func<Sprocket.Audio.Loudness.LoudnessSnapshot>? readLoudness =
+            _audioClock is { } clock ? () => clock.CurrentLoudness : null;
+
+        _mixer.Attach(
+            _project, _history,
+            readLoudness,
+            measureTrack: track => MeasureTrackLoudness(track),
+            measureMaster: () => MeasureMasterLoudness());
+        browser.SetMixer(_mixer);
+    }
+
+    /// <summary>Measures one audio track's raw integrated loudness (unity track/master gain) for normalization
+    /// (PLAN.md step 30). Runs on the caller (UI) thread over the project's audio span; sources decode through the
+    /// same PCM readers playback uses. Offline sources measure as silence.</summary>
+    private Sprocket.Audio.Loudness.LoudnessMeasurement MeasureTrackLoudness(AudioTrack track)
+    {
+        if (_project is null)
+            return Sprocket.Audio.Loudness.LoudnessMeasurement.Silent;
+        using AudioMixer mixer = MediaBootstrap.CreateAnalysisMixer(_project);
+        var scope = new AudioPlanScope(OnlyTrack: track, UnityTrackGain: true, UnityMasterGain: true);
+        return Sprocket.Audio.Loudness.LoudnessAnalyzer.MeasureMix(
+            mixer, _project, _project.ActiveSequence, Timecode.Zero, _project.ActiveSequence.Timeline.Duration, scope);
+    }
+
+    /// <summary>Measures the full mix's integrated loudness at unity master gain for master normalization
+    /// (PLAN.md step 30). Offline sources measure as silence.</summary>
+    private Sprocket.Audio.Loudness.LoudnessMeasurement MeasureMasterLoudness()
+    {
+        if (_project is null)
+            return Sprocket.Audio.Loudness.LoudnessMeasurement.Silent;
+        using AudioMixer mixer = MediaBootstrap.CreateAnalysisMixer(_project);
+        return Sprocket.Audio.Loudness.LoudnessAnalyzer.MeasureMix(
+            mixer, _project, _project.ActiveSequence, Timecode.Zero, _project.ActiveSequence.Timeline.Duration,
+            new AudioPlanScope(UnityMasterGain: true));
     }
 
     /// <summary>
@@ -1151,6 +1210,44 @@ public partial class MainWindow : Window
         if (_nudgeRightMenuItem is not null) _nudgeRightMenuItem.IsEnabled = sel;
         if (_clipSpeedMenuItem is not null) _clipSpeedMenuItem.IsEnabled = sel;
         if (_createMulticamMenuItem is not null) _createMulticamMenuItem.IsEnabled = _timeline?.CanCreateMulticam == true;
+        if (_clipNormalizeMenuItem is not null) _clipNormalizeMenuItem.IsEnabled = SelectedClipHasAudio();
+    }
+
+    /// <summary>Whether the timeline selection is a clip whose source carries audio (so Clip ▸ Normalize Audio can act).</summary>
+    private bool SelectedClipHasAudio() =>
+        _project is not null && _selectedClip is { } clip && clip.Kind == ClipKind.Media
+        && _project.MediaPool.Get(clip.MediaRefId) is { Info.HasAudio: true };
+
+    /// <summary>
+    /// Clip ▸ Normalize Audio (PLAN.md step 30): measures the selected clip's raw loudness over its used source span
+    /// and sets its <see cref="Clip.GainDb"/> so it hits the mixer's target (true-peak limited), as one undoable
+    /// edit. Applying it to several clips in turn matches their loudness (the gain-match pass).
+    /// </summary>
+    private void NormalizeSelectedClip()
+    {
+        if (_project is null || _selectedClip is not { } clip || !SelectedClipHasAudio())
+            return;
+
+        using IPcmReader? reader = MediaBootstrap.OpenPcmReaderFor(_project, clip.MediaRefId);
+        if (reader is null)
+        {
+            SetStatus("Cannot normalize: the clip's audio could not be opened.");
+            return;
+        }
+
+        Sprocket.Audio.Loudness.LoudnessMeasurement m = Sprocket.Audio.Loudness.LoudnessAnalyzer.MeasureSource(
+            reader, clip.SourceIn, clip.SourceOut - clip.SourceIn);
+        if (double.IsNegativeInfinity(m.IntegratedLufs))
+        {
+            SetStatus("Clip is silent — nothing to normalize.");
+            return;
+        }
+
+        double target = _mixer?.TargetLufs ?? LoudnessNormalization.StreamingMinus14Lufs;
+        double gain = LoudnessNormalization.ComputeGainDb(m.IntegratedLufs, m.TruePeakDbtp, target);
+        _history.Execute(SetPropertyCommand<double>.Create(
+            "Normalize clip audio", () => clip.GainDb, v => clip.GainDb = v, gain));
+        SetStatus($"Normalized clip to {target:0.#} LUFS ({MixerFormat.GainDbLabel(gain)}).");
     }
 
     private void RefreshEffectsMenu()

@@ -104,6 +104,19 @@ public sealed class AudioTrack : Track
     /// <summary>Track gain in decibels (0 dB = unity).</summary>
     public double GainDb { get; set; }
 
+    private double _pan;
+
+    /// <summary>
+    /// Stereo balance in [-1, 1] (PLAN.md step 30): 0 = centre (both channels at unity), -1 = hard left, +1 = hard
+    /// right. Applied by the mixer as a per-channel gain (a linear balance law that keeps the centre at unity, so a
+    /// centred track is byte-identical to the pre-pan mix). Out-of-range values are clamped.
+    /// </summary>
+    public double Pan
+    {
+        get => _pan;
+        set => _pan = Math.Clamp(value, -1.0, 1.0);
+    }
+
     /// <summary>Whether the track is muted (excluded from the mix).</summary>
     public bool Muted { get; set; }
 

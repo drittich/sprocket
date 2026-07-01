@@ -19,10 +19,13 @@ namespace Sprocket.App;
 /// </summary>
 internal static class MediaBootstrap
 {
-    /// <summary>The created engine, the project it plays (for export), a human-readable status line, and the
-    /// session's proxy service (PLAN.md step 18; null when there is no project); or a null engine/project and an
-    /// error message. The caller owns and disposes <see cref="Proxy"/> alongside the engine.</summary>
-    public readonly record struct Result(PlaybackEngine? Engine, Project? Project, string Status, ProxyService? Proxy = null);
+    /// <summary>The created engine, the project it plays (for export), a human-readable status line, the
+    /// session's proxy service (PLAN.md step 18; null when there is no project), and the audio master clock when
+    /// audio is wired (its live loudness meter drives the mixer's meters, PLAN.md step 30; null on the software
+    /// clock). The caller owns and disposes <see cref="Proxy"/> alongside the engine; <see cref="AudioClock"/> is a
+    /// non-owning reference — the <see cref="PlaybackEngine"/> owns and disposes it.</summary>
+    public readonly record struct Result(
+        PlaybackEngine? Engine, Project? Project, string Status, ProxyService? Proxy = null, AudioEngine? AudioClock = null);
 
     /// <summary>
     /// Builds the launch session. With a playable media file given on the command line (<c>args[0]</c>), opens a
@@ -147,13 +150,13 @@ internal static class MediaBootstrap
     {
         ArgumentNullException.ThrowIfNull(project);
 
-        (IMasterClock? clock, _) = TryCreateAudioClockForProject(project);
+        (AudioEngine? clock, _) = TryCreateAudioClockForProject(project);
         var proxy = new ProxyService(project.Settings.UseProxies, project.Settings.ProxyTier);
         var engine = new PlaybackEngine(project, id => OpenVideoFeed(project, id, proxy), clock); // engine owns + disposes the clock
         proxy.ProxyReady += engine.InvalidateSource;
         engine.Start();
         proxy.Enqueue(project);
-        return new Result(engine, project, status, proxy);
+        return new Result(engine, project, status, proxy, clock);
     }
 
     /// <summary>
@@ -162,7 +165,7 @@ internal static class MediaBootstrap
     /// audio track references an audio-bearing source, or no audio device is available. The mixer resolves a PCM
     /// reader per source on demand, so it already mixes N audio tracks; offline sources mix as silence (§15).
     /// </summary>
-    private static (IMasterClock? clock, bool audioWired) TryCreateAudioClockForProject(Project project)
+    private static (AudioEngine? clock, bool audioWired) TryCreateAudioClockForProject(Project project)
     {
         int sampleRate = project.Timeline.SampleRate > 0 ? project.Timeline.SampleRate : 48000;
         const int channels = 2; // stereo output; sources are up/downmixed at decode
@@ -185,6 +188,25 @@ internal static class MediaBootstrap
             output?.Dispose();
             return (null, false); // degrade to the software clock; video still plays
         }
+    }
+
+    /// <summary>
+    /// Builds a standalone <see cref="AudioMixer"/> for offline loudness analysis (PLAN.md step 30 normalization) —
+    /// same PCM resolvers as playback, at the project's rate / stereo. The caller owns and disposes it.
+    /// </summary>
+    internal static AudioMixer CreateAnalysisMixer(Project project)
+    {
+        int sampleRate = project.Timeline.SampleRate > 0 ? project.Timeline.SampleRate : 48000;
+        const int channels = 2;
+        return new AudioMixer(sampleRate, channels, id => OpenPcmReader(project, id, sampleRate, channels));
+    }
+
+    /// <summary>Opens a standalone PCM reader for one source (clip-scope loudness measurement, PLAN.md step 30), or
+    /// <c>null</c> for an offline / no-audio source. The caller owns and disposes it.</summary>
+    internal static IPcmReader? OpenPcmReaderFor(Project project, MediaRefId id)
+    {
+        int sampleRate = project.Timeline.SampleRate > 0 ? project.Timeline.SampleRate : 48000;
+        return OpenPcmReader(project, id, sampleRate, 2);
     }
 
     /// <summary>Opens a video frame feed for a source, or <c>null</c> for an offline / no-video source (the engine

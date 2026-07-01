@@ -470,6 +470,25 @@ and a distinct wire format lets the model evolve behind `schemaVersion`). Source
 directory and preferred when present; missing media loads offline rather than failing. An explicit
 "offline" model flag + relink UI is deferred to the UI build-out (the load itself already tolerates it).*
 
+*Refined (PLAN step 28 — collaboration-ready format split + relink + interchange):*
+- ***Asset-link split.*** *The committed project file now references each source by stable `MediaRef` **Id**
+  (+ its content-derived, diffable `Info`) only; the per-user asset **paths** move to a separate
+  `.links.json` **media-link sidecar** (`MediaLinks`), not normally committed/merged — so pulling a
+  collaborator's project-file change never forces you to relocate your own clips. `ProjectSerializer.Save`/`Load`
+  operate on the pair (project file + sidecar); `Serialize` (to a lone string, e.g. autosave/snapshots) stays
+  **self-contained** with paths inlined. No schema bump: the path fields simply became additive/nullable, so
+  pre-step-28 files (inline paths) still load, and a sidecar link wins over an inlined path. A project shared
+  without its sidecar loads every source offline, ready to relink.*
+- ***Batch relink.*** *`MediaRelink` finds offline sources (empty/unresolved path), scans a chosen root folder,
+  and applies a previewed `RelinkPlan`; the pure `MediaRelinkMatcher` matches by file name, disambiguating same-named
+  candidates by longest path tail then known size. Relinking updates only the per-user path (written to the sidecar),
+  not the shared project.*
+- ***Interchange (`Sprocket.Persistence.Interchange`).*** *A pure model↔format mapper: **CMX3600 EDL** export
+  (`EdlExporter` + `SmpteTimecode`, drop-frame aware) and **Final Cut Pro 7 XML** (`xmeml`) export+import round-trip
+  (`FinalCutXmlInterchange`) — the lingua franca Premiere/Resolve/FCP7 read. Whatever a format can't carry (effects,
+  transitions, retimes, track mix, generated/nested/multicam clips, source tech metadata) is **reported** via an
+  `InterchangeReport`, never silently dropped. Modern Apple FCPXML v1.x is a noted later addition on the same seam.*
+
 ---
 
 ## 13. Plugin system (deferred — designed-for, not built)

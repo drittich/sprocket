@@ -21,6 +21,7 @@ using Sprocket.Core.Model;
 using Sprocket.Core.Timing;
 using Sprocket.Export;
 using Sprocket.Persistence;
+using Sprocket.Persistence.Interchange;
 using Sprocket.Playback;
 using Sprocket.Render;
 
@@ -239,7 +240,10 @@ public partial class MainWindow : Window
         this.FindControl<MenuItem>("SaveMenuItem")!.Click += (_, _) => Save();
         this.FindControl<MenuItem>("SaveAsMenuItem")!.Click += (_, _) => _ = SaveAsAsync();
         this.FindControl<MenuItem>("ImportMenuItem")!.Click += (_, _) => _ = ImportDialogAsync();
+        this.FindControl<MenuItem>("RelinkMenuItem")!.Click += (_, _) => _ = RelinkMediaAsync();
         this.FindControl<MenuItem>("ExportMenuItem")!.Click += (_, _) => _ = ExportAsync();
+        this.FindControl<MenuItem>("ExportEdlMenuItem")!.Click += (_, _) => _ = ExportInterchangeAsync(InterchangeKind.Edl);
+        this.FindControl<MenuItem>("ExportFcpXmlMenuItem")!.Click += (_, _) => _ = ExportInterchangeAsync(InterchangeKind.FinalCutXml);
         this.FindControl<MenuItem>("ExitMenuItem")!.Click += (_, _) => Close();
 
         // Edit
@@ -1626,6 +1630,122 @@ public partial class MainWindow : Window
             SetStatus($"Export failed: {error}");
             await MessageDialog.Show(this, "Export Failed", $"The export could not be completed:\n{error}");
         }
+    }
+
+    private enum InterchangeKind { Edl, FinalCutXml }
+
+    /// <summary>
+    /// File ▸ Export Interchange ▸ EDL / Final Cut XML (PLAN.md step 28): writes the active sequence to an
+    /// interchange format for round-tripping cuts with other NLEs. Interchange is a pure model→format mapping (no
+    /// FFmpeg / in-process muxer), so — unlike the video export — it needn't quiesce the playback pipeline. Anything
+    /// the format can't carry is reported back to the user rather than silently dropped.
+    /// </summary>
+    private async Task ExportInterchangeAsync(InterchangeKind kind)
+    {
+        if (_project is null)
+            return;
+        if (_project.Timeline.Duration.Ticks <= 0)
+        {
+            await MessageDialog.Show(this, "Nothing to Export",
+                "The timeline is empty — add a clip before exporting an interchange file.");
+            return;
+        }
+
+        (string label, string extension, FilePickerFileType fileType) = kind switch
+        {
+            InterchangeKind.Edl => ("EDL", ".edl",
+                new FilePickerFileType("CMX3600 EDL") { Patterns = ["*.edl"] }),
+            _ => ("Final Cut XML", ".xml",
+                new FilePickerFileType("Final Cut XML") { Patterns = ["*.xml", "*.fcpxml"] }),
+        };
+
+        string baseName = _currentProjectPath is null ? _projectName : ProjectDisplayName(_currentProjectPath);
+        IStorageFile? target = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = $"Export {label}",
+            SuggestedFileName = baseName + extension,
+            DefaultExtension = extension.TrimStart('.'),
+            FileTypeChoices = [fileType],
+        });
+        if (target?.TryGetLocalPath() is not { } path)
+            return;
+
+        try
+        {
+            InterchangeReport report = kind == InterchangeKind.Edl
+                ? EdlExporter.Save(_project, path)
+                : FinalCutXmlInterchange.Save(_project, path);
+
+            SetStatus($"Exported {label} → {path}");
+            if (report.HasWarnings)
+                await MessageDialog.Show(this, $"{label} Exported — some details were not included",
+                    $"Exported to:\n{path}\n\n{label} cannot represent everything in this sequence:\n\n"
+                    + string.Join("\n", report.Warnings.Select(w => "• " + w)));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"{label} export failed: {ex.Message}");
+            await MessageDialog.Show(this, "Export Failed", $"The {label} export could not be completed:\n{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// File ▸ Relink Media (PLAN.md step 28): re-points the project's offline sources at files under a folder the
+    /// user picks, matching by file name (disambiguated by path tail). Offline sources are those with no local path
+    /// or a path that no longer resolves — they render as black/silence until relinked (§15). The matches are
+    /// previewed for confirmation before anything is applied, and the relinked paths (a per-user concern) are
+    /// written straight to the media-link sidecar, not the shared project file.
+    /// </summary>
+    private async Task RelinkMediaAsync()
+    {
+        if (_project is null)
+            return;
+
+        IReadOnlyList<OfflineMedia> offline = MediaRelink.FindOffline(_project);
+        if (offline.Count == 0)
+        {
+            await MessageDialog.Show(this, "No Offline Media",
+                "Every source in this project resolves to a file on disk — there is nothing to relink.");
+            return;
+        }
+
+        IReadOnlyList<IStorageFolder> folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = $"Relink {offline.Count} offline media file{(offline.Count == 1 ? "" : "s")} — choose a folder to search",
+            AllowMultiple = false,
+        });
+        if (folders.Count == 0 || folders[0].TryGetLocalPath() is not { } root)
+            return;
+
+        RelinkPlan plan = await Task.Run(() => MediaRelink.Plan(_project, root));
+        if (plan.Matches.Count == 0)
+        {
+            await MessageDialog.Show(this, "No Matches Found",
+                $"No files under the chosen folder matched the {offline.Count} offline source"
+                + $"{(offline.Count == 1 ? "" : "s")} by name.");
+            return;
+        }
+
+        string preview = "Found matches for " + plan.Matches.Count + " of " + offline.Count + " offline source(s):\n\n"
+            + string.Join("\n", plan.Matches.Take(12).Select(m => $"• {Path.GetFileName(m.NewPath)}"))
+            + (plan.Matches.Count > 12 ? $"\n… (+{plan.Matches.Count - 12} more)" : "")
+            + (plan.Ambiguous.Count > 0 ? $"\n\n{plan.Ambiguous.Count} ambiguous (several candidates) — left offline." : "")
+            + (plan.Unmatched.Count > 0 ? $"\n{plan.Unmatched.Count} not found — left offline." : "");
+        if (!await ConfirmDialog.Show(this, "Relink Media", preview, "Relink", "Cancel"))
+            return;
+
+        int relinked = MediaRelink.Apply(_project, plan);
+
+        // Relinked paths are per-user state; persist them to the sidecar (not the shared, diffable project file).
+        if (_currentProjectPath is not null)
+        {
+            try { MediaLinks.Write(_project, _currentProjectPath); }
+            catch (Exception ex) { SetStatus($"Relinked {relinked}, but the media-link sidecar could not be saved: {ex.Message}"); }
+        }
+
+        _mediaBrowser?.Refresh();
+        SetStatus($"Relinked {relinked} media file{(relinked == 1 ? "" : "s")}"
+            + (_currentProjectPath is null ? " (save the project to keep the links)." : "."));
     }
 
     /// <summary>Opens the OS file manager with <paramref name="path"/> selected (Explorer/Finder), or its folder

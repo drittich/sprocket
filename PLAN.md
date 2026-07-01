@@ -1637,6 +1637,58 @@ Tags reference the [UI.md §4 checklist](UI.md).
       ([ARCHITECTURE §12](ARCHITECTURE.md), [§15](ARCHITECTURE.md)). Full multi-user editing (presence,
       locking, or CRDT / operational-transform merge) is a larger later product-platform effort this
       format enables — **not** in the 1.0 set; the actionable deliverable here is the **format split**.
+    - **✅ DONE (`src/Sprocket.Persistence`: `MediaLinks`, `MediaRelink`, `Interchange/{InterchangeReport,SmpteTimecode,
+      EdlExporter,FinalCutXmlInterchange}`, `ProjectSerializer`/`ProjectDto` refactor; `src/Sprocket.App/MainWindow`;
+      50 new headless tests — Persistence 40 → 90, all green; full suite 597.)** All three strands land additively on
+      the persistence + media-pool seams (ARCHITECTURE.md §12/§17), no schema bump, no Core model change. Delivered:
+      - **Collaboration-ready format split.** The committed project file now references each source by stable
+        `MediaRefId` (+ its content-derived, diffable `ProbedMediaInfo`) **only**; the per-user asset **paths** move to
+        a `.links.json` **media-link sidecar** (`MediaLinks`, atomic temp→promote write, independently schema-versioned).
+        `ProjectSerializer.Save`/`Load` operate on the **pair** (Id-only project file + sidecar) — the diffable,
+        merge-friendly form — while `Serialize` (to a lone string: autosave/undo-snapshot) stays **self-contained** with
+        paths inlined (a string has nowhere else to put them). Resolution order on load: **sidecar link → inlined
+        relative (if the file exists) → inlined absolute → offline** (empty path, renders as black/silence §15). **No
+        schema bump** — the `MediaRefDto` path fields became additive/nullable, so pre-28 files (inline paths) still
+        load and a sidecar entry wins over a stale inline path; a project shared *without* its sidecar loads every source
+        offline, ready to relink (the collaboration payoff — pulling a project-file change never relocates your clips).
+      - **Batch relink & offline recovery.** `MediaRelink` (I/O) finds offline sources (empty or now-missing path),
+        recursively scans a chosen root folder for candidates (skipping unreadable dirs), and applies a previewed
+        `RelinkPlan`; the **pure** `MediaRelinkMatcher` matches by **file name** (case-insensitive), disambiguating
+        same-named candidates by **longest common path tail** (cross-separator, so a Windows-recorded path matches a
+        POSIX candidate) then by known **size**, and reports `Matches` / `Ambiguous` / `Unmatched` rather than guessing.
+        Relinking updates only the per-user path → written straight to the sidecar (`MediaLinks.Write`), never dirtying
+        the shared project. Strengthens step 9's offline-tolerant load into a real "missing media" workflow.
+      - **Interchange export / import** (`Sprocket.Persistence.Interchange`, a pure model↔format mapper): **CMX3600 EDL**
+        export (`EdlExporter` over a pure, drop-frame-aware `SmpteTimecode` — verified against the reference DF algorithm)
+        flattening the active sequence to a record-ordered, numbered event list (one video track + up to 4 audio
+        channels, `* FROM CLIP NAME` comments, valid cuts); and **Final Cut Pro 7 XML** (`xmeml` v5) **export + import
+        round-trip** (`FinalCutXmlInterchange` — the lingua franca Premiere / Resolve / FCP7 read): sequence rate (NTSC
+        `timebase`+`ntsc`) / resolution / name, video+audio track layout, each clip's record placement + source in/out,
+        and source `<file>` references (id + `pathurl`, defined once then referenced by id). Everything a format can't
+        carry (effects, transitions, retimes, track opacity/blend/gain/mute/solo, generated/nested/multicam clips,
+        markers, source codec/bit-depth/HDR/alpha/VFR metadata) is **reported** via `InterchangeReport`, never silently
+        dropped. Frame-based interchange snaps to whole frames (true of every NLE); Sprocket clips are frame-aligned so
+        a cut round-trips exactly (verified at 29.97 NTSC).
+      - **App wiring (thin, smoke-verified).** File menu gains **Relink Media…** (offline scan → folder picker →
+        previewed confirm → apply → sidecar write → media-bin refresh) and **Export Interchange ▸ EDL (CMX3600)… /
+        Final Cut XML…** (save picker → export → a dialog listing any lossy fields). Interchange needs no export-style
+        pipeline quiesce (it's a pure mapping, no in-process muxer, §15). Normal **Save** now writes the `.links.json`
+        sidecar alongside the project.
+      - **Tests (+50).** `MediaLinkPersistenceTests` (Save omits paths + writes sidecar, project-file-only → offline,
+        self-contained inline round-trip, sidecar-wins-over-inline, pre-28 inline load, missing-sidecar/offline skips),
+        `MediaRelinkTests` (single/none/tail-disambiguation/ambiguous/size-tiebreak/no-name/case-insensitive matcher +
+        cross-separator tail + find-offline/plan-apply I/O), `SmpteTimecodeTests` (non-drop + DF reference values, DF vs
+        non-drop divergence, rate classification, parse round-trips), `EdlExportTests` (header/FCM, numbered events,
+        source/record timecodes, channels, lossy report, file write), `FinalCutXmlInterchangeTests` (format/name/layout/
+        placement/media-pool round-trip, define-once-reference-by-id, lossy report, non-xmeml rejection, file round-trip).
+        The updated moved-project test copies the sidecar (paths now live there). Clean build (0 warnings) and a
+        `SPROCKET_APP_SECONDS=5` smoke launch starts the shell with the new menu items wired and tears down cleanly
+        (exit 0). Full suite: **597 tests green** (Core 209, Media 30, Render 33, Audio 21, Playback 52, Export 26,
+        Persistence 90, App 136).
+      - **Deferred (noted, same seam):** **modern Apple FCPXML v1.x** (the newer `fcpxml` DTD — `xmeml` already gives
+        Premiere/Resolve/FCP7 round-trip); a richer **relink preview dialog** (per-file candidate override — the matcher
+        already reports ambiguous/unmatched, and the App confirms the plan before applying); and **EDL dissolves** (a
+        transition currently exports as a plain cut + a lossy warning).
 29. **Export queue, burn-ins, handles & presets + status-bar telemetry.** Standard delivery workflow on
     top of the step-8 export path and the step-27 format/codec matrix:
     - **Export queue.** Queue multiple export jobs (different sequences / in-out ranges / presets) that

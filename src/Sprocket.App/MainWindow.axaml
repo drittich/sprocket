@@ -48,7 +48,12 @@
             <MenuItem x:Name="SaveAsMenuItem" Header="Save Project _As…" InputGesture="Ctrl+Shift+S" />
             <Separator />
             <MenuItem x:Name="ImportMenuItem" Header="_Import Media…" InputGesture="Ctrl+I" />
+            <MenuItem x:Name="RelinkMenuItem" Header="_Relink Media…" />
             <MenuItem x:Name="ExportMenuItem" Header="_Export…" InputGesture="Ctrl+E" />
+            <MenuItem Header="Export I_nterchange">
+              <MenuItem x:Name="ExportEdlMenuItem" Header="_EDL (CMX3600)…" />
+              <MenuItem x:Name="ExportFcpXmlMenuItem" Header="_Final Cut XML…" />
+            </MenuItem>
             <Separator />
             <MenuItem x:Name="ExitMenuItem" Header="E_xit" InputGesture="Alt+F4" />
           </MenuItem>

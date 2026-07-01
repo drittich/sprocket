@@ -5,38 +5,68 @@ using Sprocket.Core.Timing;
 namespace Sprocket.Persistence;
 
 /// <summary>
-/// Saves and loads a <see cref="Project"/> as versioned JSON (ARCHITECTURE.md §12, PLAN.md step 9). The model
-/// is plain data, so it round-trips losslessly through the DTO layer; the file carries a
+/// Saves and loads a <see cref="Project"/> as versioned JSON (ARCHITECTURE.md §12, PLAN.md steps 9 &amp; 28). The
+/// model is plain data, so it round-trips losslessly through the DTO layer; the file carries a
 /// <see cref="SchemaVersion"/> for forward migration. Loading is <b>offline-tolerant</b>: a media file that
-/// can't be found is kept in the pool with its stored path (it simply renders as black/silence) rather than
-/// failing the load.
+/// can't be found is kept in the pool with its stored path (rendering as black/silence) rather than failing.
 /// </summary>
+/// <remarks>
+/// <para><b>Collaboration-ready format split (PLAN.md step 28).</b> The shared, committed project file references
+/// each source by stable <see cref="MediaRefId"/> only; the per-user asset paths live in a separate
+/// <see cref="MediaLinks">media-link sidecar</see> so a pulled project-file change never forces a relink. Hence:</para>
+/// <list type="bullet">
+///   <item><see cref="Save"/> / <see cref="Load"/> operate on the <b>pair</b>: the project file (id + info, no
+///     paths) plus its <c>.links.json</c> sidecar (id → local path). This is the diffable, merge-friendly form.</item>
+///   <item><see cref="Serialize"/> (to a single string) is <b>self-contained</b> — it inlines the paths, since a
+///     lone string has nowhere else to put them. Used for autosave/recovery and in-memory snapshots.</item>
+/// </list>
+/// <para>On load, a sidecar link wins; failing that an inlined path (a self-contained/pre-step-28 file) is used;
+/// failing both the source is offline and awaits relink (PLAN.md step 28). No schema bump was needed — the path
+/// fields simply became additive/nullable, matching the format's established backward-compatibility discipline.</para>
+/// </remarks>
 public static class ProjectSerializer
 {
     /// <summary>The current on-disk schema version. Bumped when the DTO shape changes incompatibly.</summary>
     public const int SchemaVersion = 1;
 
-    /// <summary>Serializes <paramref name="project"/> to a JSON string. When <paramref name="projectFilePath"/>
-    /// is given, media paths are also stored relative to that file's directory so a moved project relinks.</summary>
+    /// <summary>
+    /// Serializes <paramref name="project"/> to a <b>self-contained</b> JSON string with media paths inlined (the
+    /// autosave / snapshot form — a lone string has nowhere else to put them). When <paramref name="projectFilePath"/>
+    /// is given, each inlined path also gets a project-relative variant so a moved snapshot relinks. The
+    /// collaboration-ready committed form (paths in a sidecar) is written by <see cref="Save"/>.
+    /// </summary>
     public static string Serialize(Project project, string? projectFilePath = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         string? projectDir = projectFilePath is null ? null : Path.GetDirectoryName(Path.GetFullPath(projectFilePath));
-        ProjectDto dto = ToDto(project, projectDir);
+        ProjectDto dto = ToDto(project, projectDir, inlineMediaPaths: true);
         return JsonSerializer.Serialize(dto, SprocketJsonContext.Default.ProjectDto);
     }
 
-    /// <summary>Writes <paramref name="project"/> to <paramref name="path"/> as JSON (relative media paths
-    /// resolved against the file's directory).</summary>
+    /// <summary>
+    /// Writes <paramref name="project"/> to <paramref name="path"/> in the collaboration-ready split form: the
+    /// project file references sources by id (no inlined paths), and a <c>.links.json</c> sidecar beside it records
+    /// this machine's local paths (PLAN.md step 28). Loading the pair relinks; sharing only the project file loads
+    /// the sources offline until relinked.
+    /// </summary>
     public static void Save(Project project, string path)
     {
+        ArgumentNullException.ThrowIfNull(project);
         ArgumentException.ThrowIfNullOrEmpty(path);
-        File.WriteAllText(path, Serialize(project, path));
+        string? projectDir = Path.GetDirectoryName(Path.GetFullPath(path));
+        ProjectDto dto = ToDto(project, projectDir, inlineMediaPaths: false);
+        File.WriteAllText(path, JsonSerializer.Serialize(dto, SprocketJsonContext.Default.ProjectDto));
+        MediaLinks.Write(project, path);
     }
 
-    /// <summary>Parses a project from a JSON string. <paramref name="projectDirectory"/>, when given, resolves
-    /// relative media paths. Throws <see cref="InvalidDataException"/> on malformed JSON or an unknown schema.</summary>
-    public static Project Deserialize(string json, string? projectDirectory = null)
+    /// <summary>
+    /// Parses a project from a JSON string. <paramref name="projectDirectory"/>, when given, resolves relative
+    /// media paths. <paramref name="links"/>, when given, is the resolved id→path map from a media-link sidecar and
+    /// takes precedence over any path inlined in the JSON (PLAN.md step 28). Throws <see cref="InvalidDataException"/>
+    /// on malformed JSON or an unknown schema.
+    /// </summary>
+    public static Project Deserialize(
+        string json, string? projectDirectory = null, IReadOnlyDictionary<MediaRefId, string>? links = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(json);
 
@@ -55,25 +85,29 @@ public static class ProjectSerializer
             throw new InvalidDataException(
                 $"Unsupported project schema version {dto.SchemaVersion} (this build reads version {SchemaVersion}).");
 
-        return FromDto(dto, projectDirectory);
+        return FromDto(dto, projectDirectory, links);
     }
 
-    /// <summary>Loads a project from the JSON file at <paramref name="path"/>, resolving relative media paths
-    /// against the file's directory.</summary>
+    /// <summary>
+    /// Loads a project from the JSON file at <paramref name="path"/> together with its media-link sidecar (PLAN.md
+    /// step 28): the sidecar supplies each source's local path; sources with no link (a fresh clone, or a source
+    /// whose file is gone) load offline and await relink. Relative paths are resolved against the file's directory.
+    /// </summary>
     public static Project Load(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         string fullPath = Path.GetFullPath(path);
-        return Deserialize(File.ReadAllText(fullPath), Path.GetDirectoryName(fullPath));
+        IReadOnlyDictionary<MediaRefId, string> links = MediaLinks.Read(fullPath);
+        return Deserialize(File.ReadAllText(fullPath), Path.GetDirectoryName(fullPath), links);
     }
 
     // ---- model → DTO ----
 
-    private static ProjectDto ToDto(Project project, string? projectDir)
+    private static ProjectDto ToDto(Project project, string? projectDir, bool inlineMediaPaths)
     {
         var media = new List<MediaRefDto>();
         foreach (MediaRef m in project.MediaPool.Items)
-            media.Add(ToDto(m, projectDir));
+            media.Add(ToDto(m, projectDir, inlineMediaPaths));
 
         var settings = new SettingsDto(project.Settings.MasterGainDb, project.Settings.UseProxies, project.Settings.ProxyTier);
 
@@ -121,8 +155,17 @@ public static class ProjectSerializer
         return false;
     }
 
-    private static MediaRefDto ToDto(MediaRef media, string? projectDir)
+    /// <summary>Converts a media ref to its DTO. In the collaboration-ready split form
+    /// (<paramref name="inlineMediaPaths"/> = <see langword="false"/>, used by <see cref="Save"/>) the path fields
+    /// are omitted — the source is referenced by id only and its path lives in the media-link sidecar. In the
+    /// self-contained form (used by <see cref="Serialize"/>) the absolute path (and a project-relative variant) are
+    /// inlined so the single string round-trips on its own (PLAN.md step 28).</summary>
+    private static MediaRefDto ToDto(MediaRef media, string? projectDir, bool inlineMediaPaths)
     {
+        ProbedInfoDto info = ToDto(media.Info);
+        if (!inlineMediaPaths || string.IsNullOrEmpty(media.AbsolutePath))
+            return new MediaRefDto(media.Id.Value, info);
+
         string? relative = null;
         if (projectDir is not null)
         {
@@ -132,7 +175,7 @@ public static class ProjectSerializer
             if (rel != media.AbsolutePath && !Path.IsPathRooted(rel))
                 relative = rel;
         }
-        return new MediaRefDto(media.Id.Value, media.AbsolutePath, relative, ToDto(media.Info));
+        return new MediaRefDto(media.Id.Value, info, media.AbsolutePath, relative);
     }
 
     private static ProbedInfoDto ToDto(ProbedMediaInfo i) => new(
@@ -263,11 +306,11 @@ public static class ProjectSerializer
 
     // ---- DTO → model ----
 
-    private static Project FromDto(ProjectDto dto, string? projectDir)
+    private static Project FromDto(ProjectDto dto, string? projectDir, IReadOnlyDictionary<MediaRefId, string>? links)
     {
         Project project = BuildSequences(dto);
         foreach (MediaRefDto m in dto.Media)
-            project.MediaPool.Add(FromDto(m, projectDir));
+            project.MediaPool.Add(FromDto(m, projectDir, links));
         project.Settings.MasterGainDb = dto.Settings.MasterGainDb;
         project.Settings.UseProxies = dto.Settings.UseProxies;
         project.Settings.ProxyTier = dto.Settings.ProxyTier;
@@ -304,23 +347,31 @@ public static class ProjectSerializer
         throw new InvalidDataException("The project file has neither a timeline nor any sequences.");
     }
 
-    private static MediaRef FromDto(MediaRefDto m, string? projectDir)
+    private static MediaRef FromDto(MediaRefDto m, string? projectDir, IReadOnlyDictionary<MediaRefId, string>? links)
     {
-        string path = ResolvePath(m, projectDir);
-        return new MediaRef(new MediaRefId(m.Id), path, FromDto(m.Info));
+        var id = new MediaRefId(m.Id);
+        string path = ResolvePath(id, m, projectDir, links);
+        return new MediaRef(id, path, FromDto(m.Info));
     }
 
-    /// <summary>Prefer the relative path resolved against the project directory when that file exists; otherwise
-    /// fall back to the stored absolute path (which may be offline — tolerated, §12).</summary>
-    private static string ResolvePath(MediaRefDto m, string? projectDir)
+    /// <summary>
+    /// Resolves a source's local path (PLAN.md step 28). A media-link sidecar entry wins (the per-user truth); then
+    /// an inlined project-relative path resolved against the project directory when that file exists; then an inlined
+    /// absolute path (a self-contained / pre-step-28 file). With none of those the source is offline — an empty path
+    /// that renders as black/silence and surfaces in the relink workflow (§15).
+    /// </summary>
+    private static string ResolvePath(
+        MediaRefId id, MediaRefDto m, string? projectDir, IReadOnlyDictionary<MediaRefId, string>? links)
     {
+        if (links is not null && links.TryGetValue(id, out string? linked))
+            return linked;
         if (projectDir is not null && m.RelativePath is not null)
         {
             string candidate = Path.GetFullPath(Path.Combine(projectDir, m.RelativePath));
             if (File.Exists(candidate))
                 return candidate;
         }
-        return m.AbsolutePath;
+        return m.AbsolutePath ?? string.Empty;
     }
 
     private static ProbedMediaInfo FromDto(ProbedInfoDto i) => new(

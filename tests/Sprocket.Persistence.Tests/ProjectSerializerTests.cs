@@ -365,10 +365,11 @@ public class ProjectSerializerTests
     }
 
     [Fact]
-    public void Save_And_Load_Resolve_Relative_Media_When_The_Project_Is_Moved()
+    public void Save_And_Load_Resolve_Relative_Media_When_The_Project_Folder_Is_Moved()
     {
-        // dirA: the original project + media; dirB: a "moved" copy with the media alongside. The relative
-        // path stored on save must relink to dirB's media on load — not the (now-stale) dirA absolute path.
+        // dirA: the original project + media; dirB: a "moved" copy of the whole project folder (project file,
+        // its media-link sidecar, and the media). The relative path stored in the sidecar on save must relink to
+        // dirB's media on load — not the (now-stale) dirA absolute path (PLAN.md step 28: paths live in the sidecar).
         string root = Path.Combine(Path.GetTempPath(), "sprocket-persist-" + Guid.NewGuid().ToString("N"));
         string dirA = Path.Combine(root, "a");
         string dirB = Path.Combine(root, "b");
@@ -388,9 +389,15 @@ public class ProjectSerializerTests
             string projA = Path.Combine(dirA, "project.sprocket.json");
             ProjectSerializer.Save(project, projA);
 
-            // Move: copy the project file and the media into dirB, then load from there.
+            // The project file itself must reference the source by id only — no path in the shared, diffable file.
+            string projJson = File.ReadAllText(projA);
+            Assert.DoesNotContain("clip.mp4", projJson);
+            Assert.True(File.Exists(MediaLinks.SidecarPath(projA)), "Save must write the media-link sidecar.");
+
+            // Move: copy the project file, its media-link sidecar, and the media into dirB, then load from there.
             string projB = Path.Combine(dirB, "project.sprocket.json");
             File.Copy(projA, projB);
+            File.Copy(MediaLinks.SidecarPath(projA), MediaLinks.SidecarPath(projB));
             File.WriteAllText(Path.Combine(dirB, "media", "clip.mp4"), "x");
 
             Project loaded = ProjectSerializer.Load(projB);

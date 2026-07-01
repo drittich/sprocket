@@ -46,13 +46,37 @@ internal sealed record SequenceDto(
     string Name,
     TimelineDto Timeline);
 
-/// <summary>An imported source. Stores both an absolute path and, when the project path is known, a path
-/// relative to the project file so a moved project+media folder still relinks (ARCHITECTURE.md §12).</summary>
+/// <summary>An imported source, referenced by stable <see cref="Id"/> (ARCHITECTURE.md §12, PLAN.md step 28).
+/// The content-derived <see cref="Info"/> is part of the shared, diffable project — every collaborator needs it
+/// to edit/render (even offline) and it never varies per user. The per-user asset <b>paths</b>, by contrast, live
+/// in a separate <see cref="MediaLinksDto">media-link sidecar</see> so a pulled project-file change never forces a
+/// relink. <see cref="AbsolutePath"/>/<see cref="RelativePath"/> are therefore optional/nullable: the collab-ready
+/// <see cref="ProjectSerializer.Save"/> omits them (paths go to the sidecar), while the self-contained
+/// <see cref="ProjectSerializer.Serialize"/> string (autosave/snapshots) and pre-step-28 files inline them — both
+/// are still read on load (inline paths win only when no sidecar entry exists).</summary>
 internal sealed record MediaRefDto(
     Guid Id,
+    ProbedInfoDto Info,
+    string? AbsolutePath = null,
+    string? RelativePath = null);
+
+/// <summary>
+/// The per-user media-link sidecar (PLAN.md step 28, ARCHITECTURE.md §12): the mapping from a source's stable
+/// <see cref="MediaRefDto.Id"/> to its local path on <em>this</em> machine. Kept out of the shared project file
+/// (and not normally committed / merged) so pulling a collaborator's edit never relocates your own clips — your
+/// link file still resolves the ids. Missing entries (a fresh clone with no sidecar) simply leave that source
+/// offline until relinked (PLAN.md step 28 batch relink, §15). Independently schema-versioned from the project.
+/// </summary>
+internal sealed record MediaLinksDto(
+    int SchemaVersion,
+    List<MediaLinkDto> Links);
+
+/// <summary>One id→path link. Stores both an absolute path and, when the project path is known, a path relative to
+/// the project file so moving the whole project folder (project + sidecar + media) still relinks.</summary>
+internal sealed record MediaLinkDto(
+    Guid Id,
     string AbsolutePath,
-    string? RelativePath,
-    ProbedInfoDto Info);
+    string? RelativePath = null);
 
 internal sealed record ProbedInfoDto(
     long DurationTicks,
@@ -199,4 +223,5 @@ internal sealed record SettingsDto(
     UseStringEnumConverter = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(ProjectDto))]
+[JsonSerializable(typeof(MediaLinksDto))]
 internal sealed partial class SprocketJsonContext : JsonSerializerContext;

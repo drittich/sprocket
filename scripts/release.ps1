@@ -13,6 +13,7 @@
 #   pwsh scripts/release.ps1 -Version 0.3.0        # publish an exact version (no bump / rewrite)
 #   pwsh scripts/release.ps1 -NoZip                # leave the publish folders, skip archiving
 #   pwsh scripts/release.ps1 -NoFFmpeg             # publish only, skip FFmpeg native bundling
+#   pwsh scripts/release.ps1 -NoReadyToRun         # skip ReadyToRun AOT precompile (faster/smaller build)
 #   pwsh scripts/release.ps1 -FFmpegCacheDir <dir> # override the FFmpeg download cache (default ./.ffmpeg-cache)
 #
 # Versioning: the X.Y.Z version lives in Directory.Build.props (<VersionPrefix>) as the single source
@@ -72,6 +73,10 @@ param(
 
     # Skip bundling FFmpeg native libraries entirely.
     [switch] $NoFFmpeg,
+
+    # Skip ReadyToRun (R2R) AOT precompilation. R2R speeds cold start (~35% faster time-to-window) at
+    # the cost of a larger artifact and a slower publish; skip it for faster local iteration builds.
+    [switch] $NoReadyToRun,
 
     # Optional archive URLs (.tar.xz / .zip) of FFmpeg 8 macOS .dylib files to bundle.
     [string] $OsxX64FFmpegUrl,
@@ -306,6 +311,7 @@ Write-Host "  version:       $fullVersion"
 Write-Host "  configuration: $Configuration"
 Write-Host "  runtimes:      $($Rids -join ', ')"
 Write-Host "  ffmpeg:        $(if ($NoFFmpeg) { 'skipped (-NoFFmpeg)' } else { 'bundled' })"
+Write-Host "  readytorun:    $(if ($NoReadyToRun) { 'skipped (-NoReadyToRun)' } else { 'enabled' })"
 Write-Host "  output:        $distRoot"
 Write-Host ""
 
@@ -330,17 +336,21 @@ foreach ($rid in $Rids) {
         "-p:Version=$fullVersion",
         '-p:PublishSingleFile=true',
         '-p:IncludeNativeLibrariesForSelfExtract=true',
-        # ReadyToRun: AOT-precompile the app AND its managed deps (Avalonia / SkiaSharp) so cold start skips
-        # JIT. Measured ~35% faster time-to-window on win-x64 (~1.5s JIT -> ~1.0s) at the cost of a larger
-        # artifact and a slower publish; the residual is framework init + UI-tree construction. crossgen2
-        # cross-compiles for every RID in the matrix from one host, but R2R is per-RID native code — smoke
-        # test each published artifact (it launches) on its target OS.
-        '-p:PublishReadyToRun=true',
         # Managed symbols are embedded into the assemblies (which are bundled into the single-file
         # exe) — see Directory.Build.props. No loose .pdb files ship.
         '-p:DebugType=embedded',
         '--nologo'
     )
+
+    # ReadyToRun: AOT-precompile the app AND its managed deps (Avalonia / SkiaSharp) so cold start skips
+    # JIT. Measured ~35% faster time-to-window on win-x64 (~1.5s JIT -> ~1.0s) at the cost of a larger
+    # artifact and a slower publish; the residual is framework init + UI-tree construction. crossgen2
+    # cross-compiles for every RID in the matrix from one host, but R2R is per-RID native code — smoke
+    # test each published artifact (it launches) on its target OS. -NoReadyToRun skips it entirely for a
+    # faster, smaller build (e.g. quick local iteration) at the cost of slower cold start.
+    if (-not $NoReadyToRun) {
+        $publishArgs += '-p:PublishReadyToRun=true'
+    }
 
     & dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) {

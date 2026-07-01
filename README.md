@@ -154,6 +154,7 @@ pwsh scripts/release.ps1 -Version 0.3.0
 | `-OutDir <dir>` | Output directory (default `dist`). |
 | `-NoZip` | Leave the raw publish folders instead of zipping. |
 | `-NoFFmpeg` | Publish only; skip FFmpeg native bundling. |
+| `-NoReadyToRun` | Skip ReadyToRun AOT precompile — faster, smaller build; slower cold start. |
 | `-OsxX64FFmpegUrl` / `-OsxArm64FFmpegUrl` | Archive URL of FFmpeg 8 macOS `.dylib`s to bundle. |
 
 **How FFmpeg natives are sourced per RID:** Sprocket uses its own hand-rolled binding, so there is no

@@ -77,7 +77,7 @@ color management (OpenColorIO / OFX) · DJI D-Log input color transforms. See th
 |---|---|---|
 | **Windows 11** | `win-x64`, `win-arm64` | Primary development platform; FFmpeg 8 natives bundled by the release script. |
 | **Linux** | `linux-x64`, `linux-arm64` | Render path verified byte-identical to Windows (headless); release bundle verified end-to-end. |
-| **macOS** | `osx-x64`, `osx-arm64` | Same managed code; ships as a signed/notarized `.app` (packaging in progress). |
+| **macOS** | `osx-x64`, `osx-arm64` | Same managed code; release packaging is still in progress and published macOS assets are not attached to every release. |
 
 The managed assemblies are identical on every OS — only the bundled native libraries differ per RID.
 Sprocket bundles its **own FFmpeg 8** libraries rather than depending on a system install (distro
@@ -139,6 +139,9 @@ native libraries next to it.
 # Build + bundle the full RID matrix into ./dist
 pwsh scripts/release.ps1
 
+# Release from Windows for the currently supported published assets
+pwsh scripts/gh-release.ps1 -Rids win-x64,win-arm64,linux-x64,linux-arm64
+
 # A single runtime
 pwsh scripts/release.ps1 -Rids win-x64
 
@@ -167,6 +170,37 @@ FFmpeg runtime NuGet for any platform — every RID's natives are fetched and bu
   `-OsxX64FFmpegUrl` / `-OsxArm64FFmpegUrl` to bundle them, otherwise that bundle ships without
   FFmpeg and the script warns. On a macOS build host the script rewrites the dylibs' install names to
   `@loader_path` so the bundle is self-contained (no Homebrew, no `DYLD_*`).
+
+When cutting GitHub releases from Windows, publish only `win-x64`, `win-arm64`, `linux-x64`, and
+`linux-arm64` unless you have separately prepared bundled macOS FFmpeg dylibs.
+
+### macOS local development / temporary manual setup
+
+Some releases may omit macOS downloads entirely. When a release has no macOS download attached, or
+when you are running from source locally on macOS, install FFmpeg 8 with Homebrew and point Sprocket
+at its `lib` directory:
+
+```bash
+brew install ffmpeg@8
+export SPROCKET_FFMPEG8_DIR="$(brew --prefix ffmpeg@8)/lib"
+dotnet run --project src/Sprocket.App
+```
+
+For a published macOS archive that does not bundle FFmpeg yet, launch it from Terminal with the same
+environment variable set:
+
+```bash
+brew install ffmpeg@8
+export SPROCKET_FFMPEG8_DIR="$(brew --prefix ffmpeg@8)/lib"
+chmod +x Sprocket
+xattr -dr com.apple.quarantine .
+./Sprocket
+```
+
+`SPROCKET_FFMPEG8_DIR` must point at the directory containing `libavcodec.62.dylib`,
+`libavformat.62.dylib`, `libavutil.60.dylib`, `libswscale.9.dylib`, and `libswresample.6.dylib`.
+This Homebrew-based setup is a temporary development/manual path, not the intended long-term
+distribution story for macOS releases.
 
 > **Verifying a release end-to-end.** The app sets no FFmpeg `RootPath`, so natives resolve from the
 > application directory — and the bundled libraries depend on one another. Sprocket pre-loads them in

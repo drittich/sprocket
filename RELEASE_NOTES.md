@@ -41,28 +41,32 @@ the roadmap.
 - **Primary testing is on Windows 11.** Linux and macOS run the *identical* managed code, but
   windowed-GPU and on-device verification there is still in progress — treat those builds as
   experimental.
-- **All platforms bundle FFmpeg 8.** Windows, Linux, and macOS archives each ship their own FFmpeg 8
-  native libraries — no system FFmpeg, no Homebrew, no `DYLD_*` needed (see **🍎 macOS — get running**
-  below; the macOS dylibs have their install names rewritten to load from the app folder).
+- **Windows and Linux releases bundle FFmpeg 8.** macOS assets are attached only when their FFmpeg 8
+  dylibs are bundled correctly; some releases may omit macOS downloads entirely.
 - The windowed GPU preview and audio output are display/device-bound and rest on manual verification.
 - **FFmpeg licensing (LGPL vs GPL)** for distribution has not been finalized.
 
 ## Running it
 
-Each archive is a self-contained build — unzip and run the `Sprocket` executable; no .NET install or
-system FFmpeg is required.
+Windows and Linux archives are self-contained builds — unzip and run the `Sprocket` executable; no
+.NET install or system FFmpeg is required.
 
 - **Windows:** unzip and run `Sprocket.exe`. FFmpeg 8 is bundled.
 - **Linux:** unzip, then `chmod +x Sprocket` and run `./Sprocket`. FFmpeg 8 is bundled.
-- **macOS:** one extra step (Gatekeeper) — see below. FFmpeg 8 is bundled.
+- **macOS:** if a macOS asset is attached to the release, read the macOS section below first.
 
-### 🍎 macOS — get running (one Gatekeeper step)
+### 🍎 macOS
 
-The macOS archive **bundles FFmpeg 8** — no Homebrew, no `DYLD_*`, no system FFmpeg. The only extra
-step is clearing Apple's quarantine, because the build isn't notarized yet:
+Some releases may omit macOS downloads entirely. If a release has no `osx-x64` or `osx-arm64` asset
+attached, macOS is not published for that release yet.
+
+When a macOS archive does not bundle FFmpeg 8 yet, install it with Homebrew and point Sprocket at the
+Homebrew `lib` directory before launch:
 
 1. **Unzip** the download, then in Terminal `cd` into the unzipped folder and run:
    ```bash
+  brew install ffmpeg@8
+  export SPROCKET_FFMPEG8_DIR="$(brew --prefix ffmpeg@8)/lib"
    chmod +x Sprocket
    xattr -dr com.apple.quarantine .   # clear Gatekeeper's quarantine (the build isn't notarized yet)
    ```
@@ -74,5 +78,6 @@ step is clearing Apple's quarantine, because the build isn't notarized yet:
 
 Apple Silicon and Intel Macs are both supported (use the `osx-arm64` or `osx-x64` download
 respectively). A signed, notarized `.app` so even the `xattr` step isn't needed is planned for a later
-release. If video won't open, confirm you downloaded a macOS archive that includes the `libav*.dylib`
-files next to the executable.
+release. If video will not open, confirm that `SPROCKET_FFMPEG8_DIR` points to the directory that
+contains `libavcodec.62.dylib`, `libavformat.62.dylib`, `libavutil.60.dylib`, `libswscale.9.dylib`,
+and `libswresample.6.dylib`.

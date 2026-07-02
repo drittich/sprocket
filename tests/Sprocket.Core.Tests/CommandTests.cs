@@ -363,6 +363,20 @@ public class ModelCommandTests
     }
 
     [Fact]
+    public void SetEffectEnabled_Toggles_And_Undoes()
+    {
+        var effect = new EffectInstance(EffectTypeIds.Brightness);
+        var history = new EditHistory();
+        Assert.True(effect.Enabled); // effects default to enabled
+
+        history.Execute(new SetEffectEnabledCommand(effect, false));
+        Assert.False(effect.Enabled);
+
+        history.Undo();
+        Assert.True(effect.Enabled);
+    }
+
+    [Fact]
     public void RemoveEffect_Restores_Stack_Order()
     {
         Clip clip = MakeClip();

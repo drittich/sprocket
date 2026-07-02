@@ -643,6 +643,31 @@ public sealed class RemoveChainEffectCommand(IList<EffectInstance> chain, Effect
     }
 }
 
+/// <summary>Toggles an effect's <see cref="EffectInstance.Enabled"/> flag; undo restores the prior state. Disabling
+/// (rather than removing) keeps parameters/keyframes intact for later re-enabling, and — since <c>Enabled</c> is
+/// part of the persisted/hashed effect state — invalidates any render-cache segment covering the clip.</summary>
+public sealed class SetEffectEnabledCommand : EditCommand
+{
+    private readonly EffectInstance _effect;
+    private readonly bool _oldEnabled;
+    private readonly bool _newEnabled;
+
+    /// <summary>Captures the effect's current enabled state and records the new one to apply.</summary>
+    public SetEffectEnabledCommand(EffectInstance effect, bool enabled) : base(enabled ? "Enable effect" : "Disable effect")
+    {
+        ArgumentNullException.ThrowIfNull(effect);
+        _effect = effect;
+        _oldEnabled = effect.Enabled;
+        _newEnabled = enabled;
+    }
+
+    /// <inheritdoc />
+    public override void Apply() => _effect.Enabled = _newEnabled;
+
+    /// <inheritdoc />
+    public override void Revert() => _effect.Enabled = _oldEnabled;
+}
+
 /// <summary>Removes an effect from a clip; undo re-inserts it at the same stack position (order matters, §5d).</summary>
 public sealed class RemoveEffectCommand(Clip clip, EffectInstance effect) : EditCommand("Remove effect")
 {

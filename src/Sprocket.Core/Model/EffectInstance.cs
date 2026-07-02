@@ -328,6 +328,14 @@ public sealed class EffectInstance
     /// <summary>The effect type id, e.g. <see cref="EffectTypeIds.Brightness"/>.</summary>
     public string EffectTypeId { get; }
 
+    /// <summary>
+    /// Whether the effect is applied when rendering. Disabling an effect (rather than removing it) keeps its
+    /// parameters/keyframes intact for later re-enabling. The render graph skips disabled effects entirely
+    /// (<see cref="Sprocket.Core.Rendering.RenderGraph"/>), and it is part of the persisted/hashed state
+    /// (§12, §20) so toggling it invalidates any render-cache segment covering the clip.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>Parameters by name, each an <see cref="AnimatableValue"/>.</summary>
     public Dictionary<string, AnimatableValue> Parameters { get; } = new();
 
@@ -352,7 +360,7 @@ public sealed class EffectInstance
     /// </summary>
     public EffectInstance Clone()
     {
-        var copy = new EffectInstance(EffectTypeId);
+        var copy = new EffectInstance(EffectTypeId) { Enabled = Enabled };
         foreach ((string name, AnimatableValue value) in Parameters)
             copy.Parameters[name] = value;
         return copy;
@@ -366,7 +374,7 @@ public sealed class EffectInstance
     /// </summary>
     public EffectInstance CloneShifted(Timecode delta)
     {
-        var copy = new EffectInstance(EffectTypeId);
+        var copy = new EffectInstance(EffectTypeId) { Enabled = Enabled };
         foreach ((string name, AnimatableValue value) in Parameters)
             copy.Parameters[name] = value.Shifted(delta);
         return copy;

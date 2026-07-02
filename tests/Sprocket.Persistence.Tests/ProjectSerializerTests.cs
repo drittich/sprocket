@@ -32,7 +32,10 @@ public class ProjectSerializerTests
         var video = new VideoTrack { Name = "V1", Enabled = true, Opacity = 0.8, BlendMode = BlendMode.Multiply };
         var clip = new Clip(VideoId, Timecode.FromSeconds(1), Timecode.FromSeconds(6), Timecode.FromSeconds(2)) { LinkGroupId = LinkGroup };
         clip.Effects.Add(new EffectInstance(EffectTypeIds.Brightness).Set(EffectParamNames.Amount, 1.2));
-        clip.Effects.Add(new EffectInstance(EffectTypeIds.Fade).Set(EffectParamNames.Opacity,
+        clip.Effects.Add(new EffectInstance(EffectTypeIds.Fade)
+        {
+            Enabled = false, // exercises the non-default (disabled) case round-tripping
+        }.Set(EffectParamNames.Opacity,
             AnimatableValue.Animated(
             [
                 new Keyframe(Timecode.Zero, 0.0, Interpolation.Linear),
@@ -158,12 +161,14 @@ public class ProjectSerializerTests
 
         EffectInstance brightness = clip.Effects[0];
         Assert.Equal(EffectTypeIds.Brightness, brightness.EffectTypeId);
+        Assert.True(brightness.Enabled); // default (omitted from JSON) round-trips as enabled
         AnimatableValue amount = brightness.Parameters[EffectParamNames.Amount];
         Assert.False(amount.IsAnimated);
         Assert.Equal(1.2, amount.Evaluate(Timecode.Zero));
 
         EffectInstance fade = clip.Effects[1];
         Assert.Equal(EffectTypeIds.Fade, fade.EffectTypeId);
+        Assert.False(fade.Enabled); // explicit disabled state round-trips
         AnimatableValue opacity = fade.Parameters[EffectParamNames.Opacity];
         Assert.True(opacity.IsAnimated);
         Assert.Collection(opacity.Keyframes,

@@ -301,7 +301,7 @@ public static class RenderGraph
         List<ResolvedEffect>? resolved = null;
         foreach (EffectInstance effect in effects)
         {
-            if (!EffectTypeIds.IsAudio(effect.EffectTypeId))
+            if (!effect.Enabled || !EffectTypeIds.IsAudio(effect.EffectTypeId))
                 continue;
             var values = new Dictionary<string, double>(effect.Parameters.Count);
             foreach ((string name, AnimatableValue value) in effect.Parameters)
@@ -442,16 +442,17 @@ public static class RenderGraph
         if (clip.Effects.Count == 0)
             return [];
 
-        var resolved = new ResolvedEffect[clip.Effects.Count];
-        for (int i = 0; i < clip.Effects.Count; i++)
+        List<ResolvedEffect>? resolved = null;
+        foreach (EffectInstance effect in clip.Effects)
         {
-            EffectInstance effect = clip.Effects[i];
+            if (!effect.Enabled)
+                continue;
             var values = new Dictionary<string, double>(effect.Parameters.Count);
             foreach ((string name, AnimatableValue value) in effect.Parameters)
                 values[name] = value.Evaluate(t);
-            resolved[i] = new ResolvedEffect(effect.EffectTypeId, values);
+            (resolved ??= []).Add(new ResolvedEffect(effect.EffectTypeId, values));
         }
-        return resolved;
+        return resolved?.ToArray() ?? [];
     }
 
     /// <summary>
@@ -464,7 +465,7 @@ public static class RenderGraph
         double gain = 1.0;
         foreach (EffectInstance effect in clip.Effects)
         {
-            if (effect.EffectTypeId == EffectTypeIds.Fade &&
+            if (effect.Enabled && effect.EffectTypeId == EffectTypeIds.Fade &&
                 effect.Parameters.TryGetValue(EffectParamNames.Opacity, out AnimatableValue? opacity))
             {
                 gain *= opacity.Evaluate(t);

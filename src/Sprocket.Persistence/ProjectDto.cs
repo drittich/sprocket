@@ -198,7 +198,10 @@ internal sealed record GeneratorDto(
 
 internal sealed record EffectDto(
     string EffectTypeId,
-    Dictionary<string, AnimatableValueDto> Parameters);
+    Dictionary<string, AnimatableValueDto> Parameters,
+    // Nullable + WhenWritingNull (§12): omitted for the common enabled case, so pre-existing project
+    // files serialize byte-identically and still load (missing means enabled).
+    bool? Enabled = null);
 
 /// <summary>An effect parameter: exactly one of <see cref="Constant"/> or <see cref="Keyframes"/> is set.</summary>
 internal sealed record AnimatableValueDto(

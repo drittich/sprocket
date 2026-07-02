@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
@@ -254,9 +255,29 @@ public sealed class InspectorPanel : UserControl
 
         foreach (EffectParameterDescriptor p in parameters)
             rows.Children.Add(BuildParamRow(effect, p));
+        // Dim the parameter rows (rather than disabling input) when the effect is off, so values stay
+        // visible and editable while previewing without it.
+        rows.Opacity = effect.Enabled ? 1.0 : 0.5;
 
-        // Header with a remove (✕) button.
+        // Header with an enable/disable toggle (eye glyph, matching the track-header convention in
+        // TimelineControl) and a remove (✕) button.
         var header = new DockPanel();
+        var toggle = new ToggleButton
+        {
+            Content = "👁",
+            FontSize = 11,
+            Padding = new Avalonia.Thickness(6, 1),
+            Background = Brushes.Transparent,
+            Foreground = effect.Enabled ? TextBrush : FaintText,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsChecked = effect.Enabled,
+        };
+        ToolTip.SetTip(toggle, effect.Enabled ? "Disable effect" : "Enable effect");
+        toggle.Click += (_, e) =>
+        {
+            e.Handled = true;
+            _history!.Execute(new SetEffectEnabledCommand(effect, toggle.IsChecked == true));
+        };
         var remove = new Button
         {
             Content = "✕",
@@ -275,12 +296,14 @@ public sealed class InspectorPanel : UserControl
         };
         DockPanel.SetDock(remove, Dock.Right);
         header.Children.Add(remove);
+        DockPanel.SetDock(toggle, Dock.Right);
+        header.Children.Add(toggle);
         header.Children.Add(new TextBlock
         {
             Text = title,
             FontSize = 12,
             FontWeight = FontWeight.SemiBold,
-            Foreground = TextBrush,
+            Foreground = effect.Enabled ? TextBrush : FaintText,
             VerticalAlignment = VerticalAlignment.Center,
         });
 

@@ -300,7 +300,7 @@ public static class ProjectSerializer
         var parameters = new Dictionary<string, AnimatableValueDto>(e.Parameters.Count);
         foreach ((string name, AnimatableValue value) in e.Parameters)
             parameters[name] = ToDto(value);
-        return new EffectDto(e.EffectTypeId, parameters);
+        return new EffectDto(e.EffectTypeId, parameters, e.Enabled ? null : false);
     }
 
     private static AnimatableValueDto ToDto(AnimatableValue value)
@@ -519,7 +519,7 @@ public static class ProjectSerializer
 
     private static EffectInstance FromDto(EffectDto e)
     {
-        var effect = new EffectInstance(e.EffectTypeId);
+        var effect = new EffectInstance(e.EffectTypeId) { Enabled = e.Enabled ?? true };
         foreach ((string name, AnimatableValueDto value) in e.Parameters)
             effect.Set(name, FromDto(value));
         return effect;

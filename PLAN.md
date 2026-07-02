@@ -2243,6 +2243,38 @@ Tags reference the [UI.md §4 checklist](UI.md).
     transform / log handling (step 37) and the advanced OCIO / ACES color management (step 33). Lands
     entirely on the existing effect seam ([ARCHITECTURE §7](ARCHITECTURE.md), [§17](ARCHITECTURE.md)) — no
     render-graph redesign; builds on the done effect pipeline, so it can be pulled earlier if prioritized.
+    - **✅ DONE (`Sprocket.Render/Effects/{WhiteBalance,ColorWheels,Curves,HslQualifier}Effect.cs`;
+      `Sprocket.Render/Scope{Analyzer,Renderer}.cs`; `Sprocket.App/ScopeView.cs`; full suite 893 green,
+      0 warnings, app smoke launch OK).** Delivered, all on the step-33 `IVideoEffect` registry path (no
+      new pipeline cases — the plugin seam carries the whole toolset) and each keyframeable/persisted/
+      Inspector-edited for free via the type-driven descriptor model:
+      - **White Balance** (`builtin.whitebalance`): temp/tint gains in linear light (Lumetri's ±100
+        slider convention), luma-normalised so the correction is chromatic-only.
+      - **Color Wheels** (`builtin.colorwheels`): lift/gamma/gain × (master + R/G/B) with the standard
+        video LGG transfer — lift pivots on white, gain on black, gamma a mids power curve (Resolve
+        wheel semantics).
+      - **Curves** (`builtin.curves`): RGB master + per-channel red/green/blue **parametric** curves —
+        five points (blacks/shadows/mids/highlights/whites at fixed inputs) offsetting the identity,
+        Catmull-Rom interpolated in the shader. Deliberate departure: the parametric (Lightroom-style)
+        form instead of a freeform point list, because it keeps every point an animatable scalar the
+        existing `AnimatableValue`/Inspector model already handles.
+      - **HSL Qualifier** (`builtin.hsl.qualify`): softened hue/sat/luma key with hue-shift / saturation /
+        exposure corrections applied through the mask, plus the standard Show Mask matte preview.
+      - **Vibrance** added to the step-16 `Color` effect (saturation weighted toward muted colours;
+        absent param defaults neutral, so old projects are unchanged).
+      - **Grading scopes** (extending the step-17 monitor): **waveform / RGB parade / vectorscope /
+        histogram**, selected from the monitor header, drawn in a panel under the picture. The monitor
+        surface samples its own composited output inside the same GPU lease (snapshot → ≤256-wide
+        persistent raster sample → `ScopeAnalyzer` bins, arrays reused per frame — one bounded readback,
+        no per-frame managed pixel buffers), so the scopes measure exactly what the monitor shows,
+        grade/transitions/adjustment layers included; `ScopeRenderer` draws the bins from one persistent
+        trace bitmap with graticules.
+      - Tests: Core catalog/neutral-default coverage, Render centre-pixel math for all four effects +
+        vibrance (incl. legacy-project pass-through), pure `ScopeAnalyzer` binning (waveform split,
+        parade, vectorscope quadrants, stride padding, bin reuse) and `ScopeRenderer` offscreen smoke.
+      - **Still outstanding (UI polish, not render seams):** bespoke 2D wheel / curve-editor Inspector
+        widgets (wheels and curve points are edited today as the type-driven sliders every other param
+        uses) and export-side scope overlays.
 35. **Cross-platform native-lib bundling.** Make the build self-contained per RID: copy the FFmpeg 8
     `.dll`/`.so`/`.dylib` set and `SkiaSharp.NativeAssets.{Win32,Linux,macOS}` + OpenAL Soft natives
     into the publish output for `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64` so the app runs with no

@@ -111,4 +111,41 @@ public sealed class EffectCatalogRegistrationTests
         Assert.Equal(EffectParamNames.Exposure, p.Name);
         Assert.Equal(0.0, aces.CreateInstance().Parameters[EffectParamNames.Exposure].Evaluate(Timing.Timecode.Zero));
     }
+
+    // ── The colour grading toolset (PLAN.md step 34) ─────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(EffectTypeIds.WhiteBalance, 2)]
+    [InlineData(EffectTypeIds.ColorWheels, 12)]
+    [InlineData(EffectTypeIds.Curves, 20)]
+    [InlineData(EffectTypeIds.HslQualifier, 12)]
+    public void GradingEffects_AreColorBuiltins_OnTheVideoChain(string id, int parameterCount)
+    {
+        EffectDescriptor? d = EffectCatalog.Find(id);
+        Assert.NotNull(d);
+        Assert.Equal(EffectCategory.Color, d!.Category);
+        Assert.Equal(parameterCount, d.Parameters.Count);
+        Assert.False(EffectTypeIds.IsAudio(id)); // grading routes to the shader chain
+    }
+
+    [Theory]
+    [InlineData(EffectTypeIds.WhiteBalance)]
+    [InlineData(EffectTypeIds.ColorWheels)]
+    [InlineData(EffectTypeIds.Curves)]
+    public void GradingEffects_DefaultInstancesAreNeutral(string id)
+    {
+        // A freshly added grading effect must be a visual no-op: every default is its neutral value (0,
+        // except the qualifier's range bounds/gains, covered by the descriptor test above).
+        EffectDescriptor d = EffectCatalog.Find(id)!;
+        foreach (EffectParameterDescriptor p in d.Parameters)
+            Assert.Equal(0.0, p.Default);
+    }
+
+    [Fact]
+    public void Color_GainsVibrance_DefaultNeutral()
+    {
+        EffectDescriptor color = EffectCatalog.Find(EffectTypeIds.Color)!;
+        EffectParameterDescriptor vibrance = Assert.Single(color.Parameters, p => p.Name == EffectParamNames.Vibrance);
+        Assert.Equal(0.0, vibrance.Default);
+    }
 }

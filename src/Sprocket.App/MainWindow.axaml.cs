@@ -67,6 +67,7 @@ public partial class MainWindow : Window
     private SourceMonitor? _source;
     private IMonitor? _active;
     private PreviewSurface? _preview;
+    private ScopeState? _scopeState; // shared grading-scope state: monitor surface produces, ScopeView consumes (PLAN.md step 34)
     private Button? _playPause;
     private Button? _prevKeyframeButton, _nextKeyframeButton;
     private Slider? _scrubber;
@@ -265,6 +266,7 @@ public partial class MainWindow : Window
         _renderCacheRefresh?.Stop();
         _renderCache?.Dispose(); // releases any open cached-audio readers (PLAN.md step 32)
         _thumbnails?.Dispose(); // releases the cached thumbnail bitmaps
+        _scopeState?.Dispose(); // releases the scope sample surface (PLAN.md step 34)
         _ = _source?.DisposeAsync(); // tears down the Source monitor's decoder/engine if one is open
         base.OnClosed(e);
     }
@@ -794,6 +796,7 @@ public partial class MainWindow : Window
         WireTimeline();
         WireMonitorTabs();
         WireZoomAndGuides();
+        WireScopes();
 
         _exportButton!.Click += (_, _) => _ = ExportAsync();
         WireAddTrackButton();
@@ -957,6 +960,37 @@ public partial class MainWindow : Window
 
         if (_guidesToggle is not null)
             _guidesToggle.IsCheckedChanged += (_, _) => _preview!.ShowGuides = _guidesToggle.IsChecked == true;
+    }
+
+    /// <summary>
+    /// Binds the grading scopes (PLAN.md step 34): the header's scope selector shows/hides the scope panel
+    /// under the picture and tells the shared surface which analysis to produce per presented frame; the
+    /// panel redraws whenever a capture refreshes the bins.
+    /// </summary>
+    private void WireScopes()
+    {
+        var scopeBox = this.FindControl<ComboBox>("ScopeBox")!;
+        var scopeHost = this.FindControl<Border>("ScopeHost")!;
+        var scopePanel = this.FindControl<ScopeView>("ScopePanel")!;
+
+        _scopeState = new ScopeState();
+        _preview!.Scopes = _scopeState;
+        scopePanel.Attach(_scopeState);
+
+        scopeBox.SelectionChanged += (_, _) =>
+        {
+            _scopeState.ActiveKind = scopeBox.SelectedIndex switch
+            {
+                1 => ScopeKind.Waveform,
+                2 => ScopeKind.RgbParade,
+                3 => ScopeKind.Vectorscope,
+                4 => ScopeKind.Histogram,
+                _ => ScopeKind.None,
+            };
+            scopeHost.IsVisible = _scopeState.ActiveKind != ScopeKind.None;
+            // Re-present so a paused monitor samples the current frame for the new scope immediately.
+            _preview!.InvalidateVisual();
+        };
     }
 
     /// <summary>Re-points the transport readouts (scrubber range, position/duration text, play glyph, state) at

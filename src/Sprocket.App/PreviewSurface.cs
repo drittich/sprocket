@@ -47,6 +47,13 @@ public sealed class PreviewSurface : Control
     }
 
     /// <summary>
+    /// The shared grading-scope state (PLAN.md step 34). When set and a scope is active, each presented
+    /// frame's composite is sampled after compositing (inside the same lease) so the scopes measure exactly
+    /// what the monitor shows — grade, transitions, and adjustment layers included.
+    /// </summary>
+    public ScopeState? Scopes { get; set; }
+
+    /// <summary>
     /// The monitor's logical frame size (the sequence resolution for the Program monitor, the source's resolution
     /// for the Source monitor). When set (both &gt; 0) every layer composites into one zoom rect derived from it
     /// and the overlay is drawn over that rect; otherwise each layer fits individually and no overlay is drawn.
@@ -99,7 +106,7 @@ public sealed class PreviewSurface : Control
     }
 
     public override void Render(DrawingContext context) =>
-        context.Custom(new DrawOp(new Rect(Bounds.Size), _engine, _pipeline, _zoom, _showGuides, _frameWidth, _frameHeight));
+        context.Custom(new DrawOp(new Rect(Bounds.Size), _engine, _pipeline, _zoom, _showGuides, _frameWidth, _frameHeight, Scopes));
 
     private sealed class DrawOp : ICustomDrawOperation
     {
@@ -109,9 +116,10 @@ public sealed class PreviewSurface : Control
         private readonly bool _showGuides;
         private readonly int _frameWidth;
         private readonly int _frameHeight;
+        private readonly ScopeState? _scopes;
 
         public DrawOp(Rect bounds, PlaybackEngine? engine, SkiaEffectPipeline? pipeline,
-            MonitorZoom zoom, bool showGuides, int frameWidth, int frameHeight)
+            MonitorZoom zoom, bool showGuides, int frameWidth, int frameHeight, ScopeState? scopes)
         {
             Bounds = bounds;
             _engine = engine;
@@ -120,6 +128,7 @@ public sealed class PreviewSurface : Control
             _showGuides = showGuides;
             _frameWidth = frameWidth;
             _frameHeight = frameHeight;
+            _scopes = scopes;
         }
 
         public Rect Bounds { get; }
@@ -200,6 +209,11 @@ public sealed class PreviewSurface : Control
                                 break;
                         }
                     }
+
+                    // Sample the finished composite for the grading scopes (PLAN.md step 34) before the
+                    // guides draw over it, so the scopes measure the graded picture, not the overlay.
+                    if (_scopes is not null && haveFrame && leaseSurface is not null)
+                        _scopes.Capture(leaseSurface, canvas, frameRect);
 
                     if (_showGuides && haveFrame)
                         MonitorOverlay.Draw(canvas, frameRect, thirds: true, safeAreas: true);

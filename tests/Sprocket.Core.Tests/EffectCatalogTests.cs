@@ -85,12 +85,12 @@ public class EffectCatalogTests
     }
 
     [Fact]
-    public void Color_Exposes_Exposure_Contrast_Saturation()
+    public void Color_Exposes_Exposure_Contrast_Saturation_Vibrance()
     {
         EffectDescriptor color = EffectCatalog.Find(EffectTypeIds.Color)!;
         string[] names = color.Parameters.Select(p => p.Name).ToArray();
         Assert.Equal(
-            new[] { EffectParamNames.Exposure, EffectParamNames.Contrast, EffectParamNames.Saturation },
+            new[] { EffectParamNames.Exposure, EffectParamNames.Contrast, EffectParamNames.Saturation, EffectParamNames.Vibrance },
             names);
     }
 

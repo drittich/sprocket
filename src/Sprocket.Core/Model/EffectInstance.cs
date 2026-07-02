@@ -42,6 +42,40 @@ public static class EffectTypeIds
     public const string AcesFilmic = "builtin.aces.filmic";
 
     /// <summary>
+    /// White balance (PLAN.md step 34): temperature / tint gains applied in linear light, the standard
+    /// first grading correction (Lumetri / Resolve convention: warm = positive temperature, magenta =
+    /// positive tint). Parameters: <see cref="EffectParamNames.Temperature"/>, <see cref="EffectParamNames.Tint"/>.
+    /// </summary>
+    public const string WhiteBalance = "builtin.whitebalance";
+
+    /// <summary>
+    /// Lift / gamma / gain colour wheels (PLAN.md step 34): the three-way tonal grade every professional
+    /// grading page centres on — lift moves shadows, gamma mids, gain highlights, each with a master and
+    /// per-channel R/G/B component (<see cref="EffectParamNames.LiftMaster"/> … <see cref="EffectParamNames.GainB"/>).
+    /// </summary>
+    public const string ColorWheels = "builtin.colorwheels";
+
+    /// <summary>
+    /// Parametric curves (PLAN.md step 34): RGB (master) + per-channel red/green/blue curves, each a
+    /// five-point parametric curve (blacks / shadows / mids / highlights / whites at fixed inputs
+    /// 0 / ¼ / ½ / ¾ / 1) whose points offset the identity — the Lightroom-style parametric form, which
+    /// keeps every point an animatable scalar (<see cref="EffectParamNames.CurveMasterBlacks"/> …).
+    /// </summary>
+    public const string Curves = "builtin.curves";
+
+    /// <summary>
+    /// HSL qualifier / secondary (PLAN.md step 34): keys a hue/saturation/luma range and grades only the
+    /// keyed pixels (hue shift, saturation, exposure), with a mask preview — the standard secondary
+    /// correction. Parameters: <see cref="EffectParamNames.HueCenter"/>, <see cref="EffectParamNames.HueWidth"/>,
+    /// <see cref="EffectParamNames.HueSoftness"/>, <see cref="EffectParamNames.SatLow"/>/<see cref="EffectParamNames.SatHigh"/>,
+    /// <see cref="EffectParamNames.LumaLow"/>/<see cref="EffectParamNames.LumaHigh"/>,
+    /// <see cref="EffectParamNames.RangeSoftness"/>, <see cref="EffectParamNames.HueShift"/>,
+    /// <see cref="EffectParamNames.Saturation"/>, <see cref="EffectParamNames.Exposure"/>,
+    /// <see cref="EffectParamNames.ShowMask"/>.
+    /// </summary>
+    public const string HslQualifier = "builtin.hsl.qualify";
+
+    /// <summary>
     /// Audio gain/pan (PLAN.md step 31): a static per-chain-stage gain (<see cref="EffectParamNames.GainDb"/>)
     /// and stereo balance (<see cref="EffectParamNames.Pan"/>), the simplest audio DSP stage.
     /// </summary>
@@ -119,8 +153,110 @@ public static class EffectParamNames
     /// <summary>Contrast around mid-grey (1.0 = unchanged) — <see cref="EffectTypeIds.Color"/>.</summary>
     public const string Contrast = "contrast";
 
-    /// <summary>Saturation (1.0 = unchanged, 0 = greyscale) — <see cref="EffectTypeIds.Color"/>.</summary>
+    /// <summary>Saturation (1.0 = unchanged, 0 = greyscale) — <see cref="EffectTypeIds.Color"/> and the
+    /// <see cref="EffectTypeIds.HslQualifier"/> correction.</summary>
     public const string Saturation = "saturation";
+
+    /// <summary>Vibrance in [-1, 1] (0 = unchanged): saturation weighted toward already-muted colours —
+    /// <see cref="EffectTypeIds.Color"/> (PLAN.md step 34).</summary>
+    public const string Vibrance = "vibrance";
+
+    /// <summary>Colour temperature in [-100, 100] (0 = neutral, positive = warmer) — <see cref="EffectTypeIds.WhiteBalance"/>.</summary>
+    public const string Temperature = "temperature";
+
+    /// <summary>Tint in [-100, 100] (0 = neutral, positive = magenta, negative = green) — <see cref="EffectTypeIds.WhiteBalance"/>.</summary>
+    public const string Tint = "tint";
+
+    // ── Lift / gamma / gain wheels (PLAN.md step 34) — each in [-1, 1], 0 = neutral. ──
+    /// <summary>Lift (shadows) master — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string LiftMaster = "liftMaster";
+    /// <summary>Lift red component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string LiftR = "liftR";
+    /// <summary>Lift green component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string LiftG = "liftG";
+    /// <summary>Lift blue component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string LiftB = "liftB";
+    /// <summary>Gamma (mids) master — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GammaMaster = "gammaMaster";
+    /// <summary>Gamma red component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GammaR = "gammaR";
+    /// <summary>Gamma green component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GammaG = "gammaG";
+    /// <summary>Gamma blue component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GammaB = "gammaB";
+    /// <summary>Gain (highlights) master — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GainMaster = "gainMaster";
+    /// <summary>Gain red component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GainR = "gainR";
+    /// <summary>Gain green component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GainG = "gainG";
+    /// <summary>Gain blue component — <see cref="EffectTypeIds.ColorWheels"/>.</summary>
+    public const string GainB = "gainB";
+
+    // ── Parametric curves (PLAN.md step 34) — five points per channel at inputs 0/¼/½/¾/1, each an
+    // output offset in [-1, 1] added to the identity (0 = unchanged). ──
+    /// <summary>Master (RGB) curve blacks point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveMasterBlacks = "curveMasterBlacks";
+    /// <summary>Master (RGB) curve shadows point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveMasterShadows = "curveMasterShadows";
+    /// <summary>Master (RGB) curve mids point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveMasterMids = "curveMasterMids";
+    /// <summary>Master (RGB) curve highlights point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveMasterHighlights = "curveMasterHighlights";
+    /// <summary>Master (RGB) curve whites point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveMasterWhites = "curveMasterWhites";
+    /// <summary>Red curve blacks point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveRedBlacks = "curveRedBlacks";
+    /// <summary>Red curve shadows point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveRedShadows = "curveRedShadows";
+    /// <summary>Red curve mids point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveRedMids = "curveRedMids";
+    /// <summary>Red curve highlights point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveRedHighlights = "curveRedHighlights";
+    /// <summary>Red curve whites point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveRedWhites = "curveRedWhites";
+    /// <summary>Green curve blacks point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveGreenBlacks = "curveGreenBlacks";
+    /// <summary>Green curve shadows point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveGreenShadows = "curveGreenShadows";
+    /// <summary>Green curve mids point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveGreenMids = "curveGreenMids";
+    /// <summary>Green curve highlights point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveGreenHighlights = "curveGreenHighlights";
+    /// <summary>Green curve whites point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveGreenWhites = "curveGreenWhites";
+    /// <summary>Blue curve blacks point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveBlueBlacks = "curveBlueBlacks";
+    /// <summary>Blue curve shadows point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveBlueShadows = "curveBlueShadows";
+    /// <summary>Blue curve mids point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveBlueMids = "curveBlueMids";
+    /// <summary>Blue curve highlights point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveBlueHighlights = "curveBlueHighlights";
+    /// <summary>Blue curve whites point — <see cref="EffectTypeIds.Curves"/>.</summary>
+    public const string CurveBlueWhites = "curveBlueWhites";
+
+    // ── HSL qualifier (PLAN.md step 34). ──
+    /// <summary>Keyed hue centre in degrees [0, 360) — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string HueCenter = "hueCenter";
+    /// <summary>Keyed hue half-width in degrees — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string HueWidth = "hueWidth";
+    /// <summary>Hue key edge softness in degrees — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string HueSoftness = "hueSoftness";
+    /// <summary>Keyed saturation range lower bound in [0, 1] — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string SatLow = "satLow";
+    /// <summary>Keyed saturation range upper bound in [0, 1] — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string SatHigh = "satHigh";
+    /// <summary>Keyed luma range lower bound in [0, 1] — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string LumaLow = "lumaLow";
+    /// <summary>Keyed luma range upper bound in [0, 1] — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string LumaHigh = "lumaHigh";
+    /// <summary>Saturation/luma key edge softness in [0, 0.5] — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string RangeSoftness = "rangeSoftness";
+    /// <summary>Hue rotation applied to keyed pixels, in degrees — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string HueShift = "hueShift";
+    /// <summary>Mask preview toggle (≥ 0.5 shows the key as greyscale) — <see cref="EffectTypeIds.HslQualifier"/>.</summary>
+    public const string ShowMask = "showMask";
 
     /// <summary>Gain in decibels (0 = unity) — <see cref="EffectTypeIds.AudioGain"/>.</summary>
     public const string GainDb = "gainDb";

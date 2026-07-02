@@ -256,8 +256,16 @@
                   <RadioButton x:Name="ProgramTab" Classes="tool" GroupName="Monitor" Content="Program" IsChecked="True" />
                   <RadioButton x:Name="SourceTab" Classes="tool" GroupName="Monitor" Content="Source" />
                 </StackPanel>
-                <!-- Safe-area / framing-grid overlay toggle + the Fit ▾ zoom level. -->
+                <!-- Grading scopes selector (PLAN.md step 34) + safe-area / framing-grid overlay toggle +
+                     the Fit ▾ zoom level. -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <ComboBox x:Name="ScopeBox" MinWidth="112" FontSize="12" SelectedIndex="0">
+                    <ComboBoxItem>No Scopes</ComboBoxItem>
+                    <ComboBoxItem>Waveform</ComboBoxItem>
+                    <ComboBoxItem>RGB Parade</ComboBoxItem>
+                    <ComboBoxItem>Vectorscope</ComboBoxItem>
+                    <ComboBoxItem>Histogram</ComboBoxItem>
+                  </ComboBox>
                   <ToggleButton x:Name="GuidesToggle" Content="Guides" FontSize="12" Padding="8,3" />
                   <ComboBox x:Name="ZoomBox" MinWidth="76" FontSize="12" SelectedIndex="0">
                     <ComboBoxItem>Fit</ComboBoxItem>
@@ -313,6 +321,13 @@
                            FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource MutedText}"
                            Text="0:00.00" />
               </Grid>
+            </Border>
+
+            <!-- Grading scopes (PLAN.md step 34): waveform / RGB parade / vectorscope / histogram of the
+                 monitor composite, shown under the picture when a scope is selected in the header. -->
+            <Border x:Name="ScopeHost" DockPanel.Dock="Bottom" Height="170" IsVisible="False"
+                    BorderBrush="{DynamicResource Edge}" BorderThickness="0,1,0,0">
+              <local:ScopeView x:Name="ScopePanel" />
             </Border>
 
             <!-- Both monitors (Program/Source) present through this one surface; the active tab swaps the

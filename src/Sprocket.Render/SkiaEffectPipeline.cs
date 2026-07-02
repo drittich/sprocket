@@ -40,14 +40,18 @@ half4 main(float2 coord) {
     return src.eval(coord) * opacity;
 }";
 
-    // Color — exposure/contrast/saturation on premultiplied colour (PLAN.md step 16). All three operations are
-    // premultiplied-safe: where alpha is 0 the result stays 0, so they compose correctly over the chain (and a
-    // shrunk Transform's transparent surround stays transparent). rgb is clamped to [0, a] to stay valid premult.
+    // Color — exposure/contrast/saturation/vibrance on premultiplied colour (PLAN.md steps 16/34). All
+    // operations are premultiplied-safe: where alpha is 0 the result stays 0, so they compose correctly over
+    // the chain (and a shrunk Transform's transparent surround stays transparent). Vibrance is saturation
+    // weighted toward already-muted colours (its boost fades as a pixel's own saturation rises), so skin
+    // tones and saturated areas move less than flat ones — the Lightroom/Lumetri behaviour. rgb is clamped
+    // to [0, a] to stay valid premult.
     private const string ColorSksl = @"
 uniform shader src;
 uniform float exposure;
 uniform float contrast;
 uniform float saturation;
+uniform float vibrance;
 half4 main(float2 coord) {
     half4 c = src.eval(coord);
     float a = c.a;
@@ -56,6 +60,10 @@ half4 main(float2 coord) {
     rgb = (rgb - mid) * contrast + mid;
     float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
     rgb = mix(float3(luma), rgb, saturation);
+    float mx = max(rgb.r, max(rgb.g, rgb.b));
+    float mn = min(rgb.r, min(rgb.g, rgb.b));
+    float satNow = mx <= 0.0 ? 0.0 : (mx - mn) / mx;
+    rgb = mix(float3(luma), rgb, 1.0 + vibrance * (1.0 - satNow));
     rgb = clamp(rgb, 0.0, a);
     return half4(half3(rgb), c.a);
 }";
@@ -138,7 +146,15 @@ half4 main(float2 coord) {
     private static readonly object RegistryGate = new();
     private static readonly Dictionary<string, IVideoEffect> Registry = new(StringComparer.Ordinal);
 
-    static SkiaEffectPipeline() => RegisterEffect(new Effects.AcesFilmicEffect());
+    static SkiaEffectPipeline()
+    {
+        RegisterEffect(new Effects.AcesFilmicEffect());
+        // The colour grading toolset (PLAN.md step 34) — registry effects like ACES, not pipeline cases.
+        RegisterEffect(new Effects.WhiteBalanceEffect());
+        RegisterEffect(new Effects.ColorWheelsEffect());
+        RegisterEffect(new Effects.CurvesEffect());
+        RegisterEffect(new Effects.HslQualifierEffect());
+    }
 
     /// <summary>
     /// Registers (or replaces) a shader-backed effect for all pipeline instances. Compiles the effect's SkSL
@@ -622,6 +638,7 @@ half4 main(float2 coord) {
                     ["exposure"] = (float)effect.Get(EffectParamNames.Exposure, 0.0),
                     ["contrast"] = (float)Math.Max(0.0, effect.Get(EffectParamNames.Contrast, 1.0)),
                     ["saturation"] = (float)Math.Max(0.0, effect.Get(EffectParamNames.Saturation, 1.0)),
+                    ["vibrance"] = (float)Math.Clamp(effect.Get(EffectParamNames.Vibrance, 0.0), -1.0, 1.0),
                 };
                 var children = new SKRuntimeEffectChildren(_color) { ["src"] = src };
                 return _color.ToShader(uniforms, children);

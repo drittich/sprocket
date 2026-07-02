@@ -74,6 +74,10 @@ public partial class MainWindow : Window
 
     private bool _suppressSeek;        // guards programmatic scrubber updates from re-triggering a seek
     private bool _exporting;
+    private bool _rendering;           // a preview render is in flight (same quiesce discipline as export, PLAN.md step 32)
+    private RenderCache.RenderCacheService? _renderCache; // the session's preview render cache (PLAN.md step 32)
+    private DispatcherTimer? _renderCacheRefresh;          // debounces the post-edit re-hash (drags fire Changed per mutation)
+    private MenuItem? _renderSelectionMenuItem, _deleteRenderFilesMenuItem; // Sequence ▸ render commands (step 32)
     private Export.ExportQueue? _exportQueue;         // lazily built on first Export Queue use (PLAN.md step 29)
     private ExportQueueWindow? _exportQueueWindow;    // the (reused) queue window, or null when closed
     private int _savedUndoCount;       // history depth at the last save; document is clean while it matches
@@ -184,6 +188,18 @@ public partial class MainWindow : Window
         if (_project is not null)
             _autosave = new AutosaveService(_project, _history, () => _currentProjectPath);
 
+        // Preview render cache (PLAN.md step 32): the cache dir is derived from the project path at session
+        // start; still-valid renders from an earlier session validate immediately (content-hash keyed). Wire
+        // the playback seams so the engine replays cached video segments and the feeder cached audio.
+        if (_project is not null)
+        {
+            _renderCache = new RenderCache.RenderCacheService(_project, projectPath);
+            if (_engine is not null)
+                _engine.RenderCache = _renderCache;
+            if (_audioClock is not null)
+                _audioClock.RenderCache = _renderCache;
+        }
+
         if (_engine is null)
         {
             // No media: the shell still renders; just disable the live controls.
@@ -246,6 +262,8 @@ public partial class MainWindow : Window
         _telemetryTimer?.Stop(); // stop the status-bar poll (harmless if already idle)
         _statsOverlay?.Close(); // tear down the diagnostics overlay's poll timer
         _autosave?.Dispose(); // stop the autosave timer for this session
+        _renderCacheRefresh?.Stop();
+        _renderCache?.Dispose(); // releases any open cached-audio readers (PLAN.md step 32)
         _thumbnails?.Dispose(); // releases the cached thumbnail bitmaps
         _ = _source?.DisposeAsync(); // tears down the Source monitor's decoder/engine if one is open
         base.OnClosed(e);
@@ -374,6 +392,16 @@ public partial class MainWindow : Window
         _openSequenceMenuItem = this.FindControl<MenuItem>("OpenSequenceMenuItem")!;
         this.FindControl<MenuItem>("SequenceMenu")!.SubmenuOpened += (_, _) => RefreshSequenceMenu();
 
+        // Preview render cache commands (PLAN.md step 32).
+        this.FindControl<MenuItem>("RenderInOutMenuItem")!.Click += (_, _) =>
+            _ = RenderRangeAsync(RenderCacheScope.Video, useSelection: false);
+        _renderSelectionMenuItem = this.FindControl<MenuItem>("RenderSelectionMenuItem")!;
+        _renderSelectionMenuItem.Click += (_, _) => _ = RenderRangeAsync(RenderCacheScope.Video, useSelection: true);
+        this.FindControl<MenuItem>("RenderAudioMenuItem")!.Click += (_, _) =>
+            _ = RenderRangeAsync(RenderCacheScope.Audio, useSelection: false);
+        _deleteRenderFilesMenuItem = this.FindControl<MenuItem>("DeleteRenderFilesMenuItem")!;
+        _deleteRenderFilesMenuItem.Click += (_, _) => _ = DeleteRenderFilesAsync();
+
         // ── Window ──
         this.FindControl<MenuItem>("ResetLayoutMenuItem")!.Click += (_, _) => ResetLayout();
     }
@@ -429,6 +457,12 @@ public partial class MainWindow : Window
         else if (shift && e.Key == Key.M) { JumpToMarker(+1); e.Handled = true; }
         else if (e.Key == Key.M) { AddMarker(); e.Handled = true; }
         else if (shift && e.Key == Key.Z) { _timeline?.ZoomToFit(); e.Handled = true; }
+        // Timeline in/out marks (PLAN.md step 32): I / O set at the playhead (the Premiere convention), Alt+I /
+        // Alt+O clear. Ctrl+I (Import) and Ctrl+O (Open) are handled above the text guard and never reach here.
+        else if (alt && e.Key == Key.I) { ClearMark(inPoint: true); e.Handled = true; }
+        else if (alt && e.Key == Key.O) { ClearMark(inPoint: false); e.Handled = true; }
+        else if (e.Key == Key.I) { SetMarkAtPlayhead(inPoint: true); e.Handled = true; }
+        else if (e.Key == Key.O) { SetMarkAtPlayhead(inPoint: false); e.Handled = true; }
         else if (e.Key == Key.Space) { if (!_exporting) _active?.TogglePlayPause(); e.Handled = true; }
     }
 
@@ -957,6 +991,7 @@ public partial class MainWindow : Window
         timeline.ClipPlaced += UpdateTimelineHeader; // a media-bin drop / paste may extend the timeline
         timeline.Status += SetStatus;                 // transition hints, etc. (PLAN.md step 25)
         WireTrackRename(timeline);
+        UpdateRenderBar(); // initial render-bar state (a reopened project may already have valid renders, step 32)
 
         this.FindControl<Button>("ZoomInButton")!.Click += (_, _) => timeline.ZoomIn();
         this.FindControl<Button>("ZoomOutButton")!.Click += (_, _) => timeline.ZoomOut();
@@ -1391,6 +1426,10 @@ public partial class MainWindow : Window
         // (it honours track.Enabled and resolves each clip's effects at the playhead) over the already-held native
         // frames, so a repaint alone reflects the edit with no re-decode. (Null until the transport is wired.)
         _preview?.InvalidateVisual();
+
+        // Render cache (PLAN.md step 32): every model edit may invalidate (or, on undo, re-validate) cached
+        // ranges. Re-hashing per Changed would run once per mutation during a drag, so debounce it.
+        ScheduleRenderCacheRefresh();
     }
 
     // ── Sequences: multiple sequences + nested/compound clips (PLAN.md step 23) ─────────────────────
@@ -1455,9 +1494,15 @@ public partial class MainWindow : Window
         }
 
         _timeline?.OnActiveSequenceChanged(); // drop the (old-sequence) selection + repaint on the new timeline
+        if (_timeline is not null)
+        {
+            _timeline.MarkIn = null;  // in/out marks are per-sequence UI state; the old range is meaningless here
+            _timeline.MarkOut = null;
+        }
         UpdateSequenceBadge();
         UpdateTelemetry();
         UpdateTimelineHeader();
+        RefreshRenderCache(); // the render bar + playable cached segments follow the active sequence (step 32)
     }
 
     /// <summary>On Sequence-menu open: enables Nest only with a selection, and (re)builds the Open Sequence
@@ -1485,7 +1530,263 @@ public partial class MainWindow : Window
         }
         _openSequenceMenuItem.ItemsSource = items;
         _openSequenceMenuItem.IsEnabled = items.Count > 0;
+
+        // Render cache commands (PLAN.md step 32): Render Selection needs a selected clip, and Delete Render
+        // Files shows the cache's current disk footprint so the user sees what deleting reclaims.
+        if (_renderSelectionMenuItem is not null)
+            _renderSelectionMenuItem.IsEnabled = _selectedClip is not null && _renderCache is not null;
+        if (_deleteRenderFilesMenuItem is not null)
+        {
+            long size = _renderCache?.SizeBytes() ?? 0;
+            _deleteRenderFilesMenuItem.Header = size > 0
+                ? $"_Delete Render Files… ({FormatBytes(size)})"
+                : "_Delete Render Files…";
+            _deleteRenderFilesMenuItem.IsEnabled = _renderCache is not null && size > 0;
+        }
     }
+
+    // ── Preview render cache (PLAN.md step 32, ARCHITECTURE.md §20) ─────────────────────────────────
+
+    /// <summary>Schedules a debounced render-cache re-validation + render-bar refresh (a drag fires the history's
+    /// Changed once per mutation; one re-hash 250 ms after the last edit is enough).</summary>
+    private void ScheduleRenderCacheRefresh()
+    {
+        if (_renderCache is null)
+            return;
+        if (_renderCacheRefresh is null)
+        {
+            _renderCacheRefresh = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _renderCacheRefresh.Tick += (_, _) =>
+            {
+                _renderCacheRefresh!.Stop();
+                RefreshRenderCache();
+            };
+        }
+        _renderCacheRefresh.Stop();
+        _renderCacheRefresh.Start();
+    }
+
+    /// <summary>Re-validates every cached segment against the current model (an invalidating edit turns its range
+    /// yellow/red; undoing it turns the range green again with no re-render) and repaints the render bar.</summary>
+    private void RefreshRenderCache()
+    {
+        _renderCache?.Refresh();
+        UpdateRenderBar();
+    }
+
+    /// <summary>Recomputes the timeline's render-bar spans: green over valid cached video, red over un-rendered
+    /// nested sequences / transitions, yellow over un-rendered effect-bearing content.</summary>
+    private void UpdateRenderBar()
+    {
+        if (_timeline is null || _project is null)
+            return;
+        var valid = new List<(Timecode, Timecode)>();
+        if (_renderCache is not null)
+        {
+            foreach ((Timecode segIn, Timecode segOut, RenderCacheScope scope, bool isValid) in _renderCache.SegmentsForActiveSequence())
+            {
+                if (scope == RenderCacheScope.Video && isValid)
+                    valid.Add((segIn, segOut));
+            }
+        }
+        _timeline.RenderSpans = RenderCache.RenderBarModel.Compute(_project.Timeline, valid);
+    }
+
+    /// <summary>Sets the timeline in (I) or out (O) mark at the Program playhead. Setting an in at/after the out
+    /// (or vice versa) drops the now-inconsistent other mark, so the range stays well-formed.</summary>
+    private void SetMarkAtPlayhead(bool inPoint)
+    {
+        if (_timeline is null || _engine is null)
+            return;
+        Timecode pos = _engine.Position;
+        if (inPoint)
+        {
+            _timeline.MarkIn = pos;
+            if (_timeline.MarkOut is { } markOut && markOut <= pos)
+                _timeline.MarkOut = null;
+            SetStatus($"In point set at {FormatTime(pos)}");
+        }
+        else
+        {
+            _timeline.MarkOut = pos;
+            if (_timeline.MarkIn is { } markIn && markIn >= pos)
+                _timeline.MarkIn = null;
+            SetStatus($"Out point set at {FormatTime(pos)}");
+        }
+    }
+
+    /// <summary>Clears the timeline in (Alt+I) or out (Alt+O) mark.</summary>
+    private void ClearMark(bool inPoint)
+    {
+        if (_timeline is null)
+            return;
+        if (inPoint)
+            _timeline.MarkIn = null;
+        else
+            _timeline.MarkOut = null;
+        SetStatus(inPoint ? "In point cleared" : "Out point cleared");
+    }
+
+    /// <summary>
+    /// Sequence ▸ Render In to Out / Render Selection / Render Audio (PLAN.md step 32): pre-renders a range of the
+    /// active sequence to the cache — the composited video to a fast all-intra intermediate, or the master mix to
+    /// PCM — so playback replays it instead of recomputing every pass. The range is the in/out marks (falling back
+    /// to the whole sequence) or the selected clip's span. Quiesces every in-process decode pipeline first, exactly
+    /// as export does (a second concurrent libav* pipeline crashes the in-process muxer), renders on a background
+    /// task with a cancellable progress dialog, then resumes; the committed segment plays back immediately.
+    /// </summary>
+    private async Task RenderRangeAsync(RenderCacheScope scope, bool useSelection)
+    {
+        if (_rendering || _exporting || _project is null || _renderCache is null || _engine is null)
+            return;
+
+        Sequence sequence = _project.ActiveSequence;
+        Timecode duration = sequence.Timeline.Duration;
+        if (duration <= Timecode.Zero)
+        {
+            SetStatus("Nothing to render — the timeline is empty.");
+            return;
+        }
+
+        Timecode rangeIn, rangeOut;
+        if (useSelection)
+        {
+            if (_selectedClip is not { } clip)
+            {
+                SetStatus("Select a clip to render.");
+                return;
+            }
+            rangeIn = clip.TimelineStart;
+            rangeOut = clip.TimelineEnd;
+        }
+        else
+        {
+            rangeIn = _timeline?.MarkIn ?? Timecode.Zero;
+            rangeOut = _timeline?.MarkOut ?? duration;
+        }
+        if (rangeIn < Timecode.Zero)
+            rangeIn = Timecode.Zero;
+        if (rangeOut > duration)
+            rangeOut = duration;
+        if (rangeOut <= rangeIn)
+        {
+            SetStatus("Nothing to render — the range is empty.");
+            return;
+        }
+
+        int sampleRate = sequence.Timeline.SampleRate > 0 ? sequence.Timeline.SampleRate : 48000;
+        RenderCache.PendingRender pending = _renderCache.Prepare(
+            scope, sequence.Id, rangeIn, rangeOut,
+            scope == RenderCacheScope.Audio ? sampleRate : 0,
+            scope == RenderCacheScope.Audio ? 2 : 0);
+        if (_renderCache.IsAlreadyRendered(pending))
+        {
+            SetStatus("That range is already rendered.");
+            return;
+        }
+        string outputPath = _renderCache.FilePathFor(pending);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+
+        _rendering = true;
+        SetEnabled(false); // same gating as export: no new in-process decode pipeline may start mid-render
+
+        bool sourceWasActive = ReferenceEquals(_active, _source);
+        _source?.Deactivate();
+        await _engine.SuspendAsync();
+
+        using var cts = new CancellationTokenSource();
+        string jobName = scope == RenderCacheScope.Audio
+            ? $"Audio render {FormatTime(rangeIn)}–{FormatTime(rangeOut)}"
+            : $"Preview render {FormatTime(rangeIn)}–{FormatTime(rangeOut)}";
+        var dialog = new ExportProgressDialog(jobName, cts);
+        var progress = new Progress<double>(p => dialog.SetProgress(p));
+        _ = dialog.ShowDialog(this); // modal; dismissed in the finally
+
+        bool ok = false;
+        bool cancelled = false;
+        string? error = null;
+        try
+        {
+            var range = new ExportRange(rangeIn, rangeOut);
+            await Task.Run(() =>
+            {
+                if (scope == RenderCacheScope.Audio)
+                    PreviewRenderer.RenderAudio(
+                        _project, sequence.Id, range, outputPath, PluginService.AudioEffectFactory, progress, cts.Token);
+                else
+                    PreviewRenderer.RenderVideo(_project, sequence.Id, range, outputPath, progress, cts.Token);
+            });
+            ok = true;
+        }
+        catch (OperationCanceledException)
+        {
+            cancelled = true; // PreviewRenderer deletes the partial file
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            dialog.CompleteAndClose();
+            _engine?.Resume();
+            if (sourceWasActive)
+                _source?.Activate();
+            _rendering = false;
+            SetEnabled(true);
+        }
+
+        if (ok)
+        {
+            _renderCache.Commit(pending); // playback picks the segment up on its next pump
+            UpdateRenderBar();
+            SetStatus($"Rendered {(scope == RenderCacheScope.Audio ? "audio " : "")}{FormatTime(rangeIn)}–{FormatTime(rangeOut)}");
+        }
+        else if (cancelled)
+        {
+            SetStatus("Render cancelled");
+        }
+        else
+        {
+            SetStatus($"Render failed: {error}");
+            await MessageDialog.Show(this, "Render Failed", $"The preview render could not be completed:\n{error}");
+        }
+    }
+
+    /// <summary>Sequence ▸ Delete Render Files… (PLAN.md step 32): confirms with the cache's location and current
+    /// disk footprint, then discards it — only ever forcing re-renders, never losing project data (§20).</summary>
+    private async Task DeleteRenderFilesAsync()
+    {
+        if (_renderCache is null)
+            return;
+
+        long size = _renderCache.SizeBytes();
+        if (size == 0)
+        {
+            SetStatus("No render files to delete.");
+            return;
+        }
+
+        bool confirmed = await ConfirmDialog.Show(this, "Delete Render Files",
+            $"Delete this project's preview render files?\n\n{_renderCache.Directory}\nCurrently using {FormatBytes(size)}.\n\n" +
+            "Rendered ranges will play live again until re-rendered; no project data is affected.",
+            "Delete", "Cancel");
+        if (!confirmed)
+            return;
+
+        long reclaimed = _renderCache.DeleteAll();
+        UpdateRenderBar();
+        SetStatus($"Deleted render files — reclaimed {FormatBytes(reclaimed)}");
+    }
+
+    /// <summary>A human disk size for the cache readout (binary units, one decimal from MB up).</summary>
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1L << 30 => $"{bytes / (double)(1L << 30):0.0} GB",
+        >= 1L << 20 => $"{bytes / (double)(1L << 20):0.0} MB",
+        >= 1L << 10 => $"{bytes / (double)(1L << 10):0} KB",
+        _ => $"{bytes} B",
+    };
 
     /// <summary>Sequence ▸ Settings: shows the active sequence's render format and lets the user rename it
     /// (undoable). The format is fixed after creation in this build (a format change would re-scale every clip's

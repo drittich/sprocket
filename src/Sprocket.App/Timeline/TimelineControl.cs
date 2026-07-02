@@ -73,6 +73,15 @@ public sealed class TimelineControl : Control
     private static readonly IBrush VideoGhostFill = new ImmutableSolidColorBrush(((ISolidColorBrush)VideoFill).Color, 0.55);
     private static readonly IBrush AudioGhostFill = new ImmutableSolidColorBrush(((ISolidColorBrush)AudioFill).Color, 0.55);
 
+    // Render bar (PLAN.md step 32): the classic NLE strip at the top of the ruler — green = a valid cached
+    // render covers the span, red = needs render and can't fully composite live (nests, transitions),
+    // yellow = un-rendered effects. In/out marks (I / O) shade their range over the ruler.
+    private static readonly IBrush RenderedBar = Brush("#3FA34D");
+    private static readonly IBrush NeedsRenderBar = Brush("#D9A514");
+    private static readonly IBrush NeedsRenderHeavyBar = Brush("#C94F4F");
+    private static readonly IBrush InOutFill = new ImmutableSolidColorBrush(Colors.White, 0.08);
+    private static readonly Pen InOutPen = new(new ImmutableSolidColorBrush(Palette.Accent, 0.9), 1);
+
     private Project? _project;
     private EditHistory? _history;
     private PlaybackEngine? _engine;
@@ -87,6 +96,11 @@ public sealed class TimelineControl : Control
 
     private Clip? _selected;
     private bool _scrubbing;
+
+    // Render bar + in/out marks (PLAN.md step 32). The spans are computed by RenderBarModel (MainWindow pushes
+    // fresh ones after every model change); the marks are session UI state driving Render In to Out.
+    private IReadOnlyList<RenderCache.RenderBarSpan> _renderSpans = [];
+    private Timecode? _markIn, _markOut;
 
     // The selected transition (PLAN.md step 25), mutually exclusive with the clip selection. Selecting one clears
     // the other; Delete removes whichever is selected.
@@ -825,6 +839,8 @@ public sealed class TimelineControl : Control
         }
 
         DrawRuler(ctx, size);
+        DrawInOutRange(ctx, size);
+        DrawRenderBar(ctx, size);
         DrawClips(ctx, size, lanes);
         DrawTransitions(ctx, size, lanes);
         DrawSequenceMarkers(ctx, size);
@@ -931,6 +947,83 @@ public sealed class TimelineControl : Control
         ctx.DrawRectangle(isVideo ? VideoGhostFill : AudioGhostFill, SelectPen, rounded);
         if (_movePreviewCopy)
             ctx.DrawText(Label("＋", 13, Brushes.White), new Point(rect.X + 6, rect.Y + 3));
+    }
+
+    /// <summary>The render-bar spans to draw over the ruler (PLAN.md step 32) — computed by
+    /// <see cref="RenderCache.RenderBarModel"/>; MainWindow pushes fresh spans after every model change.</summary>
+    public IReadOnlyList<RenderCache.RenderBarSpan> RenderSpans
+    {
+        get => _renderSpans;
+        set
+        {
+            _renderSpans = value ?? [];
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>The timeline in point (the I key), or <see langword="null"/> when unset — with
+    /// <see cref="MarkOut"/> it scopes Render In to Out (PLAN.md step 32). Session-only UI state.</summary>
+    public Timecode? MarkIn
+    {
+        get => _markIn;
+        set { _markIn = value; InvalidateVisual(); }
+    }
+
+    /// <summary>The timeline out point (the O key), or <see langword="null"/> when unset.</summary>
+    public Timecode? MarkOut
+    {
+        get => _markOut;
+        set { _markOut = value; InvalidateVisual(); }
+    }
+
+    // The render bar (PLAN.md step 32): a 3px strip along the very top of the ruler, the familiar
+    // green / yellow / red rendered-state model.
+    private void DrawRenderBar(DrawingContext ctx, Size size)
+    {
+        if (_renderSpans.Count == 0)
+            return;
+        using var _ = ctx.PushClip(new Rect(_headerWidth, 0, size.Width - _headerWidth, RulerHeight));
+        foreach (RenderCache.RenderBarSpan span in _renderSpans)
+        {
+            double x0 = TimelineMath.XAtTicks(span.InTicks, _pxPerSecond, _scrollX, _headerWidth);
+            double x1 = TimelineMath.XAtTicks(span.OutTicks, _pxPerSecond, _scrollX, _headerWidth);
+            if (x1 < _headerWidth || x0 > size.Width)
+                continue;
+            IBrush brush = span.State switch
+            {
+                RenderCache.RenderBarState.Rendered => RenderedBar,
+                RenderCache.RenderBarState.NeedsRenderHeavy => NeedsRenderHeavyBar,
+                _ => NeedsRenderBar,
+            };
+            ctx.FillRectangle(brush, new Rect(x0, 0, Math.Max(1, x1 - x0), 3));
+        }
+    }
+
+    // The in/out range (I / O keys, PLAN.md step 32): a light shade across the ruler between the marks, with an
+    // accent tick at each set mark — the Premiere work-area idiom, scoping Render In to Out.
+    private void DrawInOutRange(DrawingContext ctx, Size size)
+    {
+        if (_markIn is null && _markOut is null)
+            return;
+        using var _ = ctx.PushClip(new Rect(_headerWidth, 0, size.Width - _headerWidth, RulerHeight));
+
+        long inTicks = _markIn?.Ticks ?? 0;
+        long outTicks = _markOut?.Ticks ?? _project?.Timeline.Duration.Ticks ?? inTicks;
+        double x0 = TimelineMath.XAtTicks(inTicks, _pxPerSecond, _scrollX, _headerWidth);
+        double x1 = TimelineMath.XAtTicks(outTicks, _pxPerSecond, _scrollX, _headerWidth);
+        if (x1 > x0)
+            ctx.FillRectangle(InOutFill, new Rect(x0, 0, x1 - x0, RulerHeight));
+
+        if (_markIn is { } markIn)
+        {
+            double x = TimelineMath.XAtTicks(markIn.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+            ctx.DrawLine(InOutPen, new Point(x, 0), new Point(x, RulerHeight));
+        }
+        if (_markOut is { } markOut)
+        {
+            double x = TimelineMath.XAtTicks(markOut.Ticks, _pxPerSecond, _scrollX, _headerWidth);
+            ctx.DrawLine(InOutPen, new Point(x, 0), new Point(x, RulerHeight));
+        }
     }
 
     private void DrawRuler(DrawingContext ctx, Size size)

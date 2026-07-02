@@ -239,4 +239,5 @@ internal sealed record SettingsDto(
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(ProjectDto))]
 [JsonSerializable(typeof(MediaLinksDto))]
+[JsonSerializable(typeof(RenderHashDto))]
 internal sealed partial class SprocketJsonContext : JsonSerializerContext;

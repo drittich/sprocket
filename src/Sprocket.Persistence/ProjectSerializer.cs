@@ -131,7 +131,7 @@ public static class ProjectSerializer
 
     /// <summary>Converts the multicam sources to DTOs, returning <see langword="null"/> when there are none so a
     /// multicam-free project serializes byte-identically to a pre-step-24 file (WhenWritingNull).</summary>
-    private static List<MulticamSourceDto>? ToMulticamList(List<MulticamSource> sources)
+    internal static List<MulticamSourceDto>? ToMulticamList(List<MulticamSource> sources)
     {
         if (sources.Count == 0)
             return null;
@@ -192,7 +192,7 @@ public static class ProjectSerializer
         IsHdr: i.IsHdr ? true : null,
         IsVariableFrameRate: i.IsVariableFrameRate ? true : null);
 
-    private static TimelineDto ToDto(Timeline t)
+    internal static TimelineDto ToDto(Timeline t)
     {
         var tracks = new List<TrackDto>();
         foreach (Track track in t.Tracks)
@@ -203,7 +203,7 @@ public static class ProjectSerializer
 
     /// <summary>Converts an audio effect chain to DTOs, returning <see langword="null"/> when empty so a
     /// chain-less track/timeline/project serializes byte-identically to a pre-step-31 file (WhenWritingNull).</summary>
-    private static List<EffectDto>? ToEffectList(List<EffectInstance> effects)
+    internal static List<EffectDto>? ToEffectList(List<EffectInstance> effects)
     {
         if (effects.Count == 0)
             return null;
@@ -225,7 +225,7 @@ public static class ProjectSerializer
         return list;
     }
 
-    private static TrackDto ToDto(Track track)
+    internal static TrackDto ToDto(Track track)
     {
         var clips = new List<ClipDto>();
         foreach (Clip c in track.Clips)

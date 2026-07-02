@@ -2135,6 +2135,62 @@ Tags reference the [UI.md §4 checklist](UI.md).
     done render graph + the `IFrameSource` / `IPcmReader` seams; full value comes once sequences (step 23)
     and audio effects (step 31) exist, hence its place here, but the video side can ship with step 23.
     [ARCHITECTURE §20](ARCHITECTURE.md).
+    - **✅ DONE (Core `Rendering/RenderCacheSeams.cs`; `Sprocket.Playback/PlaybackEngine` cache player;
+      `Sprocket.Audio/AudioEngine` feeder splice; `Sprocket.Export/{PreviewRenderer,WavePcm}` + `ExportOptions`
+      additions; `Sprocket.Persistence/RenderCacheHasher`; App `RenderCache/{RenderCacheService,RenderCacheStore,
+      RenderBarModel}` + `TimelineControl` render bar/in-out marks + `MainWindow` Sequence-menu commands; 40 new
+      tests — Persistence +11, Export +9, Playback +4, Audio +2, App +14; full suite **851 green** (Core 250,
+      Media 34, Render 59, Audio 69, Playback 56, Export 86, Persistence 106, Plugins 10, App 181); clean build
+      (0 warnings), smoke launch exit 0.)** Memoization of the pure render graph, landed on the existing seams:
+      - **Core seams (§20).** `IVideoRenderCache` (position → the valid `CachedRenderSegment` covering it: a
+        content-addressed synthetic source id + range + intermediate file) and `IAudioRenderCache` (fill a feeder
+        buffer with cached master-mix PCM, whole-buffer coverage or refuse). The render graph itself is untouched
+        — only playback consults the seams, and **export never does** (§17, determinism verified by the suite's
+        untouched export round-trips).
+      - **Keying & exact invalidation (Persistence).** `RenderCacheHasher.ComputeHash(project, sequence, range,
+        scope)` — SHA-256 over the range's **serializable state** (the same DTOs that persist, §12), filtered to
+        what can affect the output: overlapping clips + overlapping-window transitions per scope-matching track,
+        track/bus/master state (audio scope), every reachable nested sequence / multicam source (hashed whole,
+        transitively, cycle-safe), and referenced **media identity** (path+size+mtime, so a replaced source file
+        invalidates). Proven properties: edits outside the range or in the other scope leave the hash unchanged
+        (an audio gain ride never dirties a video render), and **undo re-validates without re-rendering** —
+        validity is `storedHash == currentHash`, recomputed (debounced) off the step-10 `EditHistory.Changed`.
+      - **Rendering (Export).** `PreviewRenderer` drives the identical deterministic offline pipeline export uses
+        (same render graph, full-res originals, never proxies): video → **all-intra** (GOP 1) H.264/MP4 at the
+        **ultrafast** preset with the platform **hardware encoders probed first** (NVENC/QSV/AMF / VideoToolbox /
+        VAAPI, software fallback — the OS-varying speed-first policy of §11), **video-only** (two additive
+        `ExportOptions` fields: `Preset`, `VideoOnly`); audio → the master mix as **uncompressed float32 WAV**
+        (`WavePcmWriter`/`WavePcmReader`, pure managed I/O — bit-identical to a live mix, no codec). All-intra
+        verified by a mid-file seek landing on target; a cancelled/failed render deletes the partial file.
+      - **Playback splice.** `PlaybackEngine.RenderCache`: inside a valid segment the engine pumps a single
+        synthetic **cache player** decoding the intermediate through the normal native ring (pixels stay native,
+        §1) while the per-track decoders idle; `UseLayers` presents the cached frame as the one composited layer
+        (effects/opacity baked in). Boundary crossings re-seek whichever side resumes; an invalidated segment
+        stops resolving on the next pump; an unreadable file degrades to live compositing (§15). This is what
+        makes **nested sequences and transition blends preview at full fidelity once rendered** (the step-23/25
+        deferrals). `AudioEngine.RenderCache`: the feeder replays cached PCM when a buffer is fully covered, else
+        mixes live — the `IPcmReader` seam step 41's heavy reverb freeze consumes.
+      - **Storage (App `RenderCacheStore`).** A cache dir **beside the project** — `Sprocket Render Files/<project
+        name>/` (the Premiere convention; per-user fallback for untitled projects, `SPROCKET_RENDER_CACHE_DIR`
+        override) — holding the intermediates + a small manifest (scope, sequence, range, hash, file). Local,
+        derived, never in the project file, **safely discardable**; a reopened project's still-matching renders
+        validate immediately with no re-render. Atomic manifest writes; orphaned files swept best-effort.
+      - **Surface (App).** The **render bar** over the timeline ruler (`RenderBarModel`, pure + tested): green =
+        valid cached render, red = un-rendered nests/transition windows (can't fully composite live), yellow =
+        un-rendered effect chains / adjustment layers. **Timeline in/out marks** (I / O at the playhead, Alt+I/O
+        clear, drawn as a shaded ruler range — session UI state, cleared on sequence switch). Sequence menu:
+        **Render In to Out** (marks, else the whole sequence), **Render Selection**, **Render Audio**, and
+        **Delete Render Files…** — which shows the cache's **current disk footprint** in the menu item and the
+        confirm dialog (a small deliberate addition beyond the step text, matching Premiere/Resolve cache UI).
+        Renders run like export: quiesce every in-process decode pipeline (`SuspendAsync` — the ProxyTranscoder
+        muxer hazard), background task + cancellable progress dialog, resume; the committed segment plays back on
+        the next pump and re-rendering an unchanged range short-circuits ("already rendered").
+      - **Deferred (documented, on the same seams):** the **opt-in export reuse** of a full-quality matching cache
+        (export ignores the cache unconditionally today); the **bounded GPU texture ring** for short scrub ranges
+        (§20 lists it as an alternative store — the disk intermediate covers both today); per-clip/track **freeze
+        commands + Inspector badges** (step 41 consumes the delivered audio seam); OS-specific intermediate
+        codecs beyond the hardware-candidate probe (ProRes/MJPEG alternates); and relocating the cache dir on
+        Save-As mid-session (the new location is picked up on the next open; the old cache is discardable).
 33. **Plugins & advanced color management.** Plugin host (collectible `AssemblyLoadContext`,
     [ARCHITECTURE §13](ARCHITECTURE.md)), then OpenColorIO / ACES / OFX scene-linear color management.
     (The creative color-grading toolset — wheels, curves, qualifiers, scopes — is its own step, 34.)

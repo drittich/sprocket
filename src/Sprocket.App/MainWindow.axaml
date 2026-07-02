@@ -107,6 +107,14 @@
             <Separator />
             <MenuItem x:Name="NestMenuItem" Header="_Nest" IsEnabled="False" />
             <Separator />
+            <!-- Preview render cache (PLAN.md step 32): render commands + cache management. Render In to Out
+                 uses the timeline in/out marks (I / O keys; Alt+I / Alt+O clear) and falls back to the whole
+                 sequence when unset; Delete Render Files shows the cache's disk footprint on submenu-open. -->
+            <MenuItem x:Name="RenderInOutMenuItem" Header="_Render In to Out" />
+            <MenuItem x:Name="RenderSelectionMenuItem" Header="Render Se_lection" IsEnabled="False" />
+            <MenuItem x:Name="RenderAudioMenuItem" Header="Render _Audio" />
+            <MenuItem x:Name="DeleteRenderFilesMenuItem" Header="_Delete Render Files…" />
+            <Separator />
             <MenuItem x:Name="SequenceSettingsMenuItem" Header="Sequence _Settings…" />
           </MenuItem>
           <!-- Effects menu is populated from EffectCatalog at runtime (WireCommandMenus). -->

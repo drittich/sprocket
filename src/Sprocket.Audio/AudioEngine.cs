@@ -1,5 +1,6 @@
 using Sprocket.Audio.Loudness;
 using Sprocket.Core.Model;
+using Sprocket.Core.Rendering;
 using Sprocket.Core.Timing;
 
 namespace Sprocket.Audio;
@@ -69,6 +70,15 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
     /// integrated measurement restarts on <see cref="Seek"/>.
     /// </summary>
     public LoudnessSnapshot CurrentLoudness => _meter.TakeSnapshot();
+
+    /// <summary>
+    /// The preview render cache's audio side (ARCHITECTURE.md §20, PLAN.md step 32), or <see langword="null"/>
+    /// (the default) to always mix live. When set, the feeder asks it for cached master-mix PCM first and only
+    /// mixes when the buffer's span isn't fully covered by a valid cached range — replaying a pre-rendered
+    /// ("frozen") range instead of recomputing it every pass. Settable at any time from the UI thread (the
+    /// composition root wires it after the session is built); the feeder reads it per buffer.
+    /// </summary>
+    public IAudioRenderCache? RenderCache { get; set; }
 
     /// <summary>Raised when a feeder iteration throws (a decode/device hiccup). The feeder swallows it and
     /// keeps running so audio recovers on the next buffer — mirroring <c>PlaybackEngine.PumpError</c> — rather
@@ -173,7 +183,10 @@ public sealed class AudioEngine : IMasterClock, IAsyncDisposable
                     continue;
                 }
 
-                _mixer.MixInto(_mixBuffer, pos, _project); // mixing/decoding happens off the lock
+                // Replay the pre-rendered master mix when a valid cached range covers this whole buffer
+                // (ARCHITECTURE.md §20); otherwise mix live. Mixing/decoding happens off the lock.
+                if (RenderCache is not { } cache || !cache.TryRead(pos, _mixBuffer))
+                    _mixer.MixInto(_mixBuffer, pos, _project);
 
                 bool enqueued;
                 lock (_gate)

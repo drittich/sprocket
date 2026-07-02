@@ -116,6 +116,15 @@ public sealed class PlaybackEngine : IAsyncDisposable
     private readonly object _frameGate = new();
     private readonly List<VideoTrackPlayer> _players = [];
 
+    // Render-cache playback (ARCHITECTURE.md §20, PLAN.md step 32): while the playhead is inside a valid
+    // pre-rendered segment, a single synthetic player decodes the cached intermediate and the per-track players
+    // idle — replaying the memoized composite instead of recomputing it. Player/segment are swapped on the pump
+    // thread under _frameGate so UseLayers (UI thread) always sees a matched pair.
+    private VideoTrackPlayer? _cachePlayer;          // guarded by _frameGate for reads; swapped on the pump thread
+    private CachedRenderSegment? _cacheSegment;      // the segment _cachePlayer decodes; guarded by _frameGate
+    private bool _wasInCache;                        // pump thread only: whether the previous pump played the cache
+    private MediaRefId? _deadCacheId;                // pump thread only: last segment whose file failed to open
+
     private readonly object _invalidateGate = new();
     private readonly HashSet<MediaRefId> _invalidatedSources = [];
 
@@ -180,6 +189,21 @@ public sealed class PlaybackEngine : IAsyncDisposable
         _reconcile = true;
     }
 
+    /// <summary>
+    /// The preview render cache (ARCHITECTURE.md §20, PLAN.md step 32), or <see langword="null"/> (the default)
+    /// to always composite live. When set, each pump asks it for the valid pre-rendered segment covering the
+    /// playhead; inside one, the engine decodes the cached intermediate through the normal native path (a
+    /// synthetic single-layer source — the same seam media and proxies use) and the per-track decoders idle.
+    /// This is what lets nested sequences, transition blends, and heavy effect chains preview at full fidelity
+    /// once rendered. Settable at any time from the UI thread; honoured only by the factory (app) engine.
+    /// Export never consults this (§17).
+    /// </summary>
+    public IVideoRenderCache? RenderCache { get; set; }
+
+    /// <summary>How a cached segment's intermediate file is opened as a frame feed. Overridable by deterministic
+    /// tests (a fake feed avoids native decode); the default opens the file through the normal decode ring.</summary>
+    internal Func<string, IVideoFrameFeed?> CacheFeedOpener { get; set; } = OpenCacheFeed;
+
     /// <summary>Raised after any track's presented frame changes. Fires on the pump thread.</summary>
     public event Action? FramePresented;
 
@@ -232,6 +256,10 @@ public sealed class PlaybackEngine : IAsyncDisposable
         Timecode pos = Position;
         lock (_frameGate)
         {
+            // Inside a cached range the preview shows the rendered intermediate — report its decode, not the tracks'.
+            if (_cacheSegment is { } seg && seg.Contains(pos) && _cachePlayer is { DecodeInfo: { } cacheInfo })
+                return cacheInfo;
+
             VideoDecodeInfo? top = null; // bottom→top: the last match is the top-most layer the preview shows
             foreach (VideoTrack track in _project.Timeline.VideoTracks)
             {
@@ -354,6 +382,17 @@ public sealed class PlaybackEngine : IAsyncDisposable
         Resolution res = _project.Timeline.Resolution;
         lock (_frameGate)
         {
+            // Inside a valid pre-rendered range the composite IS the cached frame (ARCHITECTURE.md §20): present
+            // it as the single layer — effects/opacity/blend are already baked in. While the cache feed is still
+            // priming (no frame yet) fall through to the live layers so the preview never goes black.
+            if (_cacheSegment is { } seg && seg.Contains(pos) && _cachePlayer?.Current is { } cached)
+            {
+                use([new PresentedVideoLayer(
+                    cached.Pixels, cached.RowBytes, cached.Width, cached.Height, cached.Pts,
+                    [], 1.0, BlendMode.Normal)]);
+                return;
+            }
+
             var layers = new List<PresentedVideoLayer>(_players.Count);
             // Bottom→top: iterate video tracks in z-order and emit each active clip's layer. Media clips contribute
             // only when their player has a decoded frame; generator/adjustment clips contribute without a decoder
@@ -413,6 +452,12 @@ public sealed class PlaybackEngine : IAsyncDisposable
         Timecode pos = Position;
         lock (_frameGate)
         {
+            if (_cacheSegment is { } seg && seg.Contains(pos) && _cachePlayer?.Current is { } cached)
+            {
+                use(new PresentedFrame(cached.Pixels, cached.RowBytes, cached.Width, cached.Height, cached.Pts, []));
+                return;
+            }
+
             PresentedFrame? top = null;
             // Top-most = last enabled video track (in bottom→top order) that has a frame.
             foreach (VideoTrack track in _project.Timeline.VideoTracks)
@@ -538,6 +583,7 @@ public sealed class PlaybackEngine : IAsyncDisposable
             _lastPumpGen = gen;
             foreach (VideoTrackPlayer p in _players)
                 p.MarkNeedsSeek();
+            _cachePlayer?.MarkNeedsSeek();
         }
         bool force = forcePresent || seekChanged;
 
@@ -548,9 +594,26 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
         Timecode pos = PlaybackMath.ClampToTimeline(_clock.Now, Duration);
 
+        // Render cache (ARCHITECTURE.md §20): inside a valid pre-rendered segment, decode the cached intermediate
+        // through the synthetic cache player and let the per-track decoders idle; everywhere else composite live.
+        // Crossing the boundary in either direction re-seeks the side that resumes (its feeds haven't advanced
+        // with the playhead) and force-presents so the first frame across the boundary shows immediately.
+        bool inCache = await EnsureCacheStateAsync(pos).ConfigureAwait(false);
+        if (inCache != _wasInCache)
+        {
+            foreach (VideoTrackPlayer p in _players)
+                p.MarkNeedsSeek();
+            _cachePlayer?.MarkNeedsSeek();
+            force = true;
+            _wasInCache = inCache;
+        }
+
         bool promoted = false;
-        foreach (VideoTrackPlayer player in _players)
-            promoted |= await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
+        if (inCache)
+            promoted = await _cachePlayer!.PumpAsync(pos, force, ct).ConfigureAwait(false);
+        else
+            foreach (VideoTrackPlayer player in _players)
+                promoted |= await player.PumpAsync(pos, force, ct).ConfigureAwait(false);
 
         // Health counters for the diagnostics overlay (cumulative; read via GetStatistics).
         Interlocked.Increment(ref _pumpCount);
@@ -558,7 +621,7 @@ public sealed class PlaybackEngine : IAsyncDisposable
         // Generator / adjustment clips have no decoder to "promote" a frame, so they'd never trigger a repaint.
         // Repaint for them when playing (their content/effects may animate) or when a seek forces a present
         // (a scrub onto a title). A static synthetic clip while paused doesn't repaint every idle tick.
-        bool synthetic = (State == PlaybackState.Playing || force) && HasActiveSyntheticVideoClip(pos);
+        bool synthetic = (State == PlaybackState.Playing || force) && !inCache && HasActiveSyntheticVideoClip(pos);
         if (promoted || synthetic)
         {
             // Dropped frames = timeline frames we couldn't present in time and had to skip to keep pace with the
@@ -593,6 +656,84 @@ public sealed class PlaybackEngine : IAsyncDisposable
 
         PositionChanged?.Invoke(pos);
         HandleEnd(pos);
+    }
+
+    /// <summary>
+    /// Resolves the render-cache segment covering <paramref name="pos"/> and keeps the synthetic cache player in
+    /// step with it: builds a player when the playhead enters a (new) segment, tears it down when it leaves or the
+    /// segment is invalidated (so the intermediate's file handle is released promptly and Delete Render Files can
+    /// remove it). Returns whether the cache covers <paramref name="pos"/> with a decodable feed — when the file
+    /// fails to open the segment is remembered as dead and the engine composites live instead (§15). Pump thread only.
+    /// </summary>
+    private async ValueTask<bool> EnsureCacheStateAsync(Timecode pos)
+    {
+        CachedRenderSegment? seg = _reconcile ? RenderCache?.ResolveAt(pos) : null;
+        if (seg is { } dead && dead.CacheId == _deadCacheId)
+            seg = null; // this segment's file failed to open once; don't retry every pump
+
+        if (seg is null)
+        {
+            if (_cachePlayer is not null)
+                await TearDownCachePlayerAsync().ConfigureAwait(false);
+            return false;
+        }
+
+        CachedRenderSegment target = seg.Value;
+        if (_cacheSegment is { } current && current.CacheId == target.CacheId)
+            return true; // already decoding this segment (ids are content-addressed, so the file never changes)
+
+        await TearDownCachePlayerAsync().ConfigureAwait(false);
+
+        // Open the intermediate eagerly so a failure is detectable (a lazily-failing factory would leave the
+        // engine "in cache" presenting nothing). The fixed-feed player never rebuilds — exactly right here.
+        IVideoFrameFeed? feed = CacheFeedOpener(target.FilePath);
+        if (feed is null)
+        {
+            _deadCacheId = target.CacheId;
+            return false;
+        }
+
+        // A synthetic one-clip track spanning the segment maps timeline→file time through the ordinary clip
+        // machinery: the intermediate's timestamps start at zero at the segment's in-point.
+        var track = new VideoTrack { Name = "(render cache)" };
+        track.Clips.Add(new Clip(target.CacheId, Timecode.Zero, target.End - target.Start, target.Start));
+        var player = new VideoTrackPlayer(track, feed, _frameGate);
+        lock (_frameGate)
+        {
+            _cachePlayer = player;
+            _cacheSegment = target;
+        }
+        return true;
+    }
+
+    /// <summary>Detaches and disposes the cache player (pump thread). The field swap happens under the frame gate
+    /// so the UI's <see cref="UseLayers"/> never sees a player whose buffers are being torn down.</summary>
+    private async Task TearDownCachePlayerAsync()
+    {
+        VideoTrackPlayer? old;
+        lock (_frameGate)
+        {
+            old = _cachePlayer;
+            _cachePlayer = null;
+            _cacheSegment = null;
+        }
+        if (old is not null)
+            await old.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>The default <see cref="CacheFeedOpener"/>: decodes a rendered intermediate through the normal
+    /// native decode ring (pixels stay in native buffers, ARCHITECTURE.md §1), or <see langword="null"/> when the
+    /// file can't be opened (the engine then composites live, §15).</summary>
+    private static IVideoFrameFeed? OpenCacheFeed(string path)
+    {
+        try
+        {
+            return new RingVideoFrameFeed(new VideoDecodeRing(MediaSource.Open(path)));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Whether any enabled video track has a decoder-less clip — generator, adjustment, or nested
@@ -742,6 +883,11 @@ public sealed class PlaybackEngine : IAsyncDisposable
             }
             foreach (VideoTrackPlayer player in stale)
                 await player.DisposeAsync().ConfigureAwait(false);
+
+            // The cache player is a decode ring too — it must not run alongside the export muxer either. The
+            // pump rebuilds it from the (unchanged, content-addressed) segment on Resume.
+            await TearDownCachePlayerAsync().ConfigureAwait(false);
+            _wasInCache = false;
         }
     }
 
@@ -793,6 +939,7 @@ public sealed class PlaybackEngine : IAsyncDisposable
         foreach (VideoTrackPlayer player in _players)
             await player.DisposeAsync().ConfigureAwait(false);
         _players.Clear();
+        await TearDownCachePlayerAsync().ConfigureAwait(false);
 
         // The audio master clock owns a device + feed loop; the software clock owns nothing. Dispose whichever
         // we were given if it is disposable, so the whole playback session tears down through one call.

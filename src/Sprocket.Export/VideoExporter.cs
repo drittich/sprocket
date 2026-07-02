@@ -35,6 +35,11 @@ namespace Sprocket.Export;
 /// <param name="Acceleration">Whether to encode with the deterministic software encoder (the default) or a platform
 /// GPU encoder with automatic software fallback (PLAN.md step 29). <see cref="ExportAcceleration.Hardware"/> is a
 /// speed option for review/intermediate outputs; final delivery keeps the software default for reproducibility.</param>
+/// <param name="Preset">An explicit software-encoder speed/quality preset (x264: <c>"ultrafast"</c>…<c>"veryslow"</c>),
+/// or <see langword="null"/> for the codec's default. Used by the render cache's speed-first intermediates
+/// (PLAN.md step 32); hardware encoders ignore it.</param>
+/// <param name="VideoOnly">Skips the audio stream entirely (no mixing, no audio encode). Used by the render cache's
+/// video intermediates (PLAN.md step 32), whose audio side is cached separately as PCM.</param>
 public readonly record struct ExportOptions(
     ExportFormat Format = default,
     ExportQuality Quality = ExportQuality.High,
@@ -47,7 +52,9 @@ public readonly record struct ExportOptions(
     IReadOnlyList<BurnIn>? BurnIns = null,
     Resolution? Resolution = null,
     Rational? FrameRate = null,
-    ExportAcceleration Acceleration = ExportAcceleration.Software);
+    ExportAcceleration Acceleration = ExportAcceleration.Software,
+    string? Preset = null,
+    bool VideoOnly = false);
 
 /// <summary>
 /// Renders a <see cref="Project"/> offline to a full-resolution movie in the chosen container/codec matrix
@@ -165,7 +172,7 @@ public static class VideoExporter
             throw new ArgumentException("The timeline resolution is too small to export.", nameof(project));
         int sampleRate = timeline.SampleRate > 0 ? timeline.SampleRate : 48000;
 
-        bool wantAudio = HasAudibleAudio(project, sequence);
+        bool wantAudio = !options.VideoOnly && HasAudibleAudio(project, sequence);
 
         VideoCodecInfo videoCodec = ExportCodecs.Video(format.VideoCodec);
         // Hardware acceleration (PLAN.md step 29): probe the platform GPU encoders for this codec before the
@@ -181,7 +188,7 @@ public static class VideoExporter
             BitRate: options.VideoBitRate,
             GopSize: options.GopSize,
             Crf: ExportCodecs.CrfFor(format.VideoCodec, options.Quality),
-            Preset: videoCodec.DefaultPreset,
+            Preset: options.Preset ?? videoCodec.DefaultPreset,
             HardwareCandidates: hwCandidates);
 
         AudioEncoderSettings? audio = wantAudio
@@ -535,8 +542,9 @@ public static class VideoExporter
     }
 
     /// <summary>Opens a PCM reader for the mixer, or <see langword="null"/> (mixed as silence) when the media is
-    /// offline / has no audio. The mixer owns and disposes the returned reader.</summary>
-    private static IPcmReader? OpenPcmReader(Project project, MediaRefId id, int sampleRate, int channels)
+    /// offline / has no audio. The mixer owns and disposes the returned reader. Shared with the render cache's
+    /// audio pre-render (PLAN.md step 32), which mixes the identical full-resolution sources.</summary>
+    internal static IPcmReader? OpenPcmReader(Project project, MediaRefId id, int sampleRate, int channels)
     {
         MediaRef? media = project.MediaPool.Get(id);
         if (media is not { Info.HasAudio: true })
